@@ -1,0 +1,63 @@
+# Paths that MUST NOT be flagged by DefaultSensitivePatterns.
+# Each line is an anti-target — a near-miss designed to catch overly-greedy globs.
+
+# Lookalikes for .env
+envoy.yaml
+envs.go
+env-handler.ts
+dotenv-loader.js
+environment.md
+env_vars.txt
+README-env.md
+
+# Lookalikes for *.pem / *.key extensions
+public.pem.sig
+notes-on-pem.md
+keyboard.go
+keyholder.ts
+monkey.go
+key-mapping.yaml
+turnkey-solution.md
+privatekey.md
+donkey.go
+keychain.md
+keywords.ts
+
+# Lookalikes for .ssh/ (no .ssh directory segment)
+sshconfig
+ssh-tunnel.md
+ssh.md
+sshd-notes.txt
+
+# Lookalikes for .aws/ (no .aws directory segment)
+aws-docs/overview.md
+.aws-guide.md
+awscli-notes.md
+
+# Lookalikes for .git/config (no .git dir segment)
+gitignore-rules.md
+gitconfig.md
+mygitconfig.md
+
+# Plain source that shouldn't match
+main.go
+README.md
+package.json
+Dockerfile
+Makefile
+src/utils/helpers.ts
+cmd/cli.go
+
+# Empty-like paths stay empty; the test runner skips them.
+
+# Non-credential dotfiles
+.gitignore
+.editorconfig
+.prettierrc
+.eslintrc
+.dockerignore
+
+# Benign files that happen to live near sensitive-looking contexts
+my-kube-deploy.yaml
+kube-docs.md
+netrc-migration.md

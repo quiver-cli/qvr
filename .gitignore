@@ -1,0 +1,30 @@
+# Build artifacts
+bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Go workspace / dependency caches
+vendor/
+go.work
+go.work.sum
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local-only docs (development reference, not for distribution).
+# Public-facing documentation lives in `documentation/` and is tracked.
+docs/
+CLAUDE.md
+inspo/
+
+# Plans / notes
+.claude/

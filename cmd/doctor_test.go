@@ -1,0 +1,221 @@
+package cmd
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/model"
+)
+
+// findCheck returns the first check matching type and skill, or fails the test.
+func findCheck(t *testing.T, checks []doctorCheck, ckType, skill string) doctorCheck {
+	t.Helper()
+	for _, c := range checks {
+		if c.Type == ckType && c.Skill == skill {
+			return c
+		}
+	}
+	t.Fatalf("no check found type=%s skill=%s in %+v", ckType, skill, checks)
+	return doctorCheck{}
+}
+
+func TestDoctorChecks_AllGreen(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+
+	src := writeFullSkill(t, "demo")
+	project := t.TempDir()
+	linkSkillInto(t, project, ".claude/skills", "demo", src)
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Worktree: src,
+		Targets:  []string{"claude"},
+		Registry: "", // no registry → registry check skipped
+	})
+
+	cfg := config.Default()
+	checks := runDoctorChecks(lock, cfg, project)
+
+	wt := findCheck(t, checks, "worktree", "demo")
+	if !wt.OK {
+		t.Errorf("worktree check should pass: %+v", wt)
+	}
+	sym := findCheck(t, checks, "symlink", "demo")
+	if !sym.OK {
+		t.Errorf("symlink check should pass: %+v", sym)
+	}
+}
+
+// TestDoctorChecks_HonorsSkillPath pins the bug #12 fix: doctor must accept
+// symlinks pointing at `<worktree>/<Path>` — the shape `qvr install`
+// actually creates. Pre-fix, doctor compared against `entry.Worktree`
+// (worktree root) and failed with `target mismatch` immediately after a
+// clean install, breaking CI usage.
+func TestDoctorChecks_HonorsSkillPath(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+
+	worktree := t.TempDir()
+	skillDir := filepath.Join(worktree, "skills", "demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir leaf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: demo\ndescription: x\n---\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	project := t.TempDir()
+	linkSkillInto(t, project, ".claude/skills", "demo", skillDir)
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Path:     "skills/demo",
+		Worktree: worktree,
+		Targets:  []string{"claude"},
+	})
+
+	checks := runDoctorChecks(lock, config.Default(), project)
+	sym := findCheck(t, checks, "symlink", "demo")
+	if !sym.OK {
+		t.Errorf("symlink should pass with link pointing at leaf: %+v", sym)
+	}
+}
+
+func TestDoctorChecks_BrokenWorktree(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	project := t.TempDir()
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "ghost",
+		Worktree: filepath.Join(t.TempDir(), "nonexistent"),
+		Targets:  []string{"claude"},
+	})
+
+	checks := runDoctorChecks(lock, config.Default(), project)
+	wt := findCheck(t, checks, "worktree", "ghost")
+	if wt.OK {
+		t.Errorf("worktree should be broken: %+v", wt)
+	}
+	if wt.Message == "" {
+		t.Error("expected a message for broken worktree")
+	}
+}
+
+func TestDoctorChecks_BrokenSymlink(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	src := writeFullSkill(t, "demo")
+	project := t.TempDir()
+
+	otherSrc := writeFullSkill(t, "demo")
+	linkSkillInto(t, project, ".claude/skills", "demo", otherSrc)
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Worktree: src,
+		Targets:  []string{"claude"},
+	})
+	checks := runDoctorChecks(lock, config.Default(), project)
+
+	sym := findCheck(t, checks, "symlink", "demo")
+	if sym.OK {
+		t.Errorf("symlink mismatch should fail: %+v", sym)
+	}
+}
+
+func TestDoctorChecks_RegistryMissing(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	src := writeFullSkill(t, "demo")
+	project := t.TempDir()
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Registry: "ghost-reg",
+		Worktree: src,
+		Targets:  []string{},
+	})
+
+	checks := runDoctorChecks(lock, config.Default(), project)
+	reg := findCheck(t, checks, "registry", "demo")
+	if reg.OK {
+		t.Errorf("registry check should fail when reg is unknown: %+v", reg)
+	}
+}
+
+// TestDoctorChecks_SubdirSourceSkipsRegistry pins the fix for the doctor
+// false-positive on `qvr add` installs. Source == "subdir" entries
+// intentionally don't appear in cfg.Registries — the bare clone is owned by
+// the lock entry — so the registry-config check must be skipped, not failed.
+func TestDoctorChecks_SubdirSourceSkipsRegistry(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	src := writeFullSkill(t, "demo")
+	project := t.TempDir()
+	linkSkillInto(t, project, ".claude/skills", "demo", src)
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Registry: "github.com--mattpocock--skills",
+		Source:   "subdir",
+		RepoURL:  "https://github.com/mattpocock/skills.git",
+		Worktree: src,
+		Targets:  []string{"claude"},
+	})
+
+	checks := runDoctorChecks(lock, config.Default(), project)
+	for _, c := range checks {
+		if c.Type == "registry" {
+			t.Errorf("subdir-sourced entries must not produce a registry check, got %+v", c)
+		}
+	}
+	wt := findCheck(t, checks, "worktree", "demo")
+	if !wt.OK {
+		t.Errorf("worktree check should still run and pass: %+v", wt)
+	}
+}
+
+func TestDoctorChecks_ExtraSymlinkSurfaced(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	project := t.TempDir()
+	orphanSrc := writeFullSkill(t, "orphan")
+	linkSkillInto(t, project, ".claude/skills", "orphan", orphanSrc)
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+
+	checks := runDoctorChecks(lock, config.Default(), project)
+	got := findCheck(t, checks, "extra-symlink", "orphan")
+	if got.Target != "claude" {
+		t.Errorf("expected claude target, got %q", got.Target)
+	}
+	if got.OK {
+		t.Errorf("extra symlinks should be reported as not OK: %+v", got)
+	}
+}
+
+func TestDoctorChecks_LinkInstallSkipped(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("QUIVER_HOME", t.TempDir())
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:       "linked",
+		Source:     "link",
+		LinkTarget: "/some/where",
+		Worktree:   "/some/where",
+		Targets:    []string{"claude"},
+	})
+	checks := runDoctorChecks(lock, config.Default(), project)
+	for _, c := range checks {
+		if c.Skill == "linked" {
+			t.Errorf("link installs should be skipped, got check: %+v", c)
+		}
+	}
+
+	if _, err := os.Stat(project); err != nil {
+		t.Fatalf("project should exist: %v", err)
+	}
+}

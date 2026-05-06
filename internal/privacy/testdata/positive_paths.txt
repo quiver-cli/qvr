@@ -1,0 +1,94 @@
+# Paths that MUST be flagged as sensitive by DefaultSensitivePatterns.
+# Format: one path per line. Blank lines and #-prefixed lines are ignored.
+
+# dotenv family
+.env
+.env.local
+.env.production
+.env.production.local
+/Users/foo/project/.env
+/home/user/svc/.env.staging
+app/.env
+./nested/dir/.env.test
+
+# secrets directory
+secrets/db.yaml
+secrets/api/key.json
+/var/lib/app/secrets/token.txt
+project/secrets/foo/bar/baz.yaml
+./secrets/nested/very/deep/key
+
+# private-key file extensions
+keys/private.pem
+cert/server.pem
+/etc/ssl/certs/ca.pem
+app/id.key
+config/encryption.key
+bundle.p12
+identity.pfx
+/Users/me/certs/mine.pfx
+
+# name-carries-meaning
+my_passwords.db
+app_secrets.json
+shared_credentials.yaml
+/tmp/passwords.txt
+backup/secret_bundle.tar
+config/credential_helper.sh
+
+# git internals
+.git/config
+/Users/foo/project/.git/config
+sub/module/.git/config
+
+# ssh
+.ssh/id_rsa
+.ssh/id_ed25519
+.ssh/id_ecdsa
+.ssh/id_dsa
+.ssh/authorized_keys
+.ssh/known_hosts
+.ssh/config
+/home/user/.ssh/id_rsa
+id_rsa
+id_ed25519
+id_ecdsa
+
+# aws / cloud
+.aws/credentials
+.aws/config
+/root/.aws/credentials
+.aws/cli/cache/session.json
+
+# language registries
+.npmrc
+/home/user/.npmrc
+.pypirc
+/Users/dev/.pypirc
+
+# kubernetes
+kubeconfig
+.kube/config
+deploy/kubeconfig
+
+# legacy shell
+.netrc
+/home/me/.netrc
+
+# case variations (normalized to lower-case internally)
+.ENV
+.Env.LOCAL
+/Users/foo/.ENV.production
+.SSH/id_rsa
+SECRETS/db.yaml
+KEYS/private.PEM
+MY_PASSWORDS.DB
+
+# unicode paths
+проект/.env
+项目/secrets/key.pem
+café/.env.local
+
+# paths with spaces
+my project/.env
+Documents/Private Data/.env

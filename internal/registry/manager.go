@@ -1,0 +1,452 @@
+package registry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/git"
+	"github.com/raks097/quiver/internal/model"
+)
+
+const defaultBranchFallback = "main"
+
+var (
+	ErrRegistryNotFound    = errors.New("registry not found")
+	ErrRegistryExists      = errors.New("registry already exists")
+	ErrInvalidRegistryName = errors.New("invalid registry name")
+	ErrInvalidURL          = errors.New("invalid registry URL")
+	ErrRemoveFailed        = errors.New("registry removal failed")
+	ErrUpdateFailed        = errors.New("registry update failed")
+)
+
+// Manager handles registry lifecycle operations.
+type Manager struct {
+	Git      git.GitClient
+	Indexer  *Indexer
+	CacheTTL time.Duration
+}
+
+// NewManager creates a new Manager with default cache TTL.
+func NewManager(gitClient git.GitClient) *Manager {
+	return &Manager{
+		Git:      gitClient,
+		Indexer:  NewIndexer(gitClient),
+		CacheTTL: DefaultCacheTTL,
+	}
+}
+
+// Index returns the skill index for a registry, using the cache when valid.
+// Falls through to a fresh build when the cache is missing, stale, or the
+// cached commit no longer matches HEAD. A failed cache write is non-fatal —
+// we still return the freshly built index so a read-only filesystem doesn't
+// break reads. The skipped slice lists candidate skills the indexer could not
+// register (missing SKILL.md, parse errors); callers can ignore it.
+func (m *Manager) Index(name, repoPath string) ([]SkillIndexEntry, []SkippedSkill, error) {
+	headCommit, _ := m.Git.HeadCommit(repoPath)
+
+	if cached, err := ReadCache(name); err == nil {
+		if cached.Commit == headCommit && headCommit != "" && !cached.IsStale(m.CacheTTL) {
+			return cached.Skills, cached.Skipped, nil
+		}
+	}
+
+	skills, skipped, err := m.Indexer.BuildIndex(repoPath)
+	if err != nil {
+		return nil, skipped, err
+	}
+
+	_ = WriteCache(&IndexCache{
+		Registry:  name,
+		Commit:    headCommit,
+		Generated: time.Now().UTC(),
+		Skills:    skills,
+		Skipped:   skipped,
+	})
+	return skills, skipped, nil
+}
+
+// Add clones a registry as a bare repo and saves it to config.
+//
+// Any embedded credentials in `url` are stripped before the URL is used for
+// cloning or persisted to config. The clone itself relies on the user's
+// credential helper / SSH agent for auth — we never store tokens on disk.
+func (m *Manager) Add(ctx context.Context, name, url string) (*model.Registry, error) {
+	if err := ValidateRegistryName(name); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRegistryName, err)
+	}
+	if url == "" {
+		return nil, fmt.Errorf("%w: URL cannot be empty", ErrInvalidURL)
+	}
+
+	cleanURL, hadCreds, err := git.SanitizeURL(url)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if _, exists := cfg.Registries[name]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrRegistryExists, name)
+	}
+
+	repoPath := RegistryPath(name)
+	if err := m.Git.BareClone(ctx, cleanURL, repoPath); err != nil {
+		return nil, fmt.Errorf("clone registry %s: %w", name, err)
+	}
+
+	// Build + populate the cache on first clone; non-fatal if it fails.
+	skills, skipped, indexErr := m.Index(name, repoPath)
+
+	cfg.Registries[name] = config.RegistryConfig{URL: cleanURL}
+	if err := config.Save(cfg); err != nil {
+		return nil, fmt.Errorf("save config: %w", err)
+	}
+
+	defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+
+	reg := &model.Registry{
+		Name:                name,
+		URL:                 cleanURL,
+		Path:                repoPath,
+		SkillCount:          len(skills),
+		SkippedCount:        len(skipped),
+		LastFetched:         time.Now(),
+		DefaultBranch:       defaultBranch,
+		CredentialsStripped: hadCreds,
+	}
+	if indexErr != nil {
+		reg.SkillCount = 0
+	}
+	return reg, nil
+}
+
+// Remove deletes a registry: config entry first (recoverable), then bare clone.
+func (m *Manager) Remove(name string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if _, exists := cfg.Registries[name]; !exists {
+		return fmt.Errorf("%w: %s", ErrRegistryNotFound, name)
+	}
+
+	// Remove from config first — re-adding is easy, recovering deleted files is not
+	delete(cfg.Registries, name)
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	repoPath := RegistryPath(name)
+	if err := os.RemoveAll(repoPath); err != nil {
+		return fmt.Errorf("%w: remove clone: %v", ErrRemoveFailed, err)
+	}
+
+	// Drop the cache entry last — if config save succeeded, a stale cache
+	// file is harmless (next Index call rebuilds) but we clean up anyway.
+	_ = Invalidate(name)
+
+	return nil
+}
+
+// List returns all configured registries with their status.
+func (m *Manager) List() ([]model.RegistryStatus, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	var result []model.RegistryStatus
+	for name, regCfg := range cfg.Registries {
+		repoPath := RegistryPath(name)
+		status := model.RegistryStatus{
+			Registry: model.Registry{
+				Name: name,
+				URL:  regCfg.URL,
+				Path: repoPath,
+			},
+		}
+
+		// Get skill count via the cache-aware index.
+		if skills, skipped, err := m.Index(name, repoPath); err == nil {
+			status.SkillCount = len(skills)
+			status.SkippedCount = len(skipped)
+			status.Skipped = skipped
+		}
+
+		// Get last fetched time from FETCH_HEAD mtime
+		fetchHeadPath := filepath.Join(repoPath, "FETCH_HEAD")
+		if info, err := os.Stat(fetchHeadPath); err == nil {
+			status.LastFetched = info.ModTime()
+		}
+
+		if branch, err := m.Git.DefaultBranch(repoPath); err == nil {
+			status.DefaultBranch = branch
+		}
+
+		result = append(result, status)
+	}
+
+	return result, nil
+}
+
+// Update fetches new refs for a registry (or all if name is empty).
+func (m *Manager) Update(ctx context.Context, name string) ([]model.RegistryStatus, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	names := registryNames(cfg, name)
+
+	var results []model.RegistryStatus
+	for _, n := range names {
+		regCfg, exists := cfg.Registries[n]
+		if !exists {
+			results = append(results, model.RegistryStatus{
+				Registry: model.Registry{Name: n},
+				Error:    fmt.Sprintf("registry %q not found", n),
+			})
+			continue
+		}
+
+		repoPath := RegistryPath(n)
+		status := model.RegistryStatus{
+			Registry: model.Registry{
+				Name: n,
+				URL:  regCfg.URL,
+				Path: repoPath,
+			},
+		}
+
+		if err := m.Git.Fetch(ctx, repoPath); err != nil {
+			status.Error = fmt.Sprintf("fetch failed: %v", err)
+			results = append(results, status)
+			continue
+		}
+
+		// A fetch may have moved HEAD, so drop the cache and rebuild via
+		// Index() — that re-populates the cache with the fresh commit hash.
+		_ = Invalidate(n)
+		if skills, skipped, err := m.Index(n, repoPath); err == nil {
+			status.SkillCount = len(skills)
+			status.SkippedCount = len(skipped)
+			status.Skipped = skipped
+		}
+
+		status.LastFetched = time.Now()
+		results = append(results, status)
+	}
+
+	return results, nil
+}
+
+// Check performs a dry-run check for upstream changes.
+func (m *Manager) Check(ctx context.Context, name string) ([]model.RegistryStatus, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	names := registryNames(cfg, name)
+
+	var results []model.RegistryStatus
+	for _, n := range names {
+		regCfg, exists := cfg.Registries[n]
+		if !exists {
+			continue
+		}
+
+		repoPath := RegistryPath(n)
+		status := model.RegistryStatus{
+			Registry: model.Registry{
+				Name: n,
+				URL:  regCfg.URL,
+				Path: repoPath,
+			},
+		}
+
+		localHead, err := m.Git.HeadCommit(repoPath)
+		if err != nil {
+			status.Error = fmt.Sprintf("read local HEAD: %v", err)
+			results = append(results, status)
+			continue
+		}
+
+		remoteRefs, err := m.Git.LsRemote(ctx, regCfg.URL)
+		if err != nil {
+			status.Error = fmt.Sprintf("ls-remote: %v", err)
+			results = append(results, status)
+			continue
+		}
+
+		defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+		if defaultBranch == "" {
+			defaultBranch = defaultBranchFallback
+		}
+		remoteRef := "refs/heads/" + defaultBranch
+		if remoteHash, ok := remoteRefs.Refs[remoteRef]; ok {
+			status.HasUpstreamChanges = remoteHash != localHead
+		}
+
+		results = append(results, status)
+	}
+
+	return results, nil
+}
+
+// AddStandalone clones a standalone single-skill repo.
+func (m *Manager) AddStandalone(ctx context.Context, url string) (*model.StandaloneRepo, error) {
+	slug := URLToSlug(url)
+	path := filepath.Join(config.Dir(), "standalone", slug)
+
+	if _, err := os.Stat(path); err == nil {
+		return nil, fmt.Errorf("%w: standalone repo already exists at %s", ErrRegistryExists, path)
+	}
+
+	if err := m.Git.Clone(ctx, url, path); err != nil {
+		return nil, fmt.Errorf("clone standalone repo: %w", err)
+	}
+
+	return &model.StandaloneRepo{
+		URL:  url,
+		Path: path,
+		Slug: slug,
+	}, nil
+}
+
+// Search runs a substring search across every configured registry, pulling
+// each index through the cache. Results are merged and sorted by score.
+func (m *Manager) Search(query string) ([]SearchResult, error) {
+	return m.SearchWithFilter(SearchFilter{Query: query})
+}
+
+// SearchWithFilter is the filter-aware variant used by `qvr search --tag` and
+// `qvr search --author`. It walks every configured registry and applies the
+// filter per entry, merging results by score then name.
+func (m *Manager) SearchWithFilter(filter SearchFilter) ([]SearchResult, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	var all []SearchResult
+	for name := range cfg.Registries {
+		repoPath := RegistryPath(name)
+		entries, _, err := m.Index(name, repoPath)
+		if err != nil {
+			continue
+		}
+		hits := Search(filter, entries)
+		for i := range hits {
+			hits[i].Registry = name
+		}
+		all = append(all, hits...)
+	}
+
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].Score != all[j].Score {
+			return all[i].Score > all[j].Score
+		}
+		return all[i].Name < all[j].Name
+	})
+	return all, nil
+}
+
+// RegistrySkills holds the skills in a single registry, or an error if the
+// registry is unknown or its index could not be built.
+type RegistrySkills struct {
+	Name   string            `json:"name"`
+	Skills []SkillIndexEntry `json:"skills,omitempty"`
+	Error  string            `json:"error,omitempty"`
+}
+
+// ListSkills returns the skills for each named registry, in input order.
+// A missing or broken registry surfaces as a per-entry error rather than a
+// fatal failure, so callers can render partial results. Skills within each
+// registry are sorted by name.
+func (m *Manager) ListSkills(names []string) ([]RegistrySkills, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	out := make([]RegistrySkills, 0, len(names))
+	for _, name := range names {
+		r := RegistrySkills{Name: name}
+		if _, ok := cfg.Registries[name]; !ok {
+			r.Error = "registry not found"
+			out = append(out, r)
+			continue
+		}
+		skills, _, err := m.Index(name, RegistryPath(name))
+		if err != nil {
+			r.Error = err.Error()
+			out = append(out, r)
+			continue
+		}
+		sort.SliceStable(skills, func(i, j int) bool {
+			return skills[i].Name < skills[j].Name
+		})
+		r.Skills = skills
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// SkillLocation holds a found skill's index entry and registry context.
+type SkillLocation struct {
+	Entry         SkillIndexEntry
+	RegistryName  string
+	RepoPath      string
+	DefaultBranch string
+}
+
+// FindSkill searches all registries for a skill by name.
+func (m *Manager) FindSkill(skillName string) (*SkillLocation, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	for regName := range cfg.Registries {
+		repoPath := RegistryPath(regName)
+		entries, _, err := m.Index(regName, repoPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.Name == skillName {
+				defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+				if defaultBranch == "" {
+					defaultBranch = defaultBranchFallback
+				}
+				return &SkillLocation{
+					Entry:         entry,
+					RegistryName:  regName,
+					RepoPath:      repoPath,
+					DefaultBranch: defaultBranch,
+				}, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("skill %q not found in any registry", skillName)
+}
+
+func registryNames(cfg *config.Config, name string) []string {
+	if name != "" {
+		return []string{name}
+	}
+	names := make([]string, 0, len(cfg.Registries))
+	for n := range cfg.Registries {
+		names = append(names, n)
+	}
+	return names
+}

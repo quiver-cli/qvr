@@ -1,0 +1,4 @@
+name: sample-registry
+description: A sample registry for testing.
+settings:
+  default-branch: main
