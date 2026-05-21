@@ -417,8 +417,12 @@ func (in *Installer) InstallFromSubdir(ctx context.Context, req SubdirInstallReq
 		// from a different repo.
 		ownedByQvrAdd := existing.Source == "subdir" || existing.Source == "registry" || existing.Source == ""
 		if !ownedByQvrAdd || existing.Registry != slug {
+			sourceLabel := existing.Source
+			if sourceLabel == "" {
+				sourceLabel = "registry"
+			}
 			return nil, fmt.Errorf("skill %q already installed from %s (%s); pass --as <new-name> to disambiguate",
-				name, existing.Source, existing.Registry)
+				name, sourceLabel, existing.Registry)
 		}
 	}
 	targets := req.Targets
