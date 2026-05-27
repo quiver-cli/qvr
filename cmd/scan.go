@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -63,6 +64,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--fail-on: %w", err)
 	}
 
+	// Validate --format up front so typos fail loudly (issue #36).
+	// An empty string is the documented "fall back to --output" case
+	// and is treated as valid.
+	switch scanFormat {
+	case "", "text", "json", "sarif", "markdown":
+		// ok
+	default:
+		return fmt.Errorf("--format: invalid value %q: expected one of text, json, sarif, markdown", scanFormat)
+	}
+
 	// External inputs (git URL, zip archive, single SKILL.md) get
 	// materialised into a local directory before the standard
 	// resolveScanTarget path runs. Cleanup is deferred so a clone /
@@ -92,7 +103,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if resolved != dir {
-		printer.Info(fmt.Sprintf("discovered skill at %s", resolved))
+		// stderr only — stdout is reserved for the structured payload
+		// when --format json/sarif/markdown is in use (issue #35).
+		// In text mode, stderr still surfaces it to the human.
+		fmt.Fprintf(printer.Err, "discovered skill at %s\n", resolved)
 	}
 
 	s, err := skill.LoadFromPath(resolved)
@@ -204,35 +218,79 @@ func exceedsThreshold(result *security.ScanResult, threshold security.Severity) 
 // run `qvr scan my-installed-skill` without typing the full worktree
 // path. Path-like positionals always go through the filesystem resolver
 // — that matches the mental model `./foo` and `foo/bar` are paths.
+//
+// --global behaviour (issue #42):
+//   - the global lock is consulted first; a missing name produces a
+//     domain error ("no installed skill 'X' in global lock") rather
+//     than falling through to a CWD-relative stat that produced a
+//     misleading filesystem error
+//   - the resolved path uses [skill.EffectiveTarget] (same helper
+//     qvr info / qvr read use), so nested-registry layouts like
+//     mattpocock's skills/<category>/<name>/SKILL.md actually
+//     resolve instead of erroring at the worktree root
 func resolveScanTarget(arg string) (string, []string, error) {
 	if looksLikePath(arg) {
 		return resolveSkillDir(arg)
 	}
+
+	if scanGlobal {
+		// --global is an explicit signal: lock first, no fall-through
+		// to a relative-path stat. Issue #42 case 1.
+		return resolveByLock(arg, true /*requireHit*/)
+	}
+
 	if _, err := os.Stat(arg); err == nil {
 		// Bare arg happens to be a directory in cwd — prefer the
 		// filesystem reading.
 		return resolveSkillDir(arg)
 	}
+	return resolveByLock(arg, false)
+}
 
+// resolveByLock loads the (project or global) lock file and resolves
+// arg to the on-disk SKILL.md directory via [skill.EffectiveTarget].
+//
+// When requireHit is true (the --global path), a missing entry
+// becomes a typed user-facing error and the function never falls
+// back to filesystem resolution. When false (the default path), the
+// caller wants either-or semantics and we hand off to resolveSkillDir
+// on a miss so the bare-name → cwd-dir story still works.
+func resolveByLock(arg string, requireHit bool) (string, []string, error) {
 	projectRoot, err := os.Getwd()
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve cwd: %w", err)
 	}
-	lock, lockErr := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), scanGlobal))
+	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), scanGlobal)
+	lock, lockErr := model.ReadLockFile(lockPath)
 	if lockErr != nil {
-		// Lock-read failures are surfaced — but only after we tried the
-		// filesystem path, which is the more useful error to lead with
-		// when both fail.
+		if requireHit {
+			return "", nil, fmt.Errorf("read global lock %s: %w", lockPath, lockErr)
+		}
 		return resolveSkillDir(arg)
 	}
 	entry, getErr := lock.Get(arg)
 	if getErr != nil {
+		if requireHit {
+			scope := "project"
+			if scanGlobal {
+				scope = "global"
+			}
+			return "", nil, fmt.Errorf("no installed skill %q in %s lock — run `qvr list --global` to see installed names", arg, scope)
+		}
 		return resolveSkillDir(arg)
 	}
-	if entry.Worktree == "" {
-		return "", nil, fmt.Errorf("lock entry %q has no worktree path — try `qvr install` to rebuild it", arg)
+	target := skill.EffectiveTarget(entry)
+	if target == "" {
+		return "", nil, fmt.Errorf("lock entry %q has no resolvable target — try `qvr install` to rebuild it", arg)
 	}
-	return resolveSkillDir(entry.Worktree)
+	// EffectiveTarget already points at the SKILL.md-bearing dir for
+	// nested layouts. Confirm SKILL.md is there before handing off.
+	if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err == nil {
+		return target, nil, nil
+	}
+	// Fall through to the directory-walk resolver as a last resort —
+	// covers the legacy case where the lock predates the Path field.
+	return resolveSkillDir(target)
 }
 
 func looksLikePath(s string) bool {

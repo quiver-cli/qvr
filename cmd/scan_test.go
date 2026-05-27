@@ -146,6 +146,55 @@ func TestRunScanJSONFailureSurfacesViaSentinel(t *testing.T) {
 	}
 }
 
+// TestRunScanStructuredFormatKeepsStdoutPure is the regression guard
+// for issue #35: --format json/sarif/markdown must not mix the
+// "discovered skill at ..." progress line into stdout, because that
+// breaks jq / SARIF viewers / `gh code-scanning upload`.
+func TestRunScanStructuredFormatKeepsStdoutPure(t *testing.T) {
+	defer resetScanFlags()
+	for _, format := range []string{"json", "sarif", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			scanFormat = format
+			defer func() { scanFormat = "" }()
+			out, errBuf, restore := withScanPrinter(t, output.FormatText)
+			defer restore()
+
+			// sample-registry is a multi-skill layout, so the resolver
+			// will discover the inner skill and print the progress
+			// line — exactly the case that used to corrupt JSON.
+			dir := filepath.Join("..", "testdata", "sample-registry")
+			_ = runScan(scanCmd, []string{dir})
+			stdout := out.String()
+			stderr := errBuf.String()
+			if strings.Contains(stdout, "discovered skill at") {
+				t.Errorf("--format %s leaked progress line to stdout:\n%s", format, stdout)
+			}
+			if !strings.Contains(stderr, "discovered skill at") {
+				t.Errorf("expected progress line on stderr, got %q", stderr)
+			}
+		})
+	}
+}
+
+// TestRunScanInvalidFormatFlag is the regression guard for issue #36:
+// `--format pirate` used to silently fall back to text. It must now
+// reject with a friendly error matching the --severity convention.
+func TestRunScanInvalidFormatFlag(t *testing.T) {
+	defer resetScanFlags()
+	scanFormat = "pirate"
+	defer func() { scanFormat = "" }()
+	_, _, restore := withScanPrinter(t, output.FormatText)
+	defer restore()
+
+	err := runScan(scanCmd, []string{filepath.Join("..", "testdata", "clean-skill")})
+	if err == nil {
+		t.Fatal("expected error from --format pirate")
+	}
+	if !strings.Contains(err.Error(), "--format:") {
+		t.Errorf("expected --format error, got %v", err)
+	}
+}
+
 func TestRunScanInvalidSeverityFlag(t *testing.T) {
 	defer resetScanFlags()
 	scanSeverity = "fatal"

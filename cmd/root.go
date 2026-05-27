@@ -27,12 +27,22 @@ var rootCmd = &cobra.Command{
 	Use:   "qvr",
 	Short: "Quiver — agent skills manager",
 	Long:  `Quiver is a CLI-native agent skills manager. Git repos as registries, symlinks as installs.`,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Validate the persistent --output flag so typos like
+		// `--output jsno` fail loudly instead of falling back to
+		// text and silently breaking downstream pipes (issue #36).
+		switch outputFormat {
+		case "text", "json":
+			// ok
+		default:
+			return fmt.Errorf("--output: invalid value %q: expected one of text, json", outputFormat)
+		}
 		format := output.FormatText
 		if outputFormat == "json" {
 			format = output.FormatJSON
 		}
 		printer = output.New(format)
+		return nil
 	},
 	Version: version,
 	// Runtime errors from RunE shouldn't trigger a usage/help dump — cobra's
