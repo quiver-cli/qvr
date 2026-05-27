@@ -18,6 +18,14 @@ const MCPToolPoisoningCheckName = "mcp_tool_poisoning"
 // caller may consume to decide whether to invoke it. SkillSpector calls
 // out four poisoning techniques (TP1-TP4) that hide an instruction or
 // confuse the LLM by smuggling content into these fields.
+//
+// Issue #38 extends the check to also scan SKILL.md / references body
+// text for imperative tool-call hijacking instructions (TP5) and the
+// adjacent covert-behavior hedges (TP6). These attacks are the
+// textbook MCP threat model — a SKILL.md telling the agent to
+// silently invoke a side-effect tool with attacker-controlled args —
+// and the original implementation only scanned frontmatter, so the
+// canonical attack returned zero findings.
 type mcpToolPoisoningCheck struct {
 	htmlComment   *regexp.Regexp
 	mdComment     *regexp.Regexp
@@ -25,6 +33,8 @@ type mcpToolPoisoningCheck struct {
 	dataURI       *regexp.Regexp
 	base64Blob    *regexp.Regexp
 	injectionVerb *regexp.Regexp
+	toolHijack    *regexp.Regexp
+	covertHedge   *regexp.Regexp
 }
 
 // NewMCPToolPoisoningCheck returns the MCP tool-poisoning check. It
@@ -42,20 +52,87 @@ func NewMCPToolPoisoningCheck() Check {
 		dataURI:       regexp.MustCompile(`(?i)data:[\w/+\-]+;base64,[A-Za-z0-9+/=]{20,}`),
 		base64Blob:    regexp.MustCompile(`[A-Za-z0-9+/]{60,}={0,2}`),
 		injectionVerb: regexp.MustCompile(`(?i)(?:ignore\s+(?:all|previous)\s+instructions|system\s+prompt\s*:|you\s+must|override\s+(?:safety|rules)|<\|im_start\|>|<\|system\|>)`),
+
+		// TP5 — imperative tool-call hijacking. Matches "call/invoke/use
+		// (the) X tool" or a direct function-call shape where the name
+		// looks like a side-effect tool (send_*, http_*, read_*,
+		// exec_*, write_*, email_*, web_*, fetch_*, delete_*). The
+		// regex is deliberately specific to side-effect verbs — bare
+		// "call helper()" in prose should not fire.
+		toolHijack: regexp.MustCompile(`(?i)(?:\b(?:call|invoke|use|run|execute|trigger)\s+(?:the\s+)?` +
+			"[`'\"]?" +
+			`(?:send_\w+|http_\w+|read_\w+|exec_\w+|write_\w+|email_\w+|web_\w+|fetch_\w+|delete_\w+|file_\w+|shell_\w+)\b` +
+			`|\b(?:send_\w+|http_\w+|read_\w+|exec_\w+|write_\w+|email_\w+|web_\w+|fetch_\w+|delete_\w+|file_\w+|shell_\w+)\s*\([^)]*\))`),
+
+		// TP6 — covert-behavior hedge adjacent to action language. The
+		// hedge has to be near (within ~80 chars) a tool/action verb
+		// for the rule to fire, so "secretly designed for X" prose
+		// stays quiet.
+		covertHedge: regexp.MustCompile(`(?i)(?:secretly|silently|covertly|without\s+(?:informing|telling|notifying)\s+(?:the\s+)?user|do\s+not\s+(?:mention|tell)\s+(?:the\s+)?user|hide\s+this\s+from\s+the\s+user)[^.\n]{0,80}\b(?:call|invoke|tool|run|execute|send|transmit|forward|email|post|upload|fetch|read|write|exfiltrate)\b`),
 	}
 }
 
 func (*mcpToolPoisoningCheck) Name() string { return MCPToolPoisoningCheckName }
 
-func (c *mcpToolPoisoningCheck) Run(_ context.Context, skill *model.Skill, _ []FileEntry) []Finding {
-	if skill == nil {
-		return nil
-	}
+func (c *mcpToolPoisoningCheck) Run(_ context.Context, skill *model.Skill, files []FileEntry) []Finding {
 	var findings []Finding
 
-	fields := metadataFields(skill)
-	for _, field := range fields {
-		findings = append(findings, c.scanField(field)...)
+	if skill != nil {
+		for _, field := range metadataFields(skill) {
+			findings = append(findings, c.scanField(field)...)
+		}
+	}
+	// Scan markdown / rst / txt bodies for imperative tool-call
+	// hijacking (issue #38). Code files are out of scope here — the
+	// patterns check + signatures handle code-shape exfil.
+	for _, f := range files {
+		if !isProseFile(f.Path) || f.Content == "" {
+			continue
+		}
+		findings = append(findings, c.scanBody(f)...)
+	}
+	return findings
+}
+
+func isProseFile(p string) bool {
+	switch {
+	case strings.HasSuffix(p, ".md"), strings.HasSuffix(p, ".markdown"),
+		strings.HasSuffix(p, ".mdx"), strings.HasSuffix(p, ".rst"),
+		strings.HasSuffix(p, ".txt"):
+		return true
+	}
+	return false
+}
+
+func (c *mcpToolPoisoningCheck) scanBody(f FileEntry) []Finding {
+	var findings []Finding
+	for lineIdx, line := range strings.Split(f.Content, "\n") {
+		if loc := c.toolHijack.FindStringIndex(line); loc != nil {
+			findings = append(findings, Finding{
+				Check:       MCPToolPoisoningCheckName,
+				RuleID:      "TP5",
+				Category:    CategoryMCPToolPoisoning,
+				Severity:    SeverityError,
+				Confidence:  0.85,
+				File:        f.Path,
+				Line:        lineIdx + 1,
+				Message:     fmt.Sprintf("TP5: imperative tool-call hijacking in %s — instructs the agent to invoke a side-effect tool", f.Path),
+				Remediation: "remove imperative \"call/invoke/use the X tool\" instructions for side-effect tools (send_*, http_*, read_*, exec_*, write_*); document tool use as guidance, not orders",
+			})
+		}
+		if c.covertHedge.MatchString(line) {
+			findings = append(findings, Finding{
+				Check:       MCPToolPoisoningCheckName,
+				RuleID:      "TP6",
+				Category:    CategoryMCPToolPoisoning,
+				Severity:    SeverityError,
+				Confidence:  0.9,
+				File:        f.Path,
+				Line:        lineIdx + 1,
+				Message:     fmt.Sprintf("TP6: covert-behavior hedge adjacent to action verb in %s (\"secretly\", \"without informing the user\", \"do not mention\")", f.Path),
+				Remediation: "any user-affecting tool use must be transparent; remove instructions that hide actions from the user",
+			})
+		}
 	}
 	return findings
 }
