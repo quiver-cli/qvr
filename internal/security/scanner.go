@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/raks097/quiver/internal/model"
 )
@@ -143,6 +144,7 @@ func New() *Scanner {
 		NewMCPLeastPrivilegeCheck(),
 		NewSignatureCheck(),
 		NewDependencyCheck(),
+		NewCoverageCheck(),
 	)
 }
 
@@ -228,13 +230,35 @@ func (s Summary) MaxSeverity() Severity {
 
 // ScanResult is the top-level structured output of a scan run. The JSON
 // shape is part of the public CLI contract — additive changes only.
+//
+// ScannedAt records when the scan was run, in RFC 3339 form with an
+// explicit numeric offset (e.g. `2026-05-27T23:18:31.944085+00:00`)
+// so timestamps remain unambiguous when reports cross machines and
+// timezones.
+//
+// Components is the typed inventory of files inside the skill, taken
+// before any checks ran. Consumers (skill cards, review packets,
+// dashboards) use it to render the "what's in this skill?" view
+// without re-walking the directory.
 type ScanResult struct {
-	Path     string    `json:"path"`
-	Skill    string    `json:"skill"`
-	Checks   []string  `json:"checks"`
-	Findings []Finding `json:"findings"`
-	Summary  Summary   `json:"summary"`
+	Path       string      `json:"path"`
+	Skill      string      `json:"skill"`
+	ScannedAt  string      `json:"scanned_at,omitempty"`
+	Checks     []string    `json:"checks"`
+	Components []Component `json:"components,omitempty"`
+	Findings   []Finding   `json:"findings"`
+	Summary    Summary     `json:"summary"`
 }
+
+// scanTimestampLayout matches the wire shape requested in the public
+// contract: ISO 8601 / RFC 3339 with microseconds and a numeric
+// timezone offset (no `Z` shortcut). Equivalent to Python's
+// `datetime.isoformat()`.
+const scanTimestampLayout = "2006-01-02T15:04:05.999999-07:00"
+
+// now is the clock seam used by [Scanner.Scan] to stamp ScannedAt.
+// Tests override it to keep the JSON deterministic.
+var now = time.Now
 
 // Scan loads files from dir, runs every registered check against the
 // skill, and returns a ScanResult with findings sorted by severity then
@@ -245,6 +269,8 @@ type ScanResult struct {
 // callers can scan a synthesised skill (for tests) without forcing a
 // filesystem dance.
 func (s *Scanner) Scan(ctx context.Context, skill *model.Skill, dir string) (*ScanResult, error) {
+	scannedAt := now()
+
 	files, err := WalkSkill(dir)
 	if err != nil {
 		return nil, fmt.Errorf("walk skill: %w", err)
@@ -277,11 +303,13 @@ func (s *Scanner) Scan(ctx context.Context, skill *model.Skill, dir string) (*Sc
 	}
 
 	return &ScanResult{
-		Path:     dir,
-		Skill:    skillName,
-		Checks:   s.Checks(),
-		Findings: all,
-		Summary:  summary,
+		Path:       dir,
+		Skill:      skillName,
+		ScannedAt:  scannedAt.Format(scanTimestampLayout),
+		Checks:     s.Checks(),
+		Components: ComponentsFromFiles(files),
+		Findings:   all,
+		Summary:    summary,
 	}, nil
 }
 
