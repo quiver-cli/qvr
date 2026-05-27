@@ -212,6 +212,109 @@ func TestVerifySingleEntry_failedWhenAllContentDeleted(t *testing.T) {
 	}
 }
 
+// Regression for #30: --repair must rewrite the recorded SubtreeHash to
+// match the on-disk worktree. Pre-fix RepairVerificationFromDisk's
+// predecessor used HashSubtree (git-tree-at-HEAD), so when the user edited
+// disk files without committing, the "repair" wrote the unchanged git tree
+// hash back — a no-op. Subsequent verify runs still reported drift.
+func TestRepairVerificationFromDisk_rewritesToDiskHash(t *testing.T) {
+	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
+	entry := &model.LockEntry{
+		Name:     "foo",
+		Worktree: repo,
+		Path:     "skills/foo",
+		Source:   "registry",
+	}
+	entry.Verification = skill.PopulateVerification(entry, model.ProvenanceRef{})
+	originalHash := entry.Verification.SubtreeHash
+	if originalHash == "" {
+		t.Fatal("PopulateVerification did not record an initial hash")
+	}
+
+	// Tamper on-disk only — git tree at HEAD unchanged.
+	skillFile := filepath.Join(repo, "skills/foo/SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("---\nname: foo\n---\nrewritten by user\n"), 0o644); err != nil {
+		t.Fatalf("rewrite on disk: %v", err)
+	}
+
+	// Sanity: pre-repair, the entry shows drift.
+	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusDrift {
+		t.Fatalf("expected drift before repair, got %q", got.Status)
+	}
+
+	res := skill.RepairVerificationFromDisk(entry)
+	if res.Failed {
+		t.Fatalf("repair failed: %s", res.Error)
+	}
+	if res.OldSubtreeHash != originalHash {
+		t.Errorf("OldSubtreeHash = %q, want %q", res.OldSubtreeHash, originalHash)
+	}
+	if res.NewSubtreeHash == "" {
+		t.Error("NewSubtreeHash empty after successful repair")
+	}
+	if res.NewSubtreeHash == originalHash {
+		t.Error("repair produced the same hash — would be a no-op")
+	}
+	if entry.Verification.SubtreeHash != res.NewSubtreeHash {
+		t.Errorf("entry not updated in place: got %q, want %q",
+			entry.Verification.SubtreeHash, res.NewSubtreeHash)
+	}
+
+	// Post-repair, a follow-up verify must succeed — the in-band recovery
+	// contract is that a single --repair pass seals the drift.
+	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusOK {
+		t.Errorf("post-repair verify Status = %q, want %q (drift=%+v)",
+			got.Status, skill.VerifyStatusOK, got.Drift)
+	}
+}
+
+// Repairing an unverified entry (no prior Verification block) seals the
+// current disk state for the first time — useful when migrating a v2 entry
+// that lacked provenance and the user trusts the current worktree.
+func TestRepairVerificationFromDisk_sealsUnverified(t *testing.T) {
+	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
+	entry := &model.LockEntry{
+		Name:     "foo",
+		Worktree: repo,
+		Path:     "skills/foo",
+		Source:   "registry",
+	}
+	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusUnverified {
+		t.Fatalf("expected unverified pre-repair, got %q", got.Status)
+	}
+
+	res := skill.RepairVerificationFromDisk(entry)
+	if res.Failed {
+		t.Fatalf("repair failed: %s", res.Error)
+	}
+	if res.OldSubtreeHash != "" {
+		t.Errorf("OldSubtreeHash should be empty for first-time seal, got %q", res.OldSubtreeHash)
+	}
+	if res.NewSubtreeHash == "" {
+		t.Error("NewSubtreeHash empty after sealing an unverified entry")
+	}
+	if entry.Verification == nil || entry.Verification.SubtreeHash != res.NewSubtreeHash {
+		t.Errorf("entry not sealed: %+v", entry.Verification)
+	}
+}
+
+// Link installs have no upstream to hash. RepairVerificationFromDisk should
+// reject them cleanly rather than producing a partial Verification block.
+func TestRepairVerificationFromDisk_rejectsLink(t *testing.T) {
+	entry := &model.LockEntry{
+		Name:       "foo",
+		Source:     "link",
+		LinkTarget: "/some/path",
+	}
+	res := skill.RepairVerificationFromDisk(entry)
+	if !res.Failed {
+		t.Error("expected Failed=true for link-source entry")
+	}
+	if entry.Verification != nil {
+		t.Errorf("link entry mutated: %+v", entry.Verification)
+	}
+}
+
 func TestVerifySingleEntry_linkSkipped(t *testing.T) {
 	entry := &model.LockEntry{
 		Name:       "foo",

@@ -93,6 +93,7 @@ type VerifySummary struct {
 	Missing    int `json:"missing"`
 	Link       int `json:"link"`
 	Failed     int `json:"failed"`
+	Repaired   int `json:"repaired,omitempty"`
 }
 
 // VerifyOutput is the top-level shape `qvr lock verify` emits in JSON mode.
@@ -129,22 +130,44 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 	changed := false
 	for _, entry := range lock.Entries() {
 		result := skill.VerifySingleEntry(entry)
-		out.Entries = append(out.Entries, result)
 
 		switch result.Status {
 		case skill.VerifyStatusOK:
 			out.Summary.OK++
 		case skill.VerifyStatusDrift:
-			out.Summary.Drift++
 			if lockVerifyRepair {
-				skill.RefreshVerification(entry)
-				changed = true
+				repair := skill.RepairVerificationFromDisk(entry)
+				if repair.Failed {
+					// Couldn't compute a fresh hash — leave the drift
+					// report intact so the user still sees what diverged.
+					result.Message = "repair failed: " + repair.Error
+					out.Summary.Drift++
+				} else {
+					result.Status = skill.VerifyStatusRepaired
+					result.SubtreeHash = repair.NewSubtreeHash
+					result.OldSubtreeHash = repair.OldSubtreeHash
+					result.Drift = nil
+					out.Summary.Repaired++
+					changed = true
+				}
+			} else {
+				out.Summary.Drift++
 			}
 		case skill.VerifyStatusUnverified:
-			out.Summary.Unverified++
 			if lockVerifyRepair {
-				skill.RefreshVerification(entry)
-				changed = true
+				repair := skill.RepairVerificationFromDisk(entry)
+				if repair.Failed {
+					result.Message = "repair failed: " + repair.Error
+					out.Summary.Unverified++
+				} else {
+					result.Status = skill.VerifyStatusRepaired
+					result.SubtreeHash = repair.NewSubtreeHash
+					result.OldSubtreeHash = repair.OldSubtreeHash
+					out.Summary.Repaired++
+					changed = true
+				}
+			} else {
+				out.Summary.Unverified++
 			}
 		case skill.VerifyStatusMissing:
 			out.Summary.Missing++
@@ -153,6 +176,8 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 		case skill.VerifyStatusFailed:
 			out.Summary.Failed++
 		}
+
+		out.Entries = append(out.Entries, result)
 	}
 
 	if changed {
@@ -230,6 +255,14 @@ func renderVerifyText(out *VerifyOutput) {
 			for _, d := range r.Drift {
 				printer.Warning(fmt.Sprintf("  %s: expected %s, got %s", d.Field, shortHashLabel(d.Expected), shortHashLabel(d.Actual)))
 			}
+		case skill.VerifyStatusRepaired:
+			if r.OldSubtreeHash != "" {
+				printer.Success(fmt.Sprintf("%s: repaired (subtreeHash %s → %s)",
+					r.Name, shortHashLabel(r.OldSubtreeHash), shortHashLabel(r.SubtreeHash)))
+			} else {
+				printer.Success(fmt.Sprintf("%s: repaired (subtreeHash %s)",
+					r.Name, shortHashLabel(r.SubtreeHash)))
+			}
 		case skill.VerifyStatusUnverified:
 			printer.Warning(fmt.Sprintf("%s: unverified — %s", r.Name, r.Message))
 		case skill.VerifyStatusMissing:
@@ -240,11 +273,18 @@ func renderVerifyText(out *VerifyOutput) {
 			printer.Error(fmt.Sprintf("%s: failed — %s", r.Name, r.Message))
 		}
 	}
-	printer.Info(fmt.Sprintf(
-		"Summary: %d ok, %d drift, %d unverified, %d missing, %d link, %d failed",
-		out.Summary.OK, out.Summary.Drift, out.Summary.Unverified,
-		out.Summary.Missing, out.Summary.Link, out.Summary.Failed,
-	))
+	parts := []string{
+		fmt.Sprintf("%d ok", out.Summary.OK),
+		fmt.Sprintf("%d drift", out.Summary.Drift),
+		fmt.Sprintf("%d unverified", out.Summary.Unverified),
+		fmt.Sprintf("%d missing", out.Summary.Missing),
+		fmt.Sprintf("%d link", out.Summary.Link),
+		fmt.Sprintf("%d failed", out.Summary.Failed),
+	}
+	if out.Summary.Repaired > 0 {
+		parts = append(parts, fmt.Sprintf("%d repaired", out.Summary.Repaired))
+	}
+	printer.Info("Summary: " + strings.Join(parts, ", "))
 }
 
 // shortHashLabel renders a hash for terminal output without losing the

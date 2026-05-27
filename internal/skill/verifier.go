@@ -19,15 +19,23 @@ const (
 	VerifyStatusMissing    = "missing"
 	VerifyStatusLink       = "link"
 	VerifyStatusFailed     = "failed"
+	// VerifyStatusRepaired is emitted only by the --repair pass when an
+	// entry was rewritten from disk state. Distinct from "ok" so frozen
+	// CI can still gate on "this run sealed drift" vs "this run was clean".
+	VerifyStatusRepaired = "repaired"
 )
 
 // VerifyEntryResult is one row of `qvr lock verify` output.
 type VerifyEntryResult struct {
-	Name        string            `json:"name"`
-	Status      string            `json:"status"`
-	SubtreeHash string            `json:"subtreeHash,omitempty"`
-	Drift       []VerifyDriftItem `json:"drift,omitempty"`
-	Message     string            `json:"message,omitempty"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	SubtreeHash string `json:"subtreeHash,omitempty"`
+	// OldSubtreeHash is the hash that was on disk before --repair rewrote
+	// the entry. Populated only when Status == "repaired" so JSON
+	// consumers can render a before/after diff.
+	OldSubtreeHash string            `json:"oldSubtreeHash,omitempty"`
+	Drift          []VerifyDriftItem `json:"drift,omitempty"`
+	Message        string            `json:"message,omitempty"`
 }
 
 // VerifyDriftItem names one field that diverged between recorded and

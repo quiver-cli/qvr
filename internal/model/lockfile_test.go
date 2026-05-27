@@ -281,6 +281,91 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
+// Regression for #31: a non-integer `version` field (e.g. a string) used to
+// surface as a raw Go json.UnmarshalTypeError — "json: cannot unmarshal
+// string into Go struct field LockFile.version of type int". It should
+// instead route through the friendly ErrLockVersionUnsupported template so
+// the user sees actionable recovery advice.
+func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantInError string // substring that must appear in the formatted error
+	}{
+		{
+			name:        "string version",
+			body:        `{"version":"three","skills":{}}`,
+			wantInError: `"three"`,
+		},
+		{
+			name:        "bool version",
+			body:        `{"version":true,"skills":{}}`,
+			wantInError: "true",
+		},
+		{
+			name:        "array version",
+			body:        `{"version":[3],"skills":{}}`,
+			wantInError: "[3]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, model.LockFileName)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			_, err := model.ReadLockFile(path)
+			if err == nil {
+				t.Fatal("expected error for type-mismatched version, got nil")
+			}
+			if !errors.Is(err, model.ErrLockVersionUnsupported) {
+				t.Errorf("expected ErrLockVersionUnsupported, got %v", err)
+			}
+			msg := err.Error()
+			// The raw json unmarshal error must not leak — it would tell the
+			// user about Go struct fields and types, which is meaningless to
+			// them and doesn't suggest recovery.
+			if contains(msg, "Go struct field") || contains(msg, "json:") {
+				t.Errorf("raw json error leaked into message: %q", msg)
+			}
+			if !contains(msg, tc.wantInError) {
+				t.Errorf("error %q missing expected substring %q", msg, tc.wantInError)
+			}
+		})
+	}
+}
+
+// Regression for #31: the missing-version recovery message used to suggest
+// `qvr lock upgrade`, which runs through the same parser and hits the same
+// error — circular advice. It should point to out-of-band recovery instead.
+func TestLockFile_MissingVersionMessageIsNotCircular(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, model.LockFileName)
+	if err := os.WriteFile(path, []byte(`{"skills":{}}`), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, err := model.ReadLockFile(path)
+	if err == nil {
+		t.Fatal("expected error for missing version field")
+	}
+	if contains(err.Error(), "qvr lock upgrade") {
+		t.Errorf("missing-version message still recommends `qvr lock upgrade` (circular): %q", err.Error())
+	}
+}
+
+func contains(haystack, needle string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLockFile_AcceptsSupportedVersions(t *testing.T) {
 	// v2 (current min) and v3 (current max) both load cleanly.
 	dir := t.TempDir()

@@ -33,8 +33,8 @@ const LegacyLockFileName = "qvr.lock.json"
 const MinSupportedLockFileVersion = 2
 
 var (
-	ErrLockNotFound          = errors.New("lock file not found")
-	ErrLockSkillMissing      = errors.New("skill not present in lock file")
+	ErrLockNotFound           = errors.New("lock file not found")
+	ErrLockSkillMissing       = errors.New("skill not present in lock file")
 	ErrLockVersionUnsupported = errors.New("unsupported lock file version")
 )
 
@@ -142,10 +142,23 @@ func ReadLockFile(path string) (*LockFile, error) {
 	// in the input, so we'd silently accept a missing `version` key.
 	l.Version = 0
 	if err := json.Unmarshal(data, l); err != nil {
+		// Route a wrong-typed `version` (e.g. a string) through the
+		// friendly template instead of leaking the raw Go unmarshal
+		// error. Any other JSON shape error stays generic — only the
+		// version field has a recovery story we can recommend.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && typeErr.Field == "version" {
+			rawVersion := extractRawVersion(data)
+			return nil, fmt.Errorf("%w: `version` must be an integer, got %s — restore from VCS or re-install skills against a fresh lockfile",
+				ErrLockVersionUnsupported, rawVersion)
+		}
 		return nil, fmt.Errorf("parse lock file: %w", err)
 	}
 	if l.Version == 0 {
-		return nil, fmt.Errorf("%w: lock file missing `version` field — run `qvr lock upgrade` against a known-good source",
+		// Don't suggest `qvr lock upgrade` here — it reads through this
+		// same parser and would hit the same error, leaving the user in
+		// a loop. Recovery is out-of-band: VCS history or a fresh install.
+		return nil, fmt.Errorf("%w: lock file missing `version` field — restore from VCS or re-install skills against a fresh lockfile",
 			ErrLockVersionUnsupported)
 	}
 	if l.Version < MinSupportedLockFileVersion {
@@ -258,6 +271,21 @@ func (l *LockFile) Entries() []*LockEntry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// extractRawVersion pulls the `version` field out of the raw JSON without
+// caring about its type, so the friendly error message can echo what the
+// user actually wrote (e.g. `"three"`). Falls back to `<unknown>` when the
+// field can't be re-parsed — the message still names the field by way of
+// the surrounding template, so we lose nothing useful.
+func extractRawVersion(data []byte) string {
+	var probe struct {
+		Version json.RawMessage `json:"version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil || len(probe.Version) == 0 {
+		return "<unknown>"
+	}
+	return string(probe.Version)
 }
 
 // DefaultLockPath returns the lock path based on whether --global was requested.
