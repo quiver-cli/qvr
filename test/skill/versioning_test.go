@@ -110,10 +110,14 @@ func TestInstall_MultipleRefsCoexistOnDisk(t *testing.T) {
 	}
 	mainPath := registry.WorktreePath("acme", "code-review", "main")
 
+	// Second install at a different ref requires Force after the
+	// "silently replaces the lock" footgun was closed (issue #12); this
+	// test still exercises that worktrees coexist on disk.
 	if _, err := h.installer.Install(skill.InstallRequest{
 		Skill:       "code-review@v1.0.0",
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
+		Force:       true,
 	}); err != nil {
 		t.Fatalf("install v1.0.0: %v", err)
 	}

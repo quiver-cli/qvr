@@ -19,6 +19,14 @@ var (
 	ErrSkillNotFound    = errors.New("skill not found in any registry")
 	ErrAlreadyInstalled = errors.New("skill is already installed")
 	ErrInvalidReference = errors.New("invalid skill reference")
+	// ErrSubpathMissing — the requested subdir doesn't exist in the repo at the
+	// given ref. Surfaces from InstallFromSubdir when validateStagedSkill can't
+	// stat the skill dir; the cmd layer remaps to a URL-domain message.
+	ErrSubpathMissing = errors.New("subpath not found in repo at the given ref")
+	// ErrRefNotFound — the requested ref (branch/tag/commit) doesn't exist on
+	// origin. Surfaces from SubdirClone wrapped in "clone subdir: ..."; the
+	// cmd layer detects and remaps.
+	ErrRefNotFound = errors.New("ref not found")
 )
 
 // InstallRequest describes a desired install.
@@ -28,6 +36,7 @@ type InstallRequest struct {
 	Global      bool
 	ProjectRoot string
 	LockPath    string // optional — DefaultLockPath is used when empty
+	Force       bool   // allow overwriting an existing lock entry of the same name
 }
 
 // InstallResult holds the outcome for a single skill install.
@@ -93,6 +102,23 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	}
 	if version == "" {
 		version = resolveDefaultRef(loc)
+	}
+
+	// Conflict check: silently swapping the lock entry to a different ref
+	// would contradict the "switching refs is a symlink repoint, not a
+	// re-install" contract. Refuse and point at `qvr switch`. Idempotent
+	// when the existing ref matches.
+	if !req.Force {
+		lp := req.LockPath
+		if lp == "" {
+			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+		}
+		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
+			if existing, gerr := existingLock.Get(name); gerr == nil && existing.Branch != "" && existing.Branch != version {
+				return nil, fmt.Errorf("%s already installed at %s; use `qvr switch %s %s` to change refs, or `qvr remove %s` first (pass --force to override)",
+					name, existing.Branch, name, version, name)
+			}
+		}
 	}
 
 	// Staging path → final path. Worktree creation can fail mid-way (e.g., bad
@@ -356,10 +382,22 @@ func (in *Installer) InstallFromSubdir(ctx context.Context, req SubdirInstallReq
 	} else {
 		if err := in.Git.SubdirClone(ctx, cleanURL, req.Ref, subpath, stagingPath); err != nil {
 			_ = os.RemoveAll(stagingPath)
+			// Raw go-git/`git checkout --detach` errors leak implementation
+			// detail. Recognise the common "bad ref" shape and remap to a
+			// user-friendly sentinel; everything else falls through.
+			if isRefNotFound(err) {
+				return nil, fmt.Errorf("%w: %s", ErrRefNotFound, req.Ref)
+			}
 			return nil, fmt.Errorf("clone subdir: %w", err)
 		}
 		if err := validateStagedSkill(stagingPath, subpath); err != nil {
 			_ = os.RemoveAll(stagingPath)
+			// "load staged skill: stat skill dir: stat .../staging/...: no
+			// such file or directory" reads like an internal bug. The real
+			// cause is "the subpath isn't in the repo at this ref" — remap.
+			if isSubpathMissing(err) {
+				return nil, fmt.Errorf("%w: %s", ErrSubpathMissing, subpath)
+			}
 			return nil, err
 		}
 		if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
@@ -490,6 +528,32 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		name = loaded.Name
 	}
 
+	// Conflict check: refuse to silently replace an existing entry of the
+	// same name with a different on-disk target. Idempotent when the path
+	// matches; --force needed to switch paths.
+	lockPath := req.LockPath
+	if lockPath == "" {
+		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("read lock file: %w", err)
+	}
+	if existing, err := lock.Get(name); err == nil && !req.Force {
+		existingPath := existing.LinkTarget
+		if existingPath == "" {
+			existingPath = existing.Path
+		}
+		if existing.Source != "link" || existingPath != abs {
+			sourceLabel := existing.Source
+			if sourceLabel == "" {
+				sourceLabel = "registry"
+			}
+			return nil, fmt.Errorf("skill %q already installed from %s (%s); pass --force to relink",
+				name, sourceLabel, existingPath)
+		}
+	}
+
 	var created []string
 	for _, t := range req.Targets {
 		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, req.Global)
@@ -502,15 +566,6 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 			return nil, fmt.Errorf("symlink %s: %w", t, err)
 		}
 		created = append(created, linkPath)
-	}
-
-	lockPath := req.LockPath
-	if lockPath == "" {
-		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-	}
-	lock, err := model.ReadLockFile(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("read lock file: %w", err)
 	}
 	lock.Put(&model.LockEntry{
 		Name:        name,
@@ -579,6 +634,44 @@ func rollbackLinks(paths []string) {
 	for _, p := range paths {
 		_ = RemoveSymlink(p)
 	}
+}
+
+// isRefNotFound recognises the error shapes go-git / shell-git produce when
+// the requested branch/tag/commit doesn't exist on origin. We pattern-match
+// on substrings because the underlying types vary by code path (go-git's
+// transport.ErrEmptyRemoteRepository, plumbing.ErrReferenceNotFound, or
+// shelled-out `git`'s stderr like "fatal: git checkout: --detach does not
+// take a path argument 'X'"). Stable enough across versions for a CLI hint.
+func isRefNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"reference not found",
+		"couldn't find remote ref",
+		"--detach does not take a path argument",
+		"did not match any file(s) known to git",
+		"unknown revision",
+		"pathspec",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSubpathMissing recognises the error shape LoadFromPath emits when the
+// requested skill directory doesn't exist inside a sparse clone. The exact
+// wrapping is "load staged skill: stat skill dir: stat <path>: no such file
+// or directory".
+func isSubpathMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "stat skill dir") && strings.Contains(msg, "no such file or directory")
 }
 
 func mergeTargets(existing, add []string) []string {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
@@ -31,21 +32,29 @@ type doctorCheck struct {
 	Message string `json:"message,omitempty"`
 }
 
-var doctorGlobal bool
+var (
+	doctorGlobal bool
+	doctorStrict bool
+)
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Diagnose broken installs, missing worktrees, and stale symlinks",
 	Long: `Walk the lock file and verify that every recorded worktree, registry,
 and target symlink resolves cleanly. Also surfaces symlinks under agent
-directories that have no matching lock entry. Exits non-zero on any failure
-so it slots into CI.`,
+directories that have no matching lock entry, plus orphan artifacts left
+behind under ~/.quiver/ (worktrees, bare clones, staging dirs, caches).
+
+Exits non-zero on any check failure. Orphan artifacts are informational by
+default — pass --strict to fail the exit code on those too.`,
 	RunE: runDoctor,
 }
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorGlobal, "global", false,
 		"diagnose the user-global lock file instead of the project lock")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false,
+		"exit non-zero when orphan artifacts are detected (informational by default)")
 	rootCmd.AddCommand(doctorCmd)
 }
 
@@ -72,6 +81,19 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Orphan-artifact scan: walk ~/.quiver/{worktrees,registries,subdir,
+	// standalone,cache/index} and surface entries with no claim from any lock
+	// file or config entry. Informational by default; --strict promotes
+	// each one to a failure.
+	orphans := scanOrphans(cfg, lock, doctorGlobal, projectRoot)
+	if doctorStrict {
+		for i := range orphans {
+			orphans[i].OK = false
+		}
+		failed += len(orphans)
+	}
+	checks = append(checks, orphans...)
+
 	// When the project lock is empty but the user has skills installed in
 	// the global lock, "0/0 checks passed" reads like success and hides the
 	// fact that nothing was actually inspected. Surface a clear hint so CI
@@ -96,17 +118,39 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		if jsonErr := printer.JSON(out); jsonErr != nil {
 			return jsonErr
 		}
+		// The payload already encodes failure via "failed": N. Skip the
+		// duplicate {"error": "..."} envelope so stdout stays a single doc.
+		if failed > 0 {
+			return errJSONHandled
+		}
+		return nil
 	} else {
 		for _, c := range checks {
 			renderDoctorCheck(c)
 		}
+		orphanCount, lockFailed := 0, 0
+		for _, c := range checks {
+			if strings.HasPrefix(c.Type, "orphan-") {
+				orphanCount++
+				continue
+			}
+			if !c.OK {
+				lockFailed++
+			}
+		}
+		lockChecks := len(checks) - orphanCount
 		switch {
 		case len(checks) == 0 && globalHint != "":
 			fmt.Fprintf(printer.Out, "\n%s\n", globalHint)
 		case len(checks) == 0:
 			fmt.Fprintf(printer.Out, "\nno installed skills to check\n")
 		default:
-			fmt.Fprintf(printer.Out, "\n%d/%d checks passed\n", len(checks)-failed, len(checks))
+			fmt.Fprintf(printer.Out, "\n%d/%d lock-tracked checks passed",
+				lockChecks-lockFailed, lockChecks)
+			if orphanCount > 0 {
+				fmt.Fprintf(printer.Out, ", %d orphan artifact(s) found", orphanCount)
+			}
+			fmt.Fprintln(printer.Out)
 			if globalHint != "" {
 				fmt.Fprintf(printer.Out, "%s\n", globalHint)
 			}
@@ -222,6 +266,139 @@ func checkSymlink(e *model.LockEntry, target, projectRoot string) (doctorCheck, 
 	return c, linkPath
 }
 
+// scanOrphans walks the on-disk quiver home and surfaces artifacts that no
+// longer correspond to a config entry or a lock entry. We consult both the
+// invoking lock (project or global, depending on --global) AND the opposite
+// lock so a global install isn't reported as orphaning every project worktree
+// or vice versa. Returns informational checks (OK: true); callers can flip
+// them to failures under --strict.
+func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bool, projectRoot string) []doctorCheck {
+	otherLockPath := model.DefaultLockPath(projectRoot, config.Dir(), !primaryIsGlobal)
+	otherLock, _ := model.ReadLockFile(otherLockPath)
+
+	// Index every claim by category so a single pass over each dir is enough.
+	claimedWorktrees := map[string]struct{}{}
+	claimedRegistries := map[string]struct{}{}
+	claimedSubdir := map[string]struct{}{} // by repo slug (basename without .git)
+	for _, lock := range []*model.LockFile{primary, otherLock} {
+		if lock == nil {
+			continue
+		}
+		for _, e := range lock.Entries() {
+			if e.Worktree != "" {
+				claimedWorktrees[e.Worktree] = struct{}{}
+			}
+			if e.Registry != "" {
+				claimedRegistries[e.Registry] = struct{}{}
+			}
+			if e.Source == "subdir" && e.Registry != "" {
+				// Subdir installs reuse the registry slug as their bare-clone dir name.
+				claimedSubdir[e.Registry] = struct{}{}
+			}
+		}
+	}
+	for name := range cfg.Registries {
+		claimedRegistries[name] = struct{}{}
+	}
+
+	var checks []doctorCheck
+
+	// Worktrees orphan: dir present under worktrees/ but no lock entry points at it.
+	checks = append(checks, scanOrphanDir(
+		registry.WorktreesRoot(), "orphan-worktree",
+		"not referenced by any lock file",
+		func(path string) bool {
+			_, claimed := claimedWorktrees[path]
+			return !claimed
+		},
+	)...)
+
+	// Registry bare clones orphan: dir name (minus .git) not in config and not in any subdir lock entry.
+	checks = append(checks, scanOrphanDir(
+		filepath.Join(config.Dir(), "registries"), "orphan-registry",
+		"no matching config entry",
+		func(path string) bool {
+			name := strings.TrimSuffix(filepath.Base(path), ".git")
+			_, claimed := claimedRegistries[name]
+			return !claimed
+		},
+	)...)
+
+	// Subdir clones orphan: bare clone whose slug isn't claimed by any subdir lock entry.
+	checks = append(checks, scanOrphanDir(
+		registry.SubdirRoot(), "orphan-subdir",
+		"leftover from `qvr add` (no matching lock entry)",
+		func(path string) bool {
+			base := filepath.Base(path)
+			// Staging dirs are always orphans — they only exist while an
+			// install is in flight, and a leftover here means a crashed run.
+			if strings.HasSuffix(base, ".staging") {
+				return true
+			}
+			slug := strings.TrimSuffix(base, ".git")
+			_, claimed := claimedSubdir[slug]
+			return !claimed
+		},
+	)...)
+
+	// Standalone clones orphan: every dir under standalone/ — the install
+	// path doesn't write a lock entry today, so anything there is orphan
+	// disk state by design (see issue #4).
+	checks = append(checks, scanOrphanDir(
+		filepath.Join(config.Dir(), "standalone"), "orphan-standalone",
+		"standalone clone with no install record",
+		func(string) bool { return true },
+	)...)
+
+	// Index cache orphan: cache/index/<name>.json where <name> isn't a configured registry.
+	cacheDir := filepath.Join(config.Dir(), "cache", "index")
+	if entries, err := os.ReadDir(cacheDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".json")
+			if _, ok := cfg.Registries[name]; ok {
+				continue
+			}
+			checks = append(checks, doctorCheck{
+				Type:    "orphan-cache",
+				Skill:   name,
+				Path:    filepath.Join(cacheDir, e.Name()),
+				OK:      true,
+				Message: "cached index for removed registry",
+			})
+		}
+	}
+
+	return checks
+}
+
+// scanOrphanDir lists the immediate children of root and emits an
+// informational check for each one isOrphan reports as orphan. Returns
+// nothing when root doesn't exist — first-run state, not an error.
+func scanOrphanDir(root, checkType, message string, isOrphan func(absPath string) bool) []doctorCheck {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []doctorCheck
+	for _, e := range entries {
+		full := filepath.Join(root, e.Name())
+		if !isOrphan(full) {
+			continue
+		}
+		out = append(out, doctorCheck{
+			Type:    checkType,
+			Skill:   e.Name(),
+			Path:    full,
+			OK:      true,
+			Message: message,
+		})
+	}
+	return out
+}
+
 // scanExtraSymlinks looks under each known agent target dir for symlinks that
 // don't appear in the lock file. These are usually leftovers from a manual
 // `rm` of a lock entry or a previous tool — not catastrophic, but noisy.
@@ -262,6 +439,11 @@ func renderDoctorCheck(c doctorCheck) {
 	marker := "✗"
 	if c.OK {
 		marker = "✓"
+		// Orphan rows are informational, not "passing" — they need a
+		// distinct glyph or users skim past them assuming everything's fine.
+		if strings.HasPrefix(c.Type, "orphan-") {
+			marker = "!"
+		}
 	}
 	label := c.Type
 	if c.Skill != "" {

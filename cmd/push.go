@@ -68,6 +68,13 @@ func runPush(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		if errors.Is(err, skill.ErrPushNoChanges) {
+			if printer.Format == output.FormatJSON {
+				return printer.JSON(map[string]string{
+					"name":    entry.Name,
+					"status":  "no-op",
+					"message": "no local changes",
+				})
+			}
 			printer.Info(fmt.Sprintf("%s: no local changes", entry.Name))
 			return nil
 		}
@@ -79,7 +86,11 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("write lock: %w", err)
 	}
 	if printer.Format == output.FormatJSON {
-		return printer.JSON(map[string]string{"name": entry.Name, "commit": hash})
+		return printer.JSON(map[string]string{
+			"name":   entry.Name,
+			"status": "pushed",
+			"commit": hash,
+		})
 	}
 	printer.Success(fmt.Sprintf("%s: pushed %s", entry.Name, shortHash(hash)))
 	return nil

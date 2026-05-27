@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/git"
@@ -171,6 +172,15 @@ func runAddSubdir(cmd *cobra.Command, url string, parsed *git.SubdirURL, parseEr
 		ProjectRoot: projectRoot,
 	})
 	if err != nil {
+		// Surface URL-domain language for the two most common user errors
+		// (bad ref, bad subdir). Everything else falls through with the raw
+		// wrapped error so we don't accidentally hide unrelated failures.
+		switch {
+		case errors.Is(err, skill.ErrRefNotFound):
+			return fmt.Errorf("add %s: ref %q not found in %s", url, ref, repoURL)
+		case errors.Is(err, skill.ErrSubpathMissing):
+			return fmt.Errorf("add %s: subdir %q not found in repo at ref %q", url, subpath, ref)
+		}
 		return fmt.Errorf("add %s: %w", url, err)
 	}
 	if !addGlobal {
@@ -188,6 +198,17 @@ func runAddStandalone(cmd *cobra.Command, url string) error {
 	repo, err := mgr.AddStandalone(cmd.Context(), url)
 	if err != nil {
 		return fmt.Errorf("add standalone repo: %w", err)
+	}
+	// A standalone repo must have SKILL.md at the root. When it doesn't,
+	// this is almost always a multi-skill repo URL passed to the wrong
+	// command — keeping the clone around would leak orphan disk state and
+	// the green ✓ would mislead the user into thinking the install worked.
+	if _, statErr := os.Stat(filepath.Join(repo.Path, "SKILL.md")); statErr != nil {
+		_ = os.RemoveAll(repo.Path)
+		return fmt.Errorf("no SKILL.md at the repo root — this looks like a multi-skill repo\n"+
+			"  install one skill with:   qvr add <url>/blob/<ref>/<subdir>\n"+
+			"  or pass --subdir <path> with --ref <branch> to the opaque clone URL\n"+
+			"  url: %s", url)
 	}
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(repo)

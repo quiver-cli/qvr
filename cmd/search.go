@@ -80,6 +80,11 @@ func runLocalSearch(cmd *cobra.Command, filter registry.SearchFilter) error {
 	}
 
 	if printer.Format == output.FormatJSON {
+		// Coerce nil to [] so consumers can always `jq 'length'` without
+		// special-casing the empty-result branch.
+		if results == nil {
+			results = []registry.SearchResult{}
+		}
 		return printer.JSON(results)
 	}
 

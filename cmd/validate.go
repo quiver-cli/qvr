@@ -35,12 +35,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	resolved, discovered, err := resolveSkillDir(dir)
 	if err != nil {
 		if printer.Format == output.FormatJSON {
-			return printer.JSON(map[string]any{
+			_ = printer.JSON(map[string]any{
 				"valid":      false,
 				"path":       dir,
 				"discovered": discovered,
 				"errors":     []map[string]string{{"message": err.Error()}},
 			})
+			return errJSONHandled
 		}
 		if len(discovered) > 1 {
 			printer.Error(err.Error())
@@ -59,11 +60,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	s, err := skill.LoadFromPath(resolved)
 	if err != nil {
 		if printer.Format == output.FormatJSON {
-			return printer.JSON(map[string]any{
+			_ = printer.JSON(map[string]any{
 				"valid":  false,
 				"path":   resolved,
 				"errors": []map[string]string{{"message": err.Error()}},
 			})
+			return errJSONHandled
 		}
 		return fmt.Errorf("load skill: %w", err)
 	}
@@ -71,7 +73,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	result := skill.Validate(s)
 
 	if printer.Format == output.FormatJSON {
-		return printer.JSON(result)
+		if err := printer.JSON(result); err != nil {
+			return err
+		}
+		if !result.Valid {
+			return errJSONHandled
+		}
+		return nil
 	}
 
 	if result.Valid {

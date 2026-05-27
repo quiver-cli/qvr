@@ -20,6 +20,7 @@ import (
 var (
 	linkTargets []string
 	linkGlobal  bool
+	linkForce   bool
 )
 
 var linkCmd = &cobra.Command{
@@ -33,6 +34,7 @@ var linkCmd = &cobra.Command{
 func init() {
 	linkCmd.Flags().StringSliceVar(&linkTargets, "target", nil, "agent target(s) (repeatable)")
 	linkCmd.Flags().BoolVar(&linkGlobal, "global", false, "symlink into the user-global agent dir")
+	linkCmd.Flags().BoolVar(&linkForce, "force", false, "overwrite an existing lock entry of the same name")
 	rootCmd.AddCommand(linkCmd)
 }
 
@@ -75,6 +77,7 @@ func runLink(cmd *cobra.Command, args []string) error {
 		Targets:     targets,
 		Global:      linkGlobal,
 		ProjectRoot: projectRoot,
+		Force:       linkForce,
 	})
 	if err != nil {
 		return fmt.Errorf("link: %w", err)

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/git"
+	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/registry"
 	"github.com/raks097/quiver/internal/skill"
@@ -33,6 +35,24 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
+
+	// Atomic precondition check: refuse to remove anything if any arg is
+	// missing from the lock. Mirrors `git rm` — partial execution on a
+	// mid-batch error is a footgun for destructive verbs.
+	lock, err := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), removeGlobal))
+	if err != nil {
+		return fmt.Errorf("read lock: %w", err)
+	}
+	var missing []string
+	for _, name := range args {
+		if _, err := lock.Get(name); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("skill(s) not present in lock file: %v (no changes made)", missing)
+	}
+
 	gc := git.NewGoGitClient()
 	wt := git.NewGoGitWorktree()
 	installer := skill.NewInstaller(registry.NewManager(gc), wt, gc)

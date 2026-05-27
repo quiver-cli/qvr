@@ -1,6 +1,6 @@
 # Agent Integration Guide
 
-> **Status: v0.4.4.** Target paths, `--target <agent>`, and `--global`
+> **Status: v0.4.5.** Target paths, `--target <agent>`, and `--global`
 > all ship today. `AGENTS.md` auto-refreshes on install/remove/switch
 > when present. Per-agent hook adapters (`qvr ops install-hooks`) are
 > in flight.

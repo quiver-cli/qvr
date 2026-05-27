@@ -2,11 +2,60 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/spf13/cobra"
 )
+
+// configValueValidators apply at `qvr config set` time so typos and bad
+// values surface immediately, not later at install/scan time. Each returns
+// the canonical/normalised value (or the input unchanged), and an error if
+// the value is invalid for the key. Keys without a validator are accepted
+// as-is.
+var configValueValidators = map[string]func(string) (string, error){
+	"default_target": func(v string) (string, error) {
+		parts := strings.Split(v, ",")
+		for i, p := range parts {
+			parts[i] = strings.TrimSpace(p)
+			if _, ok := model.Targets[parts[i]]; !ok {
+				return "", fmt.Errorf("invalid agent target %q; valid: %s",
+					parts[i], strings.Join(model.TargetNames(), ", "))
+			}
+		}
+		return strings.Join(parts, ","), nil
+	},
+	"security.scan_on_install": validateBool,
+	"security.block_severity": validateEnum([]string{
+		"critical", "high", "medium", "low", "none",
+	}),
+	"output.format": validateEnum([]string{"text", "json"}),
+	"output.color":  validateEnum([]string{"auto", "always", "never"}),
+}
+
+func validateBool(v string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "false":
+		return strings.ToLower(strings.TrimSpace(v)), nil
+	}
+	return "", fmt.Errorf("must be true or false, got %q", v)
+}
+
+func validateEnum(valid []string) func(string) (string, error) {
+	return func(v string) (string, error) {
+		got := strings.ToLower(strings.TrimSpace(v))
+		for _, ok := range valid {
+			if got == ok {
+				return got, nil
+			}
+		}
+		sort.Strings(valid)
+		return "", fmt.Errorf("invalid value %q; valid: %s", v, strings.Join(valid, ", "))
+	}
+}
 
 var configCmd = &cobra.Command{
 	Use:   "config",
@@ -131,6 +180,13 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	}
 
 	key, value := args[0], args[1]
+	if validate, ok := configValueValidators[key]; ok {
+		normalised, verr := validate(value)
+		if verr != nil {
+			return fmt.Errorf("invalid %s: %w", key, verr)
+		}
+		value = normalised
+	}
 	if err := configWrite(cfg, key, value); err != nil {
 		return err
 	}

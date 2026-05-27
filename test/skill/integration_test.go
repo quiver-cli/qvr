@@ -82,11 +82,13 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("push did not reach upstream")
 	}
 
-	// 5. Switch to v2
+	// 5. Switch to v2 via Force install (the normal user path would be
+	// `qvr switch`; here we exercise that Install accepts an explicit override).
 	result, err := h.installer.Install(skill.InstallRequest{
 		Skill:       "code-review@v2",
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
+		Force:       true,
 	})
 	if err != nil {
 		t.Fatalf("install @v2: %v", err)

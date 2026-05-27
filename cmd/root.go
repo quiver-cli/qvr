@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -12,8 +13,15 @@ import (
 var (
 	outputFormat string
 	printer      *output.Printer
-	version      = "0.4.4"
+	version      = "0.4.5"
 )
+
+// errJSONHandled signals to Execute() that the command has already emitted a
+// structured JSON payload encoding its failure, and the top-level envelope
+// should be suppressed. Exit code is still 1 — only the second JSON document
+// (the "{\"error\": \"...\"}" envelope) is skipped. Use this in JSON paths
+// where the body already carries "valid": false / "failed": N / etc.
+var errJSONHandled = errors.New("json payload already emitted")
 
 var rootCmd = &cobra.Command{
 	Use:   "qvr",
@@ -38,6 +46,12 @@ func Execute() {
 	err := rootCmd.Execute()
 	if err == nil {
 		return
+	}
+	// errJSONHandled means the command already emitted a structured JSON payload
+	// that encodes the failure (e.g. {"valid": false} or {"failed": 1}). Suppress
+	// the duplicate top-level envelope so the stream stays a single JSON doc.
+	if errors.Is(err, errJSONHandled) {
+		os.Exit(1)
 	}
 	if outputFormat == "json" {
 		enc := json.NewEncoder(os.Stderr)

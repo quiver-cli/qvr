@@ -56,8 +56,19 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if branch == "" {
 		branch = defaultEditBranch(name)
 	}
+	// Idempotent no-op: matches the behavior of `switch`/`upgrade`/`install`
+	// so wrapper scripts can call `qvr edit <skill>` defensively without
+	// guarding with `qvr info` first.
 	if branch == entry.Branch {
-		return fmt.Errorf("already on branch %q", branch)
+		if printer.Format == output.FormatJSON {
+			return printer.JSON(map[string]any{
+				"skill":   entry,
+				"status":  "already-editing",
+				"message": fmt.Sprintf("already editing on %s", branch),
+			})
+		}
+		printer.Info(fmt.Sprintf("%s: already editing on %s", entry.Name, branch))
+		return nil
 	}
 
 	syncer := skill.NewSyncer(git.NewGoGitWorktree(), git.NewGoGitClient())

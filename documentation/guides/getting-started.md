@@ -1,6 +1,6 @@
 # Getting Started
 
-> **Status: v0.4.4.** Shipping today: `qvr init`, `validate`, `config`,
+> **Status: v0.4.5.** Shipping today: `qvr init`, `validate`, `config`,
 > `registry`, `search`, `version`, `add`, `install`, `remove`, `pull`,
 > `push`, `publish`, `edit`, `upgrade`, `switch`, `link`, `read`,
 > `list`, `ls`, `info`, `diff`, `status`, `outdated`, `disable`,

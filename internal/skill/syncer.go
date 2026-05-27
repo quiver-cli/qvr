@@ -208,6 +208,15 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	if err := s.Git.FetchWorktree(ctx, entry.Worktree); err != nil {
 		return "", fmt.Errorf("fetch: %w", err)
 	}
+	// go-git's storer caches pack-file indexes at PlainOpen time, so a repo
+	// handle opened before `git fetch` doesn't see objects in packs the fetch
+	// just wrote. Re-open after fetch so ref resolution + commit walks find
+	// the freshly-arrived remote tip. Manifests as "ancestor check: object
+	// not found" in batch `qvr pull` runs only (issue #8).
+	repo, err = gogit.PlainOpen(entry.Worktree)
+	if err != nil {
+		return "", fmt.Errorf("reopen worktree after fetch: %w", err)
+	}
 
 	localRef, err := repo.Reference(plumbing.NewBranchReferenceName(branch), true)
 	if err != nil {

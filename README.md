@@ -8,7 +8,7 @@
   the git-native agent skills manager · CLI: qvr
 ```
 
-> **Status: pre-alpha (v0.4.4).** What ships today: scaffold, validate,
+> **Status: pre-alpha (v0.4.5).** What ships today: scaffold, validate,
 > config, registry (TTL-cached index + `update --check` dry-run), search,
 > version, add, install, pull/push, publish, edit → push → release flow,
 > upgrade/switch, AGENTS.md auto-sync, disable/enable, doctor, info, ls,

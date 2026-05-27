@@ -37,6 +37,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	switch initType {
+	case "simple", "medium", "complex":
+	default:
+		return fmt.Errorf("unknown type %q (use simple, medium, or complex)", initType)
+	}
+
 	dir, err := filepath.Abs(name)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
@@ -63,10 +69,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := scaffoldComplex(dir, name); err != nil {
 			return err
 		}
-	case "simple":
-		// Nothing extra
-	default:
-		return fmt.Errorf("unknown type %q (use simple, medium, or complex)", initType)
 	}
 
 	if printer.Format == output.FormatJSON {

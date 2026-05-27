@@ -15,6 +15,7 @@ import (
 var (
 	installTargets []string
 	installGlobal  bool
+	installForce   bool
 )
 
 var installCmd = &cobra.Command{
@@ -30,6 +31,8 @@ func init() {
 		"agent target(s) to install into (repeatable). Defaults to default_target (which may itself be comma-separated, e.g. \"claude,cursor\").")
 	installCmd.Flags().BoolVar(&installGlobal, "global", false,
 		"install into the user-global agent directory")
+	installCmd.Flags().BoolVar(&installForce, "force", false,
+		"allow replacing an existing lock entry at a different ref (otherwise refused)")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -85,6 +88,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 			Targets:     targets,
 			Global:      installGlobal,
 			ProjectRoot: projectRoot,
+			Force:       installForce,
 		})
 		if err != nil {
 			// Emit any successful installs before propagating the failure so
