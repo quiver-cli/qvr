@@ -428,7 +428,7 @@ func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}) []doc
 				Skill:   entry.Name(),
 				Target:  tname,
 				Path:    full,
-				Message: "symlink not tracked by qvr.lock.json",
+				Message: "symlink not tracked by " + model.LockFileName,
 			})
 		}
 	}

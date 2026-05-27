@@ -21,9 +21,21 @@ const LockFileVersion = 3
 // LockFileName is the default lock file name.
 const LockFileName = "qvr.lock"
 
+// LegacyLockFileName is the pre-v0.4.6 lockfile name. ReadLockFile falls back
+// to this when the canonical LockFileName is absent, and Write() removes it
+// after migrating contents to the new path. The fallback is one-way: writes
+// always go to LockFileName so projects converge on the canonical layout.
+const LegacyLockFileName = "qvr.lock.json"
+
+// MinSupportedLockFileVersion is the oldest schema this binary will read.
+// Anything older is rejected at ReadLockFile time so a corrupted or
+// hand-edited file doesn't load as an empty lockfile.
+const MinSupportedLockFileVersion = 2
+
 var (
-	ErrLockNotFound     = errors.New("lock file not found")
-	ErrLockSkillMissing = errors.New("skill not present in lock file")
+	ErrLockNotFound          = errors.New("lock file not found")
+	ErrLockSkillMissing      = errors.New("skill not present in lock file")
+	ErrLockVersionUnsupported = errors.New("unsupported lock file version")
 )
 
 // LockEntry records a single installed skill's filesystem and git state.
@@ -66,7 +78,11 @@ type LockEntry struct {
 type LockFile struct {
 	Version int                   `json:"version"`
 	Skills  map[string]*LockEntry `json:"skills"`
-	path    string                // not serialized
+	path    string                // canonical write destination — not serialized
+	// legacyPath, if non-empty, is the qvr.lock.json the contents were read
+	// from. Write() removes it after a successful write so the project ends
+	// up with a single canonical qvr.lock instead of two side-by-side files.
+	legacyPath string
 }
 
 // NewLockFile returns an empty lock file at the given path.
@@ -85,28 +101,65 @@ func (l *LockFile) Path() string { return l.path }
 func (l *LockFile) SetPath(p string) { l.path = p }
 
 // ReadLockFile loads the lock file at path. Returns an empty lock file when
-// the path does not exist — this is the expected state before the first install.
+// the path does not exist — this is the expected state before the first
+// install.
+//
+// Falls back to <dir>/qvr.lock.json (the pre-v0.4.6 filename) when path does
+// not exist, so projects upgrading across the rename don't appear empty. The
+// returned LockFile remembers the legacy path; the next Write() lands at
+// path and removes the legacy file so the project converges on one filename.
+//
+// Rejects on-disk files whose `version` field is missing/zero, below
+// MinSupportedLockFileVersion, or above LockFileVersion (a future binary
+// wrote it). The error wraps ErrLockVersionUnsupported so callers can
+// distinguish "broken file" from "missing file".
 func ReadLockFile(path string) (*LockFile, error) {
 	l := NewLockFile(path)
 	data, err := os.ReadFile(path)
+	legacyPath := ""
 	if err != nil {
-		if os.IsNotExist(err) {
-			return l, nil
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read lock file: %w", err)
 		}
-		return nil, fmt.Errorf("read lock file: %w", err)
+		// Canonical filename absent — try the legacy filename next to it.
+		// Only used for projects mid-upgrade from <v0.4.6.
+		legacyCandidate := filepath.Join(filepath.Dir(path), LegacyLockFileName)
+		if legacyCandidate != path {
+			legacyData, legacyErr := os.ReadFile(legacyCandidate)
+			if legacyErr == nil {
+				data = legacyData
+				legacyPath = legacyCandidate
+			} else if !os.IsNotExist(legacyErr) {
+				return nil, fmt.Errorf("read legacy lock file: %w", legacyErr)
+			}
+		}
 	}
 	if len(data) == 0 {
 		return l, nil
 	}
+	// Zero out Version before Unmarshal — NewLockFile seeds it to
+	// LockFileVersion, but json.Unmarshal won't reset fields that aren't
+	// in the input, so we'd silently accept a missing `version` key.
+	l.Version = 0
 	if err := json.Unmarshal(data, l); err != nil {
 		return nil, fmt.Errorf("parse lock file: %w", err)
 	}
+	if l.Version == 0 {
+		return nil, fmt.Errorf("%w: lock file missing `version` field — run `qvr lock upgrade` against a known-good source",
+			ErrLockVersionUnsupported)
+	}
+	if l.Version < MinSupportedLockFileVersion {
+		return nil, fmt.Errorf("%w: version %d is older than the minimum supported (%d) — this binary cannot read it",
+			ErrLockVersionUnsupported, l.Version, MinSupportedLockFileVersion)
+	}
+	if l.Version > LockFileVersion {
+		return nil, fmt.Errorf("%w: version %d was written by a newer qvr (this binary writes v%d) — upgrade qvr",
+			ErrLockVersionUnsupported, l.Version, LockFileVersion)
+	}
 	l.path = path
+	l.legacyPath = legacyPath
 	if l.Skills == nil {
 		l.Skills = make(map[string]*LockEntry)
-	}
-	if l.Version == 0 {
-		l.Version = LockFileVersion
 	}
 	return l, nil
 }
@@ -150,6 +203,13 @@ func (l *LockFile) Write() error {
 	if err := os.Rename(tmpPath, l.path); err != nil {
 		cleanup()
 		return fmt.Errorf("rename temp lock: %w", err)
+	}
+	// Best-effort cleanup of the legacy filename after a successful write.
+	// Failure here is non-fatal — the canonical file is already on disk, and
+	// `qvr doctor` will surface a leftover qvr.lock.json on its next run.
+	if l.legacyPath != "" && l.legacyPath != l.path {
+		_ = os.Remove(l.legacyPath)
+		l.legacyPath = ""
 	}
 	return nil
 }

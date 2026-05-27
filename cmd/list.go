@@ -17,7 +17,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List installed skills",
 	Long: `List skills recorded in the lock file. Reads the project lock file by
-default; pass --global to read the user-global lock at $QUIVER_HOME/qvr.lock.json
+default; pass --global to read the user-global lock at $QUIVER_HOME/` + model.LockFileName + `
 (mirrors the same flag on ` + "`qvr install`" + `).`,
 	RunE: runList,
 }

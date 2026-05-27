@@ -96,8 +96,8 @@ func runHook(cmd *cobra.Command, args []string) error {
 }
 
 // buildResolver assembles the lockfile-backed Resolver. It always reads
-// the global lockfile at $QUIVER_HOME/qvr.lock.json; if the process's
-// cwd also has a lockfile, it's appended so local entries shadow global.
+// the global lockfile at $QUIVER_HOME/qvr.lock; if the process's cwd also
+// has a lockfile, it's appended so local entries shadow global.
 func buildResolver(cfg *config.Config) (ops.Resolver, error) {
 	_ = cfg // reserved for future per-config overrides
 	global := filepath.Join(config.Dir(), model.LockFileName)
