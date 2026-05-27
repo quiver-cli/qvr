@@ -290,6 +290,14 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read lock: %w", err)
 	}
+	// Config feeds the v2→v3 provenance backfill — the v2 entry knows its
+	// registry name, but the canonical clone URL only lives in config. When
+	// loading fails (orphan-config edge), we still upgrade with whatever we
+	// can derive from the entry fields alone.
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		cfg = &config.Config{}
+	}
 
 	// LockVersion reports the version of the file *on disk*, not the
 	// migration target — matches `qvr lock verify`, and lets tooling
@@ -307,8 +315,26 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 			row.Status = "skipped"
 			row.Message = "link install — no provenance to record"
 		case entry.Verification != nil && entry.Verification.SubtreeHash != "":
-			row.Status = "unchanged"
+			// Entry already has a subtree hash. Still backfill provenance
+			// when it's empty and we can derive it — covers users who ran
+			// the previous (broken) `qvr lock upgrade` on a v2 file and
+			// ended up with an entry that has SubtreeHash but blank
+			// RegistryURL / Ref / Subpath.
+			derived := provenanceFromLegacyEntry(entry, cfg)
+			if mergeMissingProvenance(&entry.Verification.Provenance, derived) {
+				if lockUpgradeDryRun {
+					row.Status = "upgraded"
+					row.Message = "would backfill provenance"
+				} else {
+					row.Status = "upgraded"
+					row.Message = "backfilled provenance"
+					changed = true
+				}
+			} else {
+				row.Status = "unchanged"
+			}
 		default:
+			derived := provenanceFromLegacyEntry(entry, cfg)
 			if lockUpgradeDryRun {
 				// "would-upgrade" is the dry-run sentinel — distinct from
 				// "upgraded" so CI gates like `.entries[] | select(.status == "upgraded")`
@@ -316,7 +342,7 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 				row.Status = "would-upgrade"
 				row.Message = "would compute subtree hash"
 			} else {
-				skill.RefreshVerification(entry)
+				entry.Verification = skill.PopulateVerification(entry, derived)
 				if entry.Verification != nil && entry.Verification.SubtreeHash != "" {
 					row.Status = "upgraded"
 					changed = true
@@ -359,4 +385,64 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// provenanceFromLegacyEntry reconstructs a ProvenanceRef from a v2-era
+// LockEntry's fields. The v2 entry already carries everything an installer
+// would have recorded — Registry name, Branch (=ref), Path (=subpath) — and
+// the canonical clone URL is either pinned on the entry (`Source == "subdir"`,
+// from `qvr add`) or looked up in the registry config by name.
+//
+// Returns an empty ProvenanceRef when the entry has no recoverable fields,
+// so PopulateVerification still records the SubtreeHash (we never block an
+// upgrade on missing provenance — the hash is the load-bearing identity).
+func provenanceFromLegacyEntry(entry *model.LockEntry, cfg *config.Config) model.ProvenanceRef {
+	if entry == nil {
+		return model.ProvenanceRef{}
+	}
+	prov := model.ProvenanceRef{
+		RegistryName: entry.Registry,
+		Ref:          entry.Branch,
+		Subpath:      entry.Path,
+	}
+	switch {
+	case entry.RepoURL != "":
+		// Subdir installs (`qvr add <url>`) pin the URL on the entry — it's
+		// not in config.Registries by design.
+		prov.RegistryURL = entry.RepoURL
+	case cfg != nil && entry.Registry != "":
+		if rc, ok := cfg.Registries[entry.Registry]; ok {
+			prov.RegistryURL = rc.URL
+		}
+	}
+	return prov
+}
+
+// mergeMissingProvenance fills empty fields on dst from src and reports
+// whether anything actually changed. Non-empty fields on dst are preserved
+// (a partial v3 install where one field happened to be empty isn't a free
+// pass to overwrite intentional values). Returns false when src would add
+// nothing new — the caller treats that as "unchanged".
+func mergeMissingProvenance(dst *model.ProvenanceRef, src model.ProvenanceRef) bool {
+	if dst == nil {
+		return false
+	}
+	changed := false
+	if dst.RegistryName == "" && src.RegistryName != "" {
+		dst.RegistryName = src.RegistryName
+		changed = true
+	}
+	if dst.RegistryURL == "" && src.RegistryURL != "" {
+		dst.RegistryURL = src.RegistryURL
+		changed = true
+	}
+	if dst.Ref == "" && src.Ref != "" {
+		dst.Ref = src.Ref
+		changed = true
+	}
+	if dst.Subpath == "" && src.Subpath != "" {
+		dst.Subpath = src.Subpath
+		changed = true
+	}
+	return changed
 }
