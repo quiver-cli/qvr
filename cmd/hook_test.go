@@ -317,4 +317,3 @@ func TestStoreSessionAdapter_NilSelfAuditRejected(t *testing.T) {
 		t.Errorf("expected rejection")
 	}
 }
-

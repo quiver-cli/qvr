@@ -75,8 +75,14 @@ func TestLockFile_v2LoadAndUpgrade(t *testing.T) {
 	}
 	// Verification omitted by `omitempty` since it's nil — important so
 	// existing entries don't pick up empty {} blocks on bump.
-	skills := ondisk["skills"].(map[string]any)
-	fooMap := skills["foo"].(map[string]any)
+	skills, ok := ondisk["skills"].(map[string]any)
+	if !ok {
+		t.Fatalf("skills block missing or wrong type: %T", ondisk["skills"])
+	}
+	fooMap, ok := skills["foo"].(map[string]any)
+	if !ok {
+		t.Fatalf("foo entry missing or wrong type: %T", skills["foo"])
+	}
 	if _, present := fooMap["verification"]; present {
 		t.Errorf("expected verification field to be omitted for nil block, found: %v", fooMap["verification"])
 	}

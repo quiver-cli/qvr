@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,10 @@ type skillInfo struct {
 	Source        string            `json:"source,omitempty"`
 	Targets       []targetStatus    `json:"targets"`
 	Files         []string          `json:"files"`
+	// Verification mirrors the lockfile's VerificationRecord — same shape
+	// `qvr switch --output json` emits, so supply-chain dashboards can
+	// script against `qvr info` instead of parsing qvr.lock directly.
+	Verification *model.VerificationRecord `json:"verification,omitempty"`
 }
 
 var infoCmd = &cobra.Command{
@@ -90,13 +95,14 @@ func runInfo(cmd *cobra.Command, args []string) error {
 // hand-built lock entry instead of going through Cobra.
 func buildSkillInfo(entry *model.LockEntry, projectRoot string) (*skillInfo, error) {
 	info := &skillInfo{
-		Name:       entry.Name,
-		Registry:   entry.Registry,
-		Branch:     entry.Branch,
-		Commit:     entry.Commit,
-		Worktree:   entry.Worktree,
-		LinkTarget: entry.LinkTarget,
-		Source:     entry.Source,
+		Name:         entry.Name,
+		Registry:     entry.Registry,
+		Branch:       entry.Branch,
+		Commit:       entry.Commit,
+		Worktree:     entry.Worktree,
+		LinkTarget:   entry.LinkTarget,
+		Source:       entry.Source,
+		Verification: entry.Verification,
 	}
 
 	skillDir := skill.EffectiveTarget(entry)
@@ -209,4 +215,59 @@ func renderInfoText(info *skillInfo) {
 			fmt.Fprintf(w, "  %s%s\n", indent, filepath.Base(f))
 		}
 	}
+
+	renderVerificationSection(w, info.Verification)
+}
+
+// renderVerificationSection prints the supply-chain provenance block in
+// text mode. Omitted entirely when nil (legacy v2-loaded entries) so the
+// output stays tidy for skills without recorded provenance.
+func renderVerificationSection(w io.Writer, v *model.VerificationRecord) {
+	if v == nil {
+		return
+	}
+	fmt.Fprintln(w, "Verification:")
+	if v.Status != "" {
+		fmt.Fprintf(w, "  Status:      %s\n", v.Status)
+	}
+	if v.SubtreeHash != "" {
+		fmt.Fprintf(w, "  SubtreeHash: %s\n", shortHashLabel(v.SubtreeHash))
+	}
+	// Provenance one-liner mirrors what installer.go records.
+	if src := provenanceSummary(v.Provenance); src != "" {
+		fmt.Fprintf(w, "  Source:      %s\n", src)
+	}
+	if v.Signature != nil {
+		fmt.Fprintf(w, "  Signature:   %s (%s)\n", v.Signature.Path, v.Signature.Algorithm)
+	}
+	for _, warn := range v.Warnings {
+		fmt.Fprintf(w, "  Warning:     %s\n", warn)
+	}
+	if !v.VerifiedAt.IsZero() {
+		fmt.Fprintf(w, "  VerifiedAt:  %s\n", v.VerifiedAt.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+}
+
+// provenanceSummary collapses the four ProvenanceRef fields into a single
+// line for the text view. Returns empty when nothing's recorded so the
+// caller skips the row entirely.
+func provenanceSummary(p model.ProvenanceRef) string {
+	if p.RegistryName == "" && p.RegistryURL == "" && p.Ref == "" && p.Subpath == "" {
+		return ""
+	}
+	target := p.RegistryName
+	if p.RegistryURL != "" {
+		if target == "" {
+			target = p.RegistryURL
+		} else {
+			target = fmt.Sprintf("%s (%s)", target, p.RegistryURL)
+		}
+	}
+	if p.Ref != "" {
+		target = fmt.Sprintf("%s @ %s", target, p.Ref)
+	}
+	if p.Subpath != "" {
+		target = fmt.Sprintf("%s → %s", target, p.Subpath)
+	}
+	return target
 }
