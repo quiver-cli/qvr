@@ -76,10 +76,19 @@ var promptInjectionRules = RuleSet{
 		Remediation: "remove implicit-bias / steering instructions",
 	},
 	{
+		// P9 covers chat-template delimiters across the major model families:
+		//   - ChatML (`<|im_start|>`, `<|im_end|>`, `<|system|>`) — GPT, Qwen
+		//   - Llama-2/3 chat (`[INST]`, `[/INST]`, `<<SYS>>`, `<</SYS>>`)
+		//   - Mistral / Mixtral (same `[INST]` family, plus `<s>` / `</s>`
+		//     sentence anchors that double as chat boundaries)
+		// Issue #39: an injection that smuggles `[INST]` into a SKILL.md
+		// becomes a hard boundary when the consuming model re-templatises
+		// the skill, so flagging ChatML but not Llama-chat would leave the
+		// second-largest open-weights family unguarded.
 		ID: "P9", Category: CategoryPromptInjection, Severity: SeverityWarning, Confidence: 0.8,
-		Pattern:     `(?i)(?:system\s+prompt\s*:|developer\s+message\s*:|hidden\s+instruction\s*:|<\|im_start\|>|<\|system\|>)`,
-		Hint:        "forged conversation boundary or special token",
-		Remediation: "remove tokens that fake conversation roles or chat-template delimiters",
+		Pattern:     `(?i)(?:system\s+prompt\s*:|developer\s+message\s*:|hidden\s+instruction\s*:)|<\|(?:im_start|im_end|system|user|assistant)\|>|\[/?INST\]|<<SYS>>|<</SYS>>|</?s>`,
+		Hint:        "forged conversation boundary or chat-template token",
+		Remediation: "remove tokens that fake conversation roles or chat-template delimiters (ChatML, Llama-2/3, Mistral, Mixtral)",
 	},
 	{
 		ID: "P10", Category: CategoryPromptInjection, Severity: SeverityWarning, Confidence: 0.7,
