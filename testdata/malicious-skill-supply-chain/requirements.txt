@@ -1,0 +1,8 @@
+# known-vulnerable pin
+pyyaml==5.3.1
+# unpinned
+flask
+# abandoned
+pycrypto==2.6.1
+# typosquat (intended: requests)
+requets==2.0.0

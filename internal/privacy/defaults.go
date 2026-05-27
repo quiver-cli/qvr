@@ -1,5 +1,7 @@
 package privacy
 
+import "github.com/raks097/quiver/pkg/secretpatterns"
+
 // NamedPattern pairs a label (used for MatchedRules observability) with
 // the regex source. Kept as a struct so the label survives through the
 // Decision surface for tests and log lines.
@@ -67,6 +69,11 @@ func DefaultSensitivePatterns() []string {
 // that target secret-shaped strings embedded in otherwise-non-sensitive
 // content (e.g., an AWS key hardcoded into deploy.sh).
 //
+// The regex source lives in [secretpatterns] so the privacy redactor
+// and the security scanner share one truth. Privacy uses every pattern
+// (including the looser assignment-shape family) because over-redaction
+// is safer than under-redaction here.
+//
 // Known false-positive shape: the generic
 //
 //	password\s*[:=]\s*\S+
@@ -75,31 +82,10 @@ func DefaultSensitivePatterns() []string {
 // This is a known limitation; fixing it would require AST awareness we
 // don't want in regex-land.
 func DefaultRedactPatterns() []NamedPattern {
-	return []NamedPattern{
-		// Generic assignment family
-		{Label: "password", Regex: `(?i)password\s*[:=]\s*\S+`},
-		{Label: "api_key", Regex: `(?i)api[-_]?key\s*[:=]\s*\S+`},
-		{Label: "token", Regex: `(?i)\btoken\s*[:=]\s*\S+`},
-		{Label: "secret", Regex: `(?i)\bsecret\s*[:=]\s*\S+`},
-		{Label: "bearer", Regex: `(?i)bearer\s+[A-Za-z0-9._\-]+`},
-
-		// AWS
-		{Label: "aws_akia", Regex: `\bAKIA[0-9A-Z]{16}\b`},
-		{Label: "aws_asia", Regex: `\bASIA[0-9A-Z]{16}\b`},
-		{Label: "aws_key_id", Regex: `(?i)aws_access_key_id\s*[:=]\s*\S+`},
-		{Label: "aws_secret", Regex: `(?i)aws_secret_access_key\s*[:=]\s*\S+`},
-
-		// GitHub
-		{Label: "github_pat", Regex: `\bghp_[A-Za-z0-9]{36}\b`},
-		{Label: "github_fine_grained", Regex: `\bgithub_pat_[A-Za-z0-9_]{82}\b`},
-
-		// Slack
-		{Label: "slack_token", Regex: `\bxox[baprs]-[A-Za-z0-9-]{10,}\b`},
-
-		// PEM private-key header (any flavour)
-		{Label: "pem_block", Regex: `-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----`},
-
-		// JWT (three base64url segments)
-		{Label: "jwt", Regex: `\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b`},
+	src := secretpatterns.Default()
+	out := make([]NamedPattern, len(src))
+	for i, p := range src {
+		out[i] = NamedPattern{Label: p.Name, Regex: p.Regex}
 	}
+	return out
 }
