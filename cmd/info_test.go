@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/raks097/quiver/internal/model"
 )
@@ -164,6 +165,72 @@ func TestBuildSkillInfo_LinkedSkill(t *testing.T) {
 	}
 	if info.Description != "detailed test skill" {
 		t.Errorf("description not loaded from link target: %q", info.Description)
+	}
+}
+
+// Regression for #22: VerificationRecord must round-trip from lockfile to
+// `qvr info` output. Pre-fix, `qvr info` dropped the block entirely while
+// `qvr switch --output json` carried it through — the JSON contract
+// diverged between the two read-only views of the same data.
+func TestBuildSkillInfo_PropagatesVerificationRecord(t *testing.T) {
+	wt := writeFullSkill(t, "demo")
+	project := t.TempDir()
+	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+	entry := &model.LockEntry{
+		Name:     "demo",
+		Registry: "raks",
+		Branch:   "v0.2.0",
+		Worktree: wt,
+		Targets:  []string{"claude"},
+		Verification: &model.VerificationRecord{
+			SubtreeHash: "sha256:abc123",
+			TreeSHA:     "tree",
+			CommitSHA:   "commit",
+			Provenance: model.ProvenanceRef{
+				RegistryName: "raks",
+				RegistryURL:  "https://example.invalid/raks.git",
+				Ref:          "v0.2.0",
+				Subpath:      "skills/demo",
+				FetchedAt:    now,
+			},
+			Status:     model.StatusUnverified,
+			Warnings:   []string{"no signature present"},
+			VerifiedAt: now,
+		},
+	}
+	info, err := buildSkillInfo(entry, project)
+	if err != nil {
+		t.Fatalf("buildSkillInfo: %v", err)
+	}
+	if info.Verification == nil {
+		t.Fatal("Verification field dropped — info.Verification is nil")
+	}
+	if info.Verification.SubtreeHash != "sha256:abc123" {
+		t.Errorf("SubtreeHash lost: %q", info.Verification.SubtreeHash)
+	}
+	if info.Verification.Provenance.RegistryURL != "https://example.invalid/raks.git" {
+		t.Errorf("Provenance.RegistryURL lost: %q", info.Verification.Provenance.RegistryURL)
+	}
+}
+
+func TestProvenanceSummary_emptyReturnsEmpty(t *testing.T) {
+	if got := provenanceSummary(model.ProvenanceRef{}); got != "" {
+		t.Errorf("empty provenance should render empty, got %q", got)
+	}
+}
+
+func TestProvenanceSummary_full(t *testing.T) {
+	p := model.ProvenanceRef{
+		RegistryName: "raks",
+		RegistryURL:  "https://example.invalid/raks.git",
+		Ref:          "v0.2.0",
+		Subpath:      "skills/demo",
+	}
+	got := provenanceSummary(p)
+	for _, want := range []string{"raks", "https://example.invalid/raks.git", "v0.2.0", "skills/demo"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in provenance summary: %q", want, got)
+		}
 	}
 }
 

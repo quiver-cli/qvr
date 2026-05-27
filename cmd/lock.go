@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
@@ -18,6 +19,15 @@ var lockCmd = &cobra.Command{
 	Long: `Manage the on-disk lock file. Subcommands re-hash installed skills and
 detect drift from the recorded supply-chain provenance, or migrate older
 lockfiles to the current schema.`,
+	// Without a RunE, cobra silently exits 0 on `qvr lock <typo>` after
+	// printing help — a typo like `lock verfiy` looks like success in CI.
+	// Mirror the top-level "unknown command" shape so the exit code matches.
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		return cmd.Help()
+	},
 }
 
 var (
@@ -90,6 +100,10 @@ type VerifyOutput struct {
 	LockVersion int                       `json:"lockVersion"`
 	Entries     []skill.VerifyEntryResult `json:"entries"`
 	Summary     VerifySummary             `json:"summary"`
+	// Error populates only on --frozen / --strict failure paths and lets
+	// JSON consumers parse stdout as a single document. The text path uses
+	// the same string as the printed `Error: ...` line on stderr.
+	Error string `json:"error,omitempty"`
 }
 
 func runLockVerify(cmd *cobra.Command, args []string) error {
@@ -147,19 +161,36 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Compute the failure string (if any) before emitting JSON so the
+	// envelope can carry it as a sibling field. Two top-level documents
+	// on stdout would break `jq` / `JSON.parse` and was the v0.4.4 doctor
+	// regression pattern repeating itself in the supply-chain commands.
+	var failure string
+	if lockVerifyFrozen && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0) {
+		failure = fmt.Sprintf("lock verify: --frozen failed (%s)", failureCategories(out.Summary))
+	} else if lockVerifyStrict && out.Summary.Unverified > 0 {
+		failure = fmt.Sprintf("lock verify: --strict failed (%d unverified)", out.Summary.Unverified)
+	}
+
 	if printer.Format == output.FormatJSON {
+		if failure != "" {
+			out.Error = failure
+		}
 		if err := printer.JSON(out); err != nil {
 			return err
 		}
-	} else {
-		renderVerifyText(out)
+		if failure != "" {
+			// errJSONHandled suppresses Execute()'s {"error": "..."} envelope —
+			// the body's `error` field already carries the failure string, so
+			// stdout stays a single JSON document.
+			return errJSONHandled
+		}
+		return nil
 	}
 
-	if lockVerifyFrozen && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0) {
-		return errors.New("lock verify: drift detected (--frozen)")
-	}
-	if lockVerifyStrict && out.Summary.Unverified > 0 {
-		return errors.New("lock verify: unverified entries present (--strict)")
+	renderVerifyText(out)
+	if failure != "" {
+		return errors.New(failure)
 	}
 	return nil
 }
@@ -191,6 +222,31 @@ func renderVerifyText(out *VerifyOutput) {
 	))
 }
 
+// failureCategories renders only the non-zero failing counts so the error
+// message names what actually broke. "drift=0, missing=1" reads cleanly;
+// the old "drift detected" lied when the real cause was a missing worktree
+// or a hash-computation failure.
+func failureCategories(s VerifySummary) string {
+	pairs := []struct {
+		label string
+		count int
+	}{
+		{"drift", s.Drift},
+		{"missing", s.Missing},
+		{"failed", s.Failed},
+	}
+	parts := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		if p.count > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", p.label, p.count))
+		}
+	}
+	if len(parts) == 0 {
+		return "no failing entries"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // shortHashLabel renders a hash for terminal output without losing the
 // algorithm prefix when present. "sha256:abcd..." → "sha256:abcd1234"
 // rather than "abcd1234".
@@ -206,8 +262,13 @@ func shortHashLabel(h string) string {
 
 // UpgradeEntryResult is one row of `qvr lock upgrade` output.
 type UpgradeEntryResult struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // "upgraded" | "unchanged" | "skipped"
+	Name string `json:"name"`
+	// Status vocabulary matches the text-mode verbs:
+	//   "upgraded"      — wrote a new subtree hash to disk
+	//   "would-upgrade" — --dry-run says we'd write
+	//   "unchanged"     — entry already had a hash + complete provenance
+	//   "skipped"       — link install, or hash computation failed
+	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
 }
 
@@ -230,7 +291,14 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read lock: %w", err)
 	}
 
-	out := &UpgradeOutput{LockVersion: model.LockFileVersion, DryRun: lockUpgradeDryRun}
+	// LockVersion reports the version of the file *on disk*, not the
+	// migration target — matches `qvr lock verify`, and lets tooling
+	// decide "does this repo need a migration?" by reading the field.
+	out := &UpgradeOutput{
+		LockVersion: lock.Version,
+		Entries:     []UpgradeEntryResult{}, // always [], never null
+		DryRun:      lockUpgradeDryRun,
+	}
 	changed := false
 	for _, entry := range lock.Entries() {
 		row := UpgradeEntryResult{Name: entry.Name}
@@ -242,7 +310,10 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 			row.Status = "unchanged"
 		default:
 			if lockUpgradeDryRun {
-				row.Status = "upgraded"
+				// "would-upgrade" is the dry-run sentinel — distinct from
+				// "upgraded" so CI gates like `.entries[] | select(.status == "upgraded")`
+				// don't fire on a dry-run pass.
+				row.Status = "would-upgrade"
 				row.Message = "would compute subtree hash"
 			} else {
 				skill.RefreshVerification(entry)
@@ -266,6 +337,10 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 		if err := lock.Write(); err != nil {
 			return fmt.Errorf("write lock: %w", err)
 		}
+		// After a successful write the on-disk version is now LockFileVersion.
+		// Reflect that in the output so JSON consumers don't see a stale
+		// pre-migration value next to "upgraded" rows.
+		out.LockVersion = model.LockFileVersion
 	}
 
 	if printer.Format == output.FormatJSON {
@@ -273,12 +348,10 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 	}
 	for _, e := range out.Entries {
 		switch e.Status {
+		case "would-upgrade":
+			printer.Info(fmt.Sprintf("%s: would upgrade", e.Name))
 		case "upgraded":
-			if lockUpgradeDryRun {
-				printer.Info(fmt.Sprintf("%s: would upgrade", e.Name))
-			} else {
-				printer.Success(fmt.Sprintf("%s: upgraded", e.Name))
-			}
+			printer.Success(fmt.Sprintf("%s: upgraded", e.Name))
 		case "unchanged":
 			printer.Info(fmt.Sprintf("%s: unchanged", e.Name))
 		case "skipped":
