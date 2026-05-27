@@ -62,6 +62,7 @@ func (c *secretsCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry)
 				}
 				findings = append(findings, Finding{
 					Check:       SecretsCheckName,
+					RuleID:      "SEC_" + strings.ToUpper(p.name),
 					Severity:    SeverityCritical,
 					File:        f.Path,
 					Line:        lineIdx + 1,
@@ -89,6 +90,14 @@ func humanise(name string) string {
 		return "Slack token"
 	case "stripe_key":
 		return "Stripe API key"
+	case "openai_legacy":
+		return "OpenAI API key (legacy sk-...)"
+	case "openai_project":
+		return "OpenAI project key (sk-proj-...)"
+	case "anthropic_key":
+		return "Anthropic API key"
+	case "huggingface_token":
+		return "Hugging Face token"
 	case "google_api_key":
 		return "Google API key"
 	case "pem_private_key":

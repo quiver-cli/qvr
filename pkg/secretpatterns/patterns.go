@@ -81,11 +81,36 @@ var credentialPrefixes = []Pattern{
 	// Slack — bot, user, app, refresh, signing tokens
 	{Name: "slack_token", Regex: `\bxox[baprs]-[A-Za-z0-9-]{10,}\b`},
 
-	// Stripe — both test and live, secret and publishable
+	// Stripe — both test and live, secret and publishable.
+	// Anchored on `_test_`/`_live_` so this does NOT collide with
+	// the looser OpenAI `sk-...` shape immediately below.
 	{Name: "stripe_key", Regex: `\b(sk|pk)_(test|live)_[A-Za-z0-9]{24,}\b`},
+
+	// OpenAI — issue #37. The single most common credential leaked
+	// from an AI-skill repo and an AI-skills CLI must catch it.
+	// Two formats: legacy `sk-` + 48 base62 chars, and the newer
+	// project-scoped `sk-proj-` + a 20+ alnum/_/- payload (the
+	// suffix grew across API revisions; we accept 20+ chars to
+	// avoid pinning a length that changes again next quarter).
+	{Name: "openai_legacy", Regex: `\bsk-[A-Za-z0-9]{48}\b`},
+	{Name: "openai_project", Regex: `\bsk-proj-[A-Za-z0-9_\-]{20,}\b`},
+
+	// Anthropic — `sk-ant-` prefix; the secret body varies in length
+	// and may include `_-`. Anchored on the prefix so it cannot
+	// collide with OpenAI's `sk-...`.
+	{Name: "anthropic_key", Regex: `\bsk-ant-(?:api03-)?[A-Za-z0-9_\-]{32,}\b`},
+
+	// Hugging Face — user / fine-grained access tokens.
+	{Name: "huggingface_token", Regex: `\bhf_[A-Za-z0-9]{20,}\b`},
 
 	// Google API key
 	{Name: "google_api_key", Regex: `\bAIza[0-9A-Za-z_\-]{35}\b`},
+
+	// Azure OpenAI keys are bare 32-hex strings, which is too short to
+	// anchor on alone without enormous false-positive surface. We
+	// catch them via the `(?i)AZURE_OPENAI_(KEY|API_KEY)\s*=\s*` shape
+	// in the assignment-shape family below, which still flags them in
+	// the typical `.env` / config exposure.
 
 	// PEM private-key header (RSA / OpenSSH / EC / DSA / PGP / unlabelled)
 	{Name: "pem_private_key", Regex: `-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----`},

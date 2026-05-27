@@ -89,6 +89,51 @@ func TestCredentialPrefixMatches(t *testing.T) {
 			negative: []string{"sk_live_short", "sk_other_" + repeat("A", 24)},
 		},
 		{
+			name: "openai_legacy",
+			positive: []string{
+				"OPENAI_API_KEY=sk-" + repeat("A", 48),
+				"key=sk-" + repeat("z", 48),
+			},
+			negative: []string{
+				"sk-short",
+				"sk_live_" + repeat("A", 48), // must not collide with stripe
+				"sk-proj-" + repeat("A", 48), // project keys belong to the other rule
+			},
+		},
+		{
+			name: "openai_project",
+			positive: []string{
+				"sk-proj-" + repeat("A", 20),
+				"sk-proj-" + repeat("a", 80) + "_-Az9",
+			},
+			negative: []string{
+				"sk-proj-short",
+				"sk-" + repeat("A", 48), // legacy form
+			},
+		},
+		{
+			name: "anthropic_key",
+			positive: []string{
+				"sk-ant-api03-" + repeat("A", 95),
+				"sk-ant-" + repeat("a", 50),
+			},
+			negative: []string{
+				"sk-ant-short",
+				"sk-" + repeat("A", 48), // OpenAI legacy
+			},
+		},
+		{
+			name: "huggingface_token",
+			positive: []string{
+				"HF_TOKEN=hf_" + repeat("A", 30),
+				"hf_" + repeat("z", 25),
+			},
+			negative: []string{
+				"hf_short",
+				"thf_abcdefghij1234567890", // missing word boundary
+			},
+		},
+		{
 			name:     "google_api_key",
 			positive: []string{"AIza" + repeat("a", 35)},
 			negative: []string{"AIzashort", "AIxa" + repeat("a", 35)},
