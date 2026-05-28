@@ -86,13 +86,18 @@ var credentialPrefixes = []Pattern{
 	// the looser OpenAI `sk-...` shape immediately below.
 	{Name: "stripe_key", Regex: `\b(sk|pk)_(test|live)_[A-Za-z0-9]{24,}\b`},
 
-	// OpenAI — issue #37. The single most common credential leaked
-	// from an AI-skill repo and an AI-skills CLI must catch it.
-	// Two formats: legacy `sk-` + 48 base62 chars, and the newer
-	// project-scoped `sk-proj-` + a 20+ alnum/_/- payload (the
-	// suffix grew across API revisions; we accept 20+ chars to
-	// avoid pinning a length that changes again next quarter).
-	{Name: "openai_legacy", Regex: `\bsk-[A-Za-z0-9]{48}\b`},
+	// OpenAI — two formats: legacy `sk-` + 32+ base62 chars, and the
+	// newer project-scoped `sk-proj-` + 20+ alnum/_/- payload.
+	//
+	// The legacy spec is widely cited as exactly 48 chars, but real
+	// keys in the wild vary across account types and API revisions;
+	// pinning to {48} created issue #45 — keys shorter than 48 chars
+	// slipped through entirely. We now accept {32,} which still rules
+	// out short Stripe-style tokens (those use underscores, never
+	// matching `sk-`) and importantly does not collide with
+	// `sk-proj-` / `sk-ant-` because both have a `-` in the first 4-5
+	// chars after `sk-`, breaking the alphanumeric run requirement.
+	{Name: "openai_legacy", Regex: `\bsk-[A-Za-z0-9]{32,}\b`},
 	{Name: "openai_project", Regex: `\bsk-proj-[A-Za-z0-9_\-]{20,}\b`},
 
 	// Anthropic — `sk-ant-` prefix; the secret body varies in length
@@ -103,14 +108,19 @@ var credentialPrefixes = []Pattern{
 	// Hugging Face — user / fine-grained access tokens.
 	{Name: "huggingface_token", Regex: `\bhf_[A-Za-z0-9]{20,}\b`},
 
-	// Google API key
-	{Name: "google_api_key", Regex: `\bAIza[0-9A-Za-z_\-]{35}\b`},
+	// Google API key — canonical length is 35 chars after `AIza`
+	// (total 39), but issue #45 surfaced over-padded keys in test
+	// material. Accept {35,} so both real keys and conservative
+	// fixtures match. Stays high-precision: the `AIza` prefix is
+	// vendor-anchored and almost never appears in benign text.
+	{Name: "google_api_key", Regex: `\bAIza[0-9A-Za-z_\-]{35,}\b`},
 
-	// Azure OpenAI keys are bare 32-hex strings, which is too short to
-	// anchor on alone without enormous false-positive surface. We
-	// catch them via the `(?i)AZURE_OPENAI_(KEY|API_KEY)\s*=\s*` shape
-	// in the assignment-shape family below, which still flags them in
-	// the typical `.env` / config exposure.
+	// Azure OpenAI keys are bare 32-hex strings, which is too short
+	// to anchor on alone without enormous false-positive surface.
+	// Pair the value with the canonical env-var name to keep
+	// precision high — covers the typical `.env` and config-block
+	// exposure mode (issue #45).
+	{Name: "azure_openai_key", Regex: `(?i)AZURE_OPENAI(?:_API)?_KEY\s*[:=]\s*['"]?[0-9a-f]{32}\b`},
 
 	// PEM private-key header (RSA / OpenSSH / EC / DSA / PGP / unlabelled)
 	{Name: "pem_private_key", Regex: `-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----`},

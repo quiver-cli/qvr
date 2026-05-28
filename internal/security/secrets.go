@@ -51,6 +51,20 @@ func (c *secretsCheck) Name() string { return SecretsCheckName }
 func (c *secretsCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry) []Finding {
 	var findings []Finding
 	for _, f := range files {
+		// Oversize files are streamed in WalkSkill against the
+		// credential-prefix set only; surface those hits here so
+		// secrets cannot hide behind a 10 MiB pad (issue #44).
+		for _, hit := range f.OversizeSecretHits {
+			findings = append(findings, Finding{
+				Check:       SecretsCheckName,
+				RuleID:      "SEC_" + strings.ToUpper(hit.PatternName),
+				Severity:    SeverityCritical,
+				File:        f.Path,
+				Line:        hit.Line,
+				Message:     fmt.Sprintf("possible %s detected (streaming scan of oversize file)", humanise(hit.PatternName)),
+				Remediation: "remove the value from the file and rotate the credential",
+			})
+		}
 		if f.Content == "" {
 			continue
 		}
@@ -98,6 +112,8 @@ func humanise(name string) string {
 		return "Anthropic API key"
 	case "huggingface_token":
 		return "Hugging Face token"
+	case "azure_openai_key":
+		return "Azure OpenAI key"
 	case "google_api_key":
 		return "Google API key"
 	case "pem_private_key":

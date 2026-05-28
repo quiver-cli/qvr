@@ -92,12 +92,14 @@ func TestCredentialPrefixMatches(t *testing.T) {
 			name: "openai_legacy",
 			positive: []string{
 				"OPENAI_API_KEY=sk-" + repeat("A", 48),
-				"key=sk-" + repeat("z", 48),
+				"key=sk-" + repeat("z", 46), // shorter real-world variant (#45)
+				"sk-" + repeat("A", 32),     // floor of accepted length
 			},
 			negative: []string{
-				"sk-short",
+				"sk-" + repeat("A", 16),     // below the 32-char floor
 				"sk_live_" + repeat("A", 48), // must not collide with stripe
 				"sk-proj-" + repeat("A", 48), // project keys belong to the other rule
+				"sk-ant-" + repeat("A", 48),  // anthropic keys ditto
 			},
 		},
 		{
@@ -134,9 +136,27 @@ func TestCredentialPrefixMatches(t *testing.T) {
 			},
 		},
 		{
-			name:     "google_api_key",
-			positive: []string{"AIza" + repeat("a", 35)},
+			name: "google_api_key",
+			positive: []string{
+				"AIza" + repeat("a", 35),                              // canonical
+				"AIza" + repeat("a", 37),                              // over-padded test fixture (#45)
+				"AIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R",           // issue #45 repro
+			},
 			negative: []string{"AIzashort", "AIxa" + repeat("a", 35)},
+		},
+		{
+			name: "azure_openai_key",
+			positive: []string{
+				"AZURE_OPENAI_API_KEY=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+				"AZURE_OPENAI_KEY: 0123456789abcdef0123456789abcdef",
+				`AZURE_OPENAI_API_KEY="1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d"`,
+				"azure_openai_api_key=deadbeefdeadbeefdeadbeefdeadbeef",
+			},
+			negative: []string{
+				"AZURE_OPENAI_API_KEY=tooshort",
+				"AZURE_OPENAI_API_KEY=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c", // 30 hex
+				"SOME_OTHER_KEY=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",      // wrong name
+			},
 		},
 		{
 			name:     "pem_private_key",
