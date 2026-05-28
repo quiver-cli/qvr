@@ -204,7 +204,7 @@ func TestEdit_BranchesFromOriginWhenRemoteExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	mainCommit := entry.Commit
+	mainCommit := entry.ResolvedSHA
 
 	syncer := newSyncer()
 	updated, warning, err := syncer.CreateEditBranch(context.Background(), entry, "qvr/alice/code-review")
@@ -214,9 +214,9 @@ func TestEdit_BranchesFromOriginWhenRemoteExists(t *testing.T) {
 	if warning == "" {
 		t.Error("expected warning that branch already exists on origin")
 	}
-	if updated.Commit != upstreamCommit.String() {
+	if updated.ResolvedSHA != upstreamCommit.String() {
 		t.Errorf("commit = %s, want upstream %s (main was %s)",
-			updated.Commit, upstreamCommit.String(), mainCommit)
+			updated.ResolvedSHA, upstreamCommit.String(), mainCommit)
 	}
 }
 
@@ -245,22 +245,22 @@ func TestEdit_CreatesLocalBranchFromHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	tagCommit := entry.Commit
+	tagCommit := entry.ResolvedSHA
 
 	syncer := newSyncer()
 	updated, _, err := syncer.CreateEditBranch(context.Background(), entry, "qvr/alice/code-review")
 	if err != nil {
 		t.Fatalf("create edit branch: %v", err)
 	}
-	if err := skill.ApplySwitch(updated, h.project); err != nil {
+	if err := skill.ApplySwitch(updated, h.project, false); err != nil {
 		t.Fatalf("apply switch: %v", err)
 	}
 
-	if updated.Branch != "qvr/alice/code-review" {
-		t.Errorf("branch = %q, want qvr/alice/code-review", updated.Branch)
+	if updated.Ref != "qvr/alice/code-review" {
+		t.Errorf("branch = %q, want qvr/alice/code-review", updated.Ref)
 	}
-	if updated.Commit != tagCommit {
-		t.Errorf("commit changed: was %s, now %s", tagCommit, updated.Commit)
+	if updated.ResolvedSHA != tagCommit {
+		t.Errorf("commit changed: was %s, now %s", tagCommit, updated.ResolvedSHA)
 	}
 
 	expectedPath := registry.WorktreePath("acme", "code-review", "qvr/alice/code-review")
@@ -324,7 +324,7 @@ func TestPush_AfterEdit_PushesNewBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create edit branch: %v", err)
 	}
-	if err := skill.ApplySwitch(updated, h.project); err != nil {
+	if err := skill.ApplySwitch(updated, h.project, false); err != nil {
 		t.Fatalf("apply switch: %v", err)
 	}
 
@@ -396,7 +396,7 @@ func TestEdit_ReentryAfterPushAndSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first edit: %v", err)
 	}
-	if err := skill.ApplySwitch(updated, h.project); err != nil {
+	if err := skill.ApplySwitch(updated, h.project, false); err != nil {
 		t.Fatalf("apply switch (edit): %v", err)
 	}
 	lock.Put(updated)
@@ -436,7 +436,7 @@ func TestEdit_ReentryAfterPushAndSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("switch to main: %v", err)
 	}
-	if err := skill.ApplySwitch(switched, h.project); err != nil {
+	if err := skill.ApplySwitch(switched, h.project, false); err != nil {
 		t.Fatalf("apply switch (main): %v", err)
 	}
 	lock.Put(switched)
@@ -450,14 +450,14 @@ func TestEdit_ReentryAfterPushAndSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-entry edit: %v", err)
 	}
-	if reEntered.Branch != editBranch {
-		t.Errorf("branch = %q, want %q", reEntered.Branch, editBranch)
+	if reEntered.Ref != editBranch {
+		t.Errorf("branch = %q, want %q", reEntered.Ref, editBranch)
 	}
 	if warning == "" {
 		t.Error("expected a non-empty warning noting the branch already exists")
 	}
 
-	if err := skill.ApplySwitch(reEntered, h.project); err != nil {
+	if err := skill.ApplySwitch(reEntered, h.project, false); err != nil {
 		t.Fatalf("apply switch (re-entry): %v", err)
 	}
 
@@ -568,12 +568,12 @@ func TestUpgrade_FollowsLatestTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("switch: %v", err)
 	}
-	if err := skill.ApplySwitch(updated, h.project); err != nil {
+	if err := skill.ApplySwitch(updated, h.project, false); err != nil {
 		t.Fatalf("apply switch: %v", err)
 	}
 
-	if updated.Branch != "v2.0.0" {
-		t.Errorf("branch = %q, want v2.0.0", updated.Branch)
+	if updated.Ref != "v2.0.0" {
+		t.Errorf("branch = %q, want v2.0.0", updated.Ref)
 	}
 	expected := registry.WorktreePath("acme", "code-review", "v2.0.0")
 	if updated.Worktree != expected {

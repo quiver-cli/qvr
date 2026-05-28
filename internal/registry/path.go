@@ -50,7 +50,9 @@ func ValidateSlug(slug string) error {
 	return nil
 }
 
-// RegistryPath returns the bare clone path for a named registry.
+// RegistryPath returns the bare clone path for a named registry. Under the
+// v4 layout this is the single home for all bare clones — single-skill and
+// multi-skill repos alike. The legacy SubdirRoot/standalone roots are gone.
 func RegistryPath(name string) string {
 	return filepath.Join(config.Dir(), "registries", name+".git")
 }
@@ -66,38 +68,110 @@ func URLToSlug(url string) string {
 	return s
 }
 
+// InferRegistryName produces the auto-name for `qvr registry add <url>` —
+// `<org>--<repo>`, lowercased, with characters outside the registry-name
+// alphabet replaced by `-`. The last two non-empty path segments are the
+// org and repo respectively; this handles `https://host/org/repo[.git]`,
+// `git@host:org/repo.git`, and `ssh://git@host/org/repo.git` uniformly.
+// Returns "" when the URL has no usable org/repo shape so callers can
+// fall back to requiring an explicit `--name` flag.
+func InferRegistryName(rawURL string) string {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return ""
+	}
+	s = strings.TrimSuffix(s, ".git")
+
+	// Strip scheme + host. For URL-shaped inputs (`scheme://...`), the
+	// authority section ends at the first `/`. For scp-style SSH
+	// (`git@host:org/repo`), the authority ends at the first `:`.
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+		slash := strings.Index(s, "/")
+		if slash < 0 {
+			return ""
+		}
+		s = s[slash+1:]
+	} else if at := strings.LastIndex(s, "@"); at >= 0 {
+		s = s[at+1:]
+		if colon := strings.Index(s, ":"); colon >= 0 {
+			s = s[colon+1:]
+		}
+	}
+
+	parts := strings.Split(strings.Trim(s, "/"), "/")
+	var nonEmpty []string
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	if len(nonEmpty) < 2 {
+		return ""
+	}
+	org := sanitizeRegistryNameSegment(nonEmpty[len(nonEmpty)-2])
+	repo := sanitizeRegistryNameSegment(nonEmpty[len(nonEmpty)-1])
+	if org == "" || repo == "" {
+		return ""
+	}
+	return org + "--" + repo
+}
+
+// sanitizeRegistryNameSegment lowercases the input and replaces any rune
+// outside `[a-z0-9_-]` with `-`. Leading non-alphanumerics are trimmed so
+// the final slug starts with a class that satisfies ValidateRegistryName.
+func sanitizeRegistryNameSegment(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	for len(out) > 0 {
+		c := out[0]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			break
+		}
+		out = out[1:]
+	}
+	return out
+}
+
 // WorktreesRoot returns the base directory holding all worktrees.
 func WorktreesRoot() string {
 	return filepath.Join(config.Dir(), "worktrees")
 }
 
-// SubdirRoot returns the base directory holding bare clones used to back
-// `qvr add <subdir-url>` installs. Kept separate from `registries/` so a
-// later `qvr registry add` of the same URL doesn't collide with — or
-// silently inherit from — an ad-hoc subdir install.
-func SubdirRoot() string {
-	return filepath.Join(config.Dir(), "subdir")
-}
-
-// SubdirRepoPath returns the bare clone path for a slug under SubdirRoot().
-// Returns an error if slug fails ValidateSlug — guards against a hostile URL
-// being shaped into a directory that escapes SubdirRoot.
-func SubdirRepoPath(slug string) (string, error) {
-	if err := ValidateSlug(slug); err != nil {
-		return "", err
-	}
-	return filepath.Join(SubdirRoot(), slug+".git"), nil
-}
-
-// WorktreePath returns the expected worktree path for a skill pinned at ref.
-// Ref and skill are slug-ified with the same "--" replacement used elsewhere
-// so refs containing slashes (e.g. "feature/x") can't collide with a literal
-// "feature-x" ref.
-func WorktreePath(registry, skill, ref string) string {
-	safeRef := slugSegment(ref)
+// WorktreePath returns the worktree path for a skill pinned at sha. The
+// caller passes the resolved short SHA (7 chars by convention) — the path
+// uses it directly as the cache key, so two projects pinning the same commit
+// share one worktree and different SHAs (even on the same branch) never
+// collide. Ref names live only in the lockfile as human labels.
+//
+// The sha string is run through slugSegment so callers can still hand it a
+// branch name in transitional code paths without corrupting the directory
+// tree, but the canonical input is a SHA.
+func WorktreePath(registry, skill, sha string) string {
+	safeSha := slugSegment(sha)
 	safeSkill := slugSegment(skill)
-	name := fmt.Sprintf("%s--%s--%s", registry, safeSkill, safeRef)
+	name := fmt.Sprintf("%s--%s--%s", registry, safeSkill, safeSha)
 	return filepath.Join(WorktreesRoot(), name)
+}
+
+// ShortSHA returns the cache-key form of a commit SHA — 7 hex characters,
+// matching git's default abbreviation. Returns the input unchanged when it's
+// already shorter than 7 chars (defensive: an empty or stub SHA should pass
+// through so the resulting worktree path remains diagnosable).
+func ShortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 func slugSegment(s string) string {

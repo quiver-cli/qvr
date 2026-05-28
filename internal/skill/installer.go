@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,14 +18,6 @@ var (
 	ErrSkillNotFound    = errors.New("skill not found in any registry")
 	ErrAlreadyInstalled = errors.New("skill is already installed")
 	ErrInvalidReference = errors.New("invalid skill reference")
-	// ErrSubpathMissing — the requested subdir doesn't exist in the repo at the
-	// given ref. Surfaces from InstallFromSubdir when validateStagedSkill can't
-	// stat the skill dir; the cmd layer remaps to a URL-domain message.
-	ErrSubpathMissing = errors.New("subpath not found in repo at the given ref")
-	// ErrRefNotFound — the requested ref (branch/tag/commit) doesn't exist on
-	// origin. Surfaces from SubdirClone wrapped in "clone subdir: ..."; the
-	// cmd layer detects and remaps.
-	ErrRefNotFound = errors.New("ref not found")
 )
 
 // InstallRequest describes a desired install.
@@ -126,8 +117,8 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		if gerr != nil {
 			return nil, fmt.Errorf("--frozen: skill %q not present in lock file", name)
 		}
-		if existing.Branch != "" {
-			version = existing.Branch
+		if existing.Ref != "" {
+			version = existing.Ref
 		}
 		frozenRef = existing
 	}
@@ -142,9 +133,9 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
 		}
 		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
-			if existing, gerr := existingLock.Get(name); gerr == nil && existing.Branch != "" && existing.Branch != version {
+			if existing, gerr := existingLock.Get(name); gerr == nil && existing.Ref != "" && existing.Ref != version {
 				return nil, fmt.Errorf("%s already installed at %s; use `qvr switch %s %s` to change refs, or `qvr remove %s` first (pass --force to override)",
-					name, existing.Branch, name, version, name)
+					name, existing.Ref, name, version, name)
 			}
 		}
 	}
@@ -228,14 +219,13 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		targets = mergeTargets(existing.Targets, req.Targets)
 	}
 	entry := &model.LockEntry{
-		Name:     name,
-		Registry: loc.RegistryName,
-		Path:     loc.Entry.Path,
-		Branch:   version,
-		Commit:   commit,
-		Worktree: finalPath,
-		Targets:  targets,
-		Global:   req.Global,
+		Name:        name,
+		Registry:    loc.RegistryName,
+		Path:        loc.Entry.Path,
+		Ref:         version,
+		ResolvedSHA: commit,
+		Worktree:    finalPath,
+		Targets:     targets,
 	}
 	entry.Verification = PopulateVerification(entry, model.ProvenanceRef{
 		RegistryName: loc.RegistryName,
@@ -292,13 +282,13 @@ func (in *Installer) RestoreAll(req InstallRequest) ([]*InstallResult, error) {
 	var out []*InstallResult
 	for _, entry := range lock.Entries() {
 		skillRef := entry.Name
-		if entry.Branch != "" {
-			skillRef = entry.Name + "@" + entry.Branch
+		if entry.Ref != "" {
+			skillRef = entry.Name + "@" + entry.Ref
 		}
 		result, err := in.Install(InstallRequest{
 			Skill:       skillRef,
 			Targets:     entry.Targets,
-			Global:      entry.Global,
+			Global:      lock.IsGlobal(quiverHome()),
 			ProjectRoot: req.ProjectRoot,
 			LockPath:    lockPath,
 			Frozen:      req.Frozen,
@@ -329,8 +319,9 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 	}
 
 	var firstErr error
+	entryGlobal := lock.IsGlobal(quiverHome())
 	for _, t := range entry.Targets {
-		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, entry.Global)
+		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, entryGlobal)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -360,199 +351,6 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 		firstErr = err
 	}
 	return firstErr
-}
-
-// SubdirInstallRequest describes an ad-hoc install of one skill that lives in
-// a subdirectory of a remote git repo (e.g. a GitHub `/blob/<ref>/<path>`
-// link). Unlike Install, this never touches the user's registry config — the
-// bare clone lives in registry.SubdirRoot() and is owned by the lock entry
-// rather than the registry list.
-type SubdirInstallRequest struct {
-	RepoURL     string   // e.g. "https://github.com/openclaw/skills.git"
-	Ref         string   // branch, tag, or commit
-	Subpath     string   // path inside the repo, e.g. "skills/jchopard69/x-article-editor"
-	As          string   // optional override for the lock entry name (defaults to subpath leaf)
-	Targets     []string // agent targets to symlink into
-	Global      bool
-	ProjectRoot string
-	LockPath    string // optional — DefaultLockPath is used when empty
-}
-
-// InstallFromSubdir produces a shallow, sparse-checkout clone of req.RepoURL
-// containing only req.Subpath at req.Ref, validates the skill there, links it
-// into req.Targets, and records a lock entry. Skill name defaults to the
-// subpath's leaf directory; pass req.As to override.
-//
-// The clone is stored under registry.SubdirRoot()/<slug>--<skill>--<ref>/.
-// We use a partial+sparse clone (not bare-clone+worktree) so we don't pull
-// down history or files outside the subpath — the standard registry path is
-// optimised for "all skills, kept fresh," whereas this is "one skill, pin
-// once." Re-running with the same (repo, skill, ref) reuses the existing
-// clone.
-func (in *Installer) InstallFromSubdir(ctx context.Context, req SubdirInstallRequest) (*InstallResult, error) {
-	if req.RepoURL == "" {
-		return nil, fmt.Errorf("repo URL is required")
-	}
-	if req.Ref == "" {
-		return nil, fmt.Errorf("ref is required (branch, tag, or commit)")
-	}
-	subpath := strings.Trim(req.Subpath, "/")
-	if subpath == "" {
-		return nil, fmt.Errorf("subpath is required")
-	}
-	if len(req.Targets) == 0 {
-		return nil, fmt.Errorf("at least one --target is required")
-	}
-	for _, t := range req.Targets {
-		if _, ok := model.Targets[t]; !ok {
-			return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, t)
-		}
-	}
-
-	cleanURL, _, err := git.SanitizeURL(req.RepoURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse repo URL: %w", err)
-	}
-	slug := registry.URLToSlug(cleanURL)
-
-	name := req.As
-	if name == "" {
-		parts := strings.Split(subpath, "/")
-		name = parts[len(parts)-1]
-	}
-
-	// Each (repo, skill, ref) tuple gets its own sparse clone under SubdirRoot.
-	// We reuse on collision so re-running `qvr add` is idempotent. Refs may
-	// contain slashes (e.g. "feature/x"), so flatten them to "--" the same
-	// way registry.WorktreePath does for the regular install path.
-	dirName := strings.NewReplacer("/", "--", ":", "--").Replace
-	finalPath := filepath.Join(registry.SubdirRoot(), fmt.Sprintf("%s--%s--%s", slug, dirName(name), dirName(req.Ref)))
-	stagingPath := finalPath + ".staging"
-	_ = os.RemoveAll(stagingPath)
-
-	if _, err := os.Stat(finalPath); err == nil {
-		// Reuse existing clone — caller can `qvr remove` then re-add to refresh.
-	} else {
-		if err := in.Git.SubdirClone(ctx, cleanURL, req.Ref, subpath, stagingPath); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			// Raw go-git/`git checkout --detach` errors leak implementation
-			// detail. Recognise the common "bad ref" shape and remap to a
-			// user-friendly sentinel; everything else falls through.
-			if isRefNotFound(err) {
-				return nil, fmt.Errorf("%w: %s", ErrRefNotFound, req.Ref)
-			}
-			return nil, fmt.Errorf("clone subdir: %w", err)
-		}
-		if err := validateStagedSkill(stagingPath, subpath); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			// "load staged skill: stat skill dir: stat .../staging/...: no
-			// such file or directory" reads like an internal bug. The real
-			// cause is "the subpath isn't in the repo at this ref" — remap.
-			if isSubpathMissing(err) {
-				return nil, fmt.Errorf("%w: %s", ErrSubpathMissing, subpath)
-			}
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			return nil, fmt.Errorf("create subdir clones dir: %w", err)
-		}
-		if err := os.Rename(stagingPath, finalPath); err != nil {
-			if _, statErr := os.Stat(finalPath); statErr == nil {
-				_ = os.RemoveAll(stagingPath)
-			} else {
-				_ = os.RemoveAll(stagingPath)
-				return nil, fmt.Errorf("finalize subdir clone: %w", err)
-			}
-		}
-	}
-
-	skillDir := filepath.Join(finalPath, subpath)
-	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
-		return nil, fmt.Errorf("skill path missing after checkout: %w", err)
-	}
-
-	var created []string
-	for _, t := range req.Targets {
-		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, req.Global)
-		if err != nil {
-			rollbackLinks(created)
-			return nil, err
-		}
-		if err := CreateSymlink(linkPath, skillDir); err != nil {
-			rollbackLinks(created)
-			return nil, fmt.Errorf("symlink %s: %w", t, err)
-		}
-		created = append(created, linkPath)
-	}
-
-	// Subdir clones use partial fetch + sparse checkout, which has tripped up
-	// go-git's ref-resolver in the past (HeadCommit returned no error but
-	// reported an empty hash, leaving lock entries un-pinned). Shell out to
-	// `git rev-parse HEAD` for a deterministic answer regardless of the
-	// clone's filter / sparse state.
-	commit := resolveSubdirCommit(ctx, finalPath)
-
-	lockPath := req.LockPath
-	if lockPath == "" {
-		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-	}
-	lock, err := model.ReadLockFile(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("read lock file: %w", err)
-	}
-	if existing, err := lock.Get(name); err == nil {
-		// A pre-existing entry can be reused only if it points at the same
-		// upstream slug AND was managed by qvr (registry/subdir source).
-		// Refuse otherwise rather than clobbering a link install or an entry
-		// from a different repo.
-		ownedByQvrAdd := existing.Source == "subdir" || existing.Source == "registry" || existing.Source == ""
-		if !ownedByQvrAdd || existing.Registry != slug {
-			sourceLabel := existing.Source
-			if sourceLabel == "" {
-				sourceLabel = "registry"
-			}
-			return nil, fmt.Errorf("skill %q already installed from %s (%s); pass --as <new-name> to disambiguate",
-				name, sourceLabel, existing.Registry)
-		}
-	}
-	targets := req.Targets
-	if existing, err := lock.Get(name); err == nil {
-		targets = mergeTargets(existing.Targets, req.Targets)
-	}
-	entry := &model.LockEntry{
-		Name:     name,
-		Registry: slug,
-		RepoURL:  cleanURL,
-		Path:     subpath,
-		Branch:   req.Ref,
-		Commit:   commit,
-		Worktree: finalPath,
-		Targets:  targets,
-		Global:   req.Global,
-		// "subdir" distinguishes ad-hoc URL installs from registry-driven ones
-		// so `qvr doctor` doesn't expect a matching config.Registries entry
-		// and `qvr outdated` reaches for RepoURL instead.
-		Source: "subdir",
-	}
-	entry.Verification = PopulateVerification(entry, model.ProvenanceRef{
-		RegistryName: slug,
-		RegistryURL:  cleanURL,
-		Ref:          req.Ref,
-		Subpath:      subpath,
-	})
-	lock.Put(entry)
-	if err := lock.Write(); err != nil {
-		return nil, fmt.Errorf("write lock file: %w", err)
-	}
-	return &InstallResult{
-		Name:     name,
-		Registry: slug,
-		Version:  req.Ref,
-		Worktree: finalPath,
-		Targets:  targets,
-		Commit:   commit,
-	}, nil
 }
 
 // Link creates symlinks from a local skill directory into agent dirs. No
@@ -633,7 +431,6 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		Path:        abs,
 		Worktree:    "",
 		Targets:     req.Targets,
-		Global:      req.Global,
 		Source:      "link",
 		LinkTarget:  abs,
 		InstalledAt: time.Now().UTC(),
@@ -654,21 +451,6 @@ func (in *Installer) resolveCommit(worktreePath string) (string, error) {
 		return "", nil
 	}
 	return in.Git.HeadCommit(worktreePath)
-}
-
-// resolveSubdirCommit returns the HEAD commit of a subdir clone. It shells
-// out to `git rev-parse HEAD` rather than using go-git because partial+sparse
-// clones have, in practice, returned an empty hash through go-git's
-// PlainOpen → Head() path, leaving lock entries un-pinned and breaking
-// downstream `qvr outdated`. Returns "" on any error so the caller falls
-// back to recording the entry without a commit (still better than failing
-// the install).
-func resolveSubdirCommit(ctx context.Context, repoPath string) string {
-	out, err := git.RunInDir(ctx, repoPath, "rev-parse", "HEAD")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // validateStagedSkill loads the skill at the expected path inside the staged
@@ -696,44 +478,6 @@ func rollbackLinks(paths []string) {
 	}
 }
 
-// isRefNotFound recognises the error shapes go-git / shell-git produce when
-// the requested branch/tag/commit doesn't exist on origin. We pattern-match
-// on substrings because the underlying types vary by code path (go-git's
-// transport.ErrEmptyRemoteRepository, plumbing.ErrReferenceNotFound, or
-// shelled-out `git`'s stderr like "fatal: git checkout: --detach does not
-// take a path argument 'X'"). Stable enough across versions for a CLI hint.
-func isRefNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, needle := range []string{
-		"reference not found",
-		"couldn't find remote ref",
-		"--detach does not take a path argument",
-		"did not match any file(s) known to git",
-		"unknown revision",
-		"pathspec",
-	} {
-		if strings.Contains(msg, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// isSubpathMissing recognises the error shape LoadFromPath emits when the
-// requested skill directory doesn't exist inside a sparse clone. The exact
-// wrapping is "load staged skill: stat skill dir: stat <path>: no such file
-// or directory".
-func isSubpathMissing(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "stat skill dir") && strings.Contains(msg, "no such file or directory")
-}
-
 func mergeTargets(existing, add []string) []string {
 	set := make(map[string]struct{})
 	for _, t := range existing {
@@ -754,9 +498,13 @@ func mergeTargets(existing, add []string) []string {
 // worktree's git HEAD. It renames the on-disk worktree directory to the path
 // matching the new ref and repoints every target symlink for the skill.
 // Callers own lock.Put + lock.Write; this helper only touches the filesystem.
-// entry.Branch must already reflect the new ref when called.
-func ApplySwitch(entry *model.LockEntry, projectRoot string) error {
-	newPath := registry.WorktreePath(entry.Registry, entry.Name, entry.Branch)
+// entry.Ref must already reflect the new ref when called.
+//
+// global picks between project-local (`<project>/.claude/skills/`) and
+// user-global (`~/.claude/skills/`) symlink targets — derive from the
+// lock file's location via LockFile.IsGlobal.
+func ApplySwitch(entry *model.LockEntry, projectRoot string, global bool) error {
+	newPath := registry.WorktreePath(entry.Registry, entry.Name, entry.Ref)
 	oldPath := entry.Worktree
 	if newPath != oldPath {
 		_, statErr := os.Stat(newPath)
@@ -782,7 +530,7 @@ func ApplySwitch(entry *model.LockEntry, projectRoot string) error {
 
 	skillDir := EffectiveTarget(entry)
 	for _, target := range entry.Targets {
-		linkPath, err := ResolveTargetPath(target, entry.Name, projectRoot, entry.Global)
+		linkPath, err := ResolveTargetPath(target, entry.Name, projectRoot, global)
 		if err != nil {
 			return fmt.Errorf("resolve target %s: %w", target, err)
 		}

@@ -8,14 +8,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/skill"
 	"github.com/spf13/cobra"
 )
 
-var infoGlobal bool
+var (
+	infoGlobal bool
+	infoAll    bool
+)
 
 // targetStatus reports whether the symlink for a given agent target points at
 // the worktree we expect.
@@ -60,6 +62,8 @@ the bundled file tree for an installed skill. Fast — reads only local state.`,
 func init() {
 	infoCmd.Flags().BoolVar(&infoGlobal, "global", false,
 		"read the user-global lock file instead of the project lock")
+	infoCmd.Flags().BoolVar(&infoAll, "all", false,
+		"search both project and global locks (errors when both contain the skill)")
 	rootCmd.AddCommand(infoCmd)
 }
 
@@ -69,16 +73,20 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	lock, err := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), infoGlobal))
-	if err != nil {
-		return fmt.Errorf("read lock: %w", err)
-	}
-	entry, err := lock.Get(name)
+	locks, err := loadScopedLocks(projectRoot, infoGlobal, infoAll)
 	if err != nil {
 		return err
 	}
+	entry, scope, err := findEntryAcrossLocks(name, locks)
+	if err != nil {
+		return err
+	}
+	// Target-path resolution still needs to know which agent directory tree
+	// to consult, so derive `global` from the lock that actually owns the
+	// entry rather than the command-line flag.
+	global := scope.Scope == "global"
 
-	info, err := buildSkillInfo(entry, projectRoot)
+	info, err := buildSkillInfo(entry, projectRoot, global)
 	if err != nil {
 		return err
 	}
@@ -93,12 +101,12 @@ func runInfo(cmd *cobra.Command, args []string) error {
 // buildSkillInfo gathers all the data for `qvr info` from local state only.
 // Pulled out as a top-level function so tests can call it directly with a
 // hand-built lock entry instead of going through Cobra.
-func buildSkillInfo(entry *model.LockEntry, projectRoot string) (*skillInfo, error) {
+func buildSkillInfo(entry *model.LockEntry, projectRoot string, global bool) (*skillInfo, error) {
 	info := &skillInfo{
 		Name:         entry.Name,
 		Registry:     entry.Registry,
-		Branch:       entry.Branch,
-		Commit:       entry.Commit,
+		Branch:       entry.Ref,
+		Commit:       entry.ResolvedSHA,
 		Worktree:     entry.Worktree,
 		LinkTarget:   entry.LinkTarget,
 		Source:       entry.Source,
@@ -120,7 +128,7 @@ func buildSkillInfo(entry *model.LockEntry, projectRoot string) (*skillInfo, err
 
 	expectedTarget := skillDir
 	for _, t := range entry.Targets {
-		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, entry.Global)
+		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, global)
 		ts := targetStatus{Target: t, Path: linkPath}
 		if err != nil {
 			ts.Error = err.Error()

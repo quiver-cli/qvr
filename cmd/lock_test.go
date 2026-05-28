@@ -39,7 +39,7 @@ func TestProvenanceFromLegacyEntry_registrySource(t *testing.T) {
 	entry := &model.LockEntry{
 		Name:     "code-review",
 		Registry: "raks",
-		Branch:   "v0.2.0",
+		Ref:      "v0.2.0",
 		Path:     "skills/code-review",
 		Source:   "registry",
 	}
@@ -70,7 +70,7 @@ func TestProvenanceFromLegacyEntry_subdirSource(t *testing.T) {
 		Name:     "x-article-editor",
 		Registry: "openclaw-skills",
 		RepoURL:  "https://github.com/openclaw/skills.git",
-		Branch:   "main",
+		Ref:      "main",
 		Path:     "skills/jchopard69/x-article-editor",
 		Source:   "subdir",
 	}
@@ -89,7 +89,7 @@ func TestProvenanceFromLegacyEntry_orphanRegistry(t *testing.T) {
 	entry := &model.LockEntry{
 		Name:     "foo",
 		Registry: "gone",
-		Branch:   "main",
+		Ref:      "main",
 		Path:     "skills/foo",
 		Source:   "registry",
 	}

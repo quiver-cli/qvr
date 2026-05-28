@@ -136,7 +136,7 @@ func TestPull_FastForward(t *testing.T) {
 
 	otherEntry := &model.LockEntry{
 		Name:     "code-review",
-		Branch:   "main",
+		Ref:      "main",
 		Worktree: other,
 		Path:     "skills/code-review",
 	}
@@ -190,7 +190,7 @@ func TestPull_Divergence(t *testing.T) {
 	}
 	otherFile := filepath.Join(other, "skills", "code-review", "SKILL.md")
 	_ = os.WriteFile(otherFile, []byte("from-other"), 0o644)
-	otherEntry := &model.LockEntry{Name: "cr", Branch: "main", Worktree: other, Path: "skills/code-review"}
+	otherEntry := &model.LockEntry{Name: "cr", Ref: "main", Worktree: other, Path: "skills/code-review"}
 	s := newSyncer()
 	if _, err := s.Push(context.Background(), otherEntry, skill.PushOptions{Message: "other"}); err != nil {
 		t.Fatalf("push other: %v", err)
@@ -250,11 +250,11 @@ func TestSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Switch: %v", err)
 	}
-	if updated.Branch != "v2" {
-		t.Errorf("branch = %s, want v2", updated.Branch)
+	if updated.Ref != "v2" {
+		t.Errorf("branch = %s, want v2", updated.Ref)
 	}
-	if len(updated.Commit) != 40 {
-		t.Errorf("commit = %s", updated.Commit)
+	if len(updated.ResolvedSHA) != 40 {
+		t.Errorf("commit = %s", updated.ResolvedSHA)
 	}
 }
 

@@ -203,7 +203,7 @@ func (r *lockResolver) attributePath(path string) (Attribution, bool) {
 			return Attribution{
 				Name:     t.entry.Name,
 				Registry: t.entry.Registry,
-				Commit:   t.entry.Commit,
+				Commit:   t.entry.ResolvedSHA,
 				RelPath:  rel,
 			}, true
 		}

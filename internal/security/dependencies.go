@@ -492,11 +492,26 @@ func isExactNPMVersion(v string) bool {
 	}
 	// Plain semver: digits.digits.digits, no operators.
 	for _, r := range v {
-		if !(r == '.' || (r >= '0' && r <= '9') || r == '-' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+		if !isPlainSemverRune(r) {
 			return false
 		}
 	}
 	return strings.Count(v, ".") >= 1
+}
+
+// isPlainSemverRune reports whether r is allowed in a plain semver string
+// (digits, dots, dashes, ASCII letters for pre-release identifiers).
+func isPlainSemverRune(r rune) bool {
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	return r == '.' || r == '-'
 }
 
 func parseGoMod(f FileEntry) []Dependency {

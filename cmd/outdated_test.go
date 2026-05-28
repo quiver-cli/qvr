@@ -15,8 +15,8 @@ func newRefs(m map[string]string) *git.RemoteRefInfo {
 
 func TestComputeOutdated_UpToDate(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "main",
-		Commit: "aaaaaaa1111111111111111111111111111111111",
+		Name: "demo", Registry: "acme", Ref: "main",
+		ResolvedSHA: "aaaaaaa1111111111111111111111111111111111",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "aaaaaaa1111111111111111111111111111111111",
@@ -29,8 +29,8 @@ func TestComputeOutdated_UpToDate(t *testing.T) {
 
 func TestComputeOutdated_Behind(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "main",
-		Commit: "0000000000000000000000000000000000000000",
+		Name: "demo", Registry: "acme", Ref: "main",
+		ResolvedSHA: "0000000000000000000000000000000000000000",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "ffffffffffffffffffffffffffffffffffffffff",
@@ -46,8 +46,8 @@ func TestComputeOutdated_Behind(t *testing.T) {
 
 func TestComputeOutdated_TagPinned(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "v1.2.0",
-		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Name: "demo", Registry: "acme", Ref: "v1.2.0",
+		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main":  "ddddddddddddddddddddddddddddddddddddddd0",
@@ -61,8 +61,8 @@ func TestComputeOutdated_TagPinned(t *testing.T) {
 
 func TestComputeOutdated_TagPinned_NewerTagAvailable(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "v0.1.1",
-		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Name: "demo", Registry: "acme", Ref: "v0.1.1",
+		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main":  "ddddddddddddddddddddddddddddddddddddddd0",
@@ -83,8 +83,8 @@ func TestComputeOutdated_TagPinned_NewerTagAvailable(t *testing.T) {
 
 func TestComputeOutdated_TagPinned_PeeledTagRefsIgnored(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "v1.0.0",
-		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Name: "demo", Registry: "acme", Ref: "v1.0.0",
+		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	// Some servers publish `v1.0.0^{}` peeled refs. They must not win the
 	// "latest tag" election over the semver-named ref.
@@ -100,8 +100,8 @@ func TestComputeOutdated_TagPinned_PeeledTagRefsIgnored(t *testing.T) {
 
 func TestComputeOutdated_RefNotOnRemote(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "feature/x",
-		Commit: "1111111111111111111111111111111111111111",
+		Name: "demo", Registry: "acme", Ref: "feature/x",
+		ResolvedSHA: "1111111111111111111111111111111111111111",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "ffffffffffffffffffffffffffffffffffffffff",
@@ -117,8 +117,8 @@ func TestComputeOutdated_RefNotOnRemote(t *testing.T) {
 
 func TestComputeOutdated_Unreachable(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Registry: "acme", Branch: "main",
-		Commit: "1111111111111111111111111111111111111111",
+		Name: "demo", Registry: "acme", Ref: "main",
+		ResolvedSHA: "1111111111111111111111111111111111111111",
 	}
 	remote := remoteResult{err: errors.New("network: connection refused")}
 	got := computeOutdated(entry, remote)
@@ -132,7 +132,7 @@ func TestComputeOutdated_Unreachable(t *testing.T) {
 
 func TestComputeOutdated_LinkInstall(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Source: "link", Branch: "main",
+		Name: "demo", Source: "link", Ref: "main",
 	}
 	got := computeOutdated(entry, remoteResult{})
 	if got.State != outStateLink {

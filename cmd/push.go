@@ -54,9 +54,9 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	gc := git.NewGoGitClient()
 	if entry.Registry != "" {
-		if defaultBranch, err := gc.DefaultBranch(registry.RegistryPath(entry.Registry)); err == nil && defaultBranch != "" && defaultBranch == entry.Branch {
+		if defaultBranch, err := gc.DefaultBranch(registry.RegistryPath(entry.Registry)); err == nil && defaultBranch != "" && defaultBranch == entry.Ref {
 			printer.Warning(fmt.Sprintf("%s is on registry default branch %q — this push targets the shared upstream. Use 'qvr edit' first if you want to land on your own branch.",
-				entry.Name, entry.Branch))
+				entry.Name, entry.Ref))
 		}
 	}
 
@@ -80,7 +80,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("push %s: %w", entry.Name, err)
 	}
-	entry.Commit = hash
+	entry.ResolvedSHA = hash
 	lock.Put(entry)
 	if err := lock.Write(); err != nil {
 		return fmt.Errorf("write lock: %w", err)

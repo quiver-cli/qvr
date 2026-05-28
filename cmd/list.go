@@ -5,27 +5,40 @@ import (
 	"os"
 	"strings"
 
-	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/spf13/cobra"
 )
 
-var listGlobal bool
+var (
+	listGlobal bool
+	listAll    bool
+)
 
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List installed skills",
 	Long: `List skills recorded in the lock file. Reads the project lock file by
 default; pass --global to read the user-global lock at $QUIVER_HOME/` + model.LockFileName + `
-(mirrors the same flag on ` + "`qvr install`" + `).`,
+(mirrors the same flag on ` + "`qvr add`" + `). Pass --all to union both locks
+and render entries with a SCOPE column.`,
 	RunE: runList,
 }
 
 func init() {
 	listCmd.Flags().BoolVar(&listGlobal, "global", false,
 		"read the user-global lock file instead of the project lock")
+	listCmd.Flags().BoolVar(&listAll, "all", false,
+		"union project and global locks (adds a SCOPE column)")
 	rootCmd.AddCommand(listCmd)
+}
+
+// scopedListEntry pairs a lock entry with the scope it came from. The Scope
+// field is empty for single-lock invocations (project- or global-only) so the
+// JSON output stays backward-compatible; --all populates it.
+type scopedListEntry struct {
+	*model.LockEntry
+	Scope string `json:"scope,omitempty"`
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -33,38 +46,55 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), listGlobal)
-	lock, err := model.ReadLockFile(lockPath)
+	locks, err := loadScopedLocks(projectRoot, listGlobal, listAll)
 	if err != nil {
-		return fmt.Errorf("read lock: %w", err)
+		return err
 	}
-	entries := lock.Entries()
+
+	var rows []scopedListEntry
+	for _, s := range locks {
+		for _, e := range s.Lock.Entries() {
+			row := scopedListEntry{LockEntry: e}
+			if listAll {
+				row.Scope = s.Scope
+			}
+			rows = append(rows, row)
+		}
+	}
+
 	if printer.Format == output.FormatJSON {
-		return printer.JSON(entries)
+		return printer.JSON(rows)
 	}
-	if len(entries) == 0 {
+	if len(rows) == 0 {
 		printer.Info("No installed skills.")
 		return nil
 	}
 	headers := []string{"SKILL", "REGISTRY", "VERSION", "TARGETS", "SOURCE", "STATUS"}
-	var rows [][]string
-	for _, e := range entries {
-		reg := e.Registry
+	if listAll {
+		headers = append([]string{"SCOPE"}, headers...)
+	}
+	var tbl [][]string
+	for _, r := range rows {
+		reg := r.Registry
 		if reg == "" {
 			reg = "-"
 		}
-		source := e.Source
+		source := r.Source
 		if source == "" {
 			source = "registry"
 		}
 		status := "enabled"
-		if e.Disabled {
+		if r.Disabled {
 			status = "disabled"
 		}
-		rows = append(rows, []string{
-			e.Name, reg, e.Branch, strings.Join(e.Targets, ","), source, status,
-		})
+		row := []string{
+			r.Name, reg, r.Ref, strings.Join(r.Targets, ","), source, status,
+		}
+		if listAll {
+			row = append([]string{r.Scope}, row...)
+		}
+		tbl = append(tbl, row)
 	}
-	printer.Table(headers, rows)
+	printer.Table(headers, tbl)
 	return nil
 }

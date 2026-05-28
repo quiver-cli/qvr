@@ -12,25 +12,20 @@ import (
 
 // LockFileVersion is the current lock file schema version.
 //
-// v3 adds VerificationRecord per entry — the supply-chain provenance block
-// (subtree hash, scan/eval/signature/attestation refs, trust status) that
-// later pipeline phases write into. v2 files load transparently; the bump
-// happens on the next Write().
-const LockFileVersion = 3
+// v4 is the project-local pivot: per-entry Branch/Commit rename to Ref/
+// ResolvedSHA, Global flag dropped (locks are distinguished by location), and
+// InstallPath added so the lock records where the symlink (or vendored copy)
+// lives. Older schemas are rejected at ReadLockFile time — `qvr` is
+// pre-release with no external users, so the only recourse is to delete
+// the old lock and reinstall.
+const LockFileVersion = 4
 
-// LockFileName is the default lock file name.
+// LockFileName is the canonical lock file name.
 const LockFileName = "qvr.lock"
 
-// LegacyLockFileName is the pre-v0.4.6 lockfile name. ReadLockFile falls back
-// to this when the canonical LockFileName is absent, and Write() removes it
-// after migrating contents to the new path. The fallback is one-way: writes
-// always go to LockFileName so projects converge on the canonical layout.
-const LegacyLockFileName = "qvr.lock.json"
-
 // MinSupportedLockFileVersion is the oldest schema this binary will read.
-// Anything older is rejected at ReadLockFile time so a corrupted or
-// hand-edited file doesn't load as an empty lockfile.
-const MinSupportedLockFileVersion = 2
+// v4 is a hard break — anything older is rejected outright.
+const MinSupportedLockFileVersion = 4
 
 var (
 	ErrLockNotFound           = errors.New("lock file not found")
@@ -43,34 +38,27 @@ type LockEntry struct {
 	Name        string    `json:"name"`
 	Registry    string    `json:"registry"`
 	Path        string    `json:"path"` // relative path inside the registry repo
-	Branch      string    `json:"branch"`
-	Commit      string    `json:"commit"`
-	Worktree    string    `json:"worktree"`
+	Ref         string    `json:"ref"`  // human label: branch or tag at install time
+	ResolvedSHA string    `json:"resolvedSha"`
+	Worktree    string    `json:"worktree"`    // ~/.quiver/worktrees/<reg>--<skill>--<sha7>
+	InstallPath string    `json:"installPath"` // first managed agent-dir symlink (or vendor dir)
 	Targets     []string  `json:"targets"`
-	Global      bool      `json:"global"`
 	InstalledAt time.Time `json:"installedAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
-	// Source is "registry", "subdir", "standalone", or "link". Defaults to
-	// "registry". "subdir" means the entry was created by `qvr add <url>`
-	// against a sparse checkout of one folder inside a multi-skill repo
-	// (no entry in config.Registries — the upstream URL lives on this
-	// entry as RepoURL instead).
+	// Source is "registry" or "link". "registry" covers everything resolved
+	// through a configured source (the indexer doesn't care whether the bare
+	// clone is single-skill or multi-skill). "link" is the local-dev path
+	// from `qvr link <local-path>` — no worktree, LinkTarget points at the
+	// live directory.
 	Source string `json:"source,omitempty"`
 	// RepoURL is the canonical clone URL the skill was installed from.
-	// Required for Source == "subdir" so commands like `qvr outdated`
-	// can ls-remote without a matching registry config. Optional for
-	// Source == "registry" (the registry config still owns the URL).
+	// Optional — the registry config still owns the URL for source=="registry".
 	RepoURL string `json:"repoURL,omitempty"`
 	// LinkTarget is the absolute path of the source dir when Source == "link".
 	LinkTarget string `json:"linkTarget,omitempty"`
 	// Disabled hides the skill from agents without removing the worktree.
-	// `qvr disable` flips this to true and tears down symlinks; `qvr enable`
-	// reverses both.
 	Disabled bool `json:"disabled,omitempty"`
-	// Verification carries the supply-chain provenance block. nil for
-	// entries written by pre-v3 binaries (and for fresh v3 installs that
-	// haven't yet been hashed). Populated post-install by the installer
-	// and refreshed by `qvr lock verify` / `qvr lock upgrade`.
+	// Verification carries the supply-chain provenance block.
 	Verification *VerificationRecord `json:"verification,omitempty"`
 }
 
@@ -79,10 +67,6 @@ type LockFile struct {
 	Version int                   `json:"version"`
 	Skills  map[string]*LockEntry `json:"skills"`
 	path    string                // canonical write destination — not serialized
-	// legacyPath, if non-empty, is the qvr.lock.json the contents were read
-	// from. Write() removes it after a successful write so the project ends
-	// up with a single canonical qvr.lock instead of two side-by-side files.
-	legacyPath string
 }
 
 // NewLockFile returns an empty lock file at the given path.
@@ -100,39 +84,33 @@ func (l *LockFile) Path() string { return l.path }
 // SetPath overrides the lock file's on-disk path.
 func (l *LockFile) SetPath(p string) { l.path = p }
 
+// IsGlobal reports whether this lock file lives at the global location
+// (~/.quiver/qvr.lock vs <project>/qvr.lock). Replaces the per-entry Global
+// flag — callers that need "which agent dir does this skill's symlink live
+// in?" ask the lock file, not the entry.
+func (l *LockFile) IsGlobal(quiverHome string) bool {
+	if l.path == "" || quiverHome == "" {
+		return false
+	}
+	return filepath.Clean(filepath.Dir(l.path)) == filepath.Clean(quiverHome)
+}
+
 // ReadLockFile loads the lock file at path. Returns an empty lock file when
 // the path does not exist — this is the expected state before the first
 // install.
 //
-// Falls back to <dir>/qvr.lock.json (the pre-v0.4.6 filename) when path does
-// not exist, so projects upgrading across the rename don't appear empty. The
-// returned LockFile remembers the legacy path; the next Write() lands at
-// path and removes the legacy file so the project converges on one filename.
-//
-// Rejects on-disk files whose `version` field is missing/zero, below
-// MinSupportedLockFileVersion, or above LockFileVersion (a future binary
-// wrote it). The error wraps ErrLockVersionUnsupported so callers can
-// distinguish "broken file" from "missing file".
+// Rejects any schema version other than v4 with an error wrapping
+// ErrLockVersionUnsupported. qvr is pre-release with no external users, so
+// older shapes (v2, v3, legacy qvr.lock.json) are not supported — delete the
+// old lock and reinstall.
 func ReadLockFile(path string) (*LockFile, error) {
 	l := NewLockFile(path)
 	data, err := os.ReadFile(path)
-	legacyPath := ""
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("read lock file: %w", err)
+		if os.IsNotExist(err) {
+			return l, nil
 		}
-		// Canonical filename absent — try the legacy filename next to it.
-		// Only used for projects mid-upgrade from <v0.4.6.
-		legacyCandidate := filepath.Join(filepath.Dir(path), LegacyLockFileName)
-		if legacyCandidate != path {
-			legacyData, legacyErr := os.ReadFile(legacyCandidate)
-			if legacyErr == nil {
-				data = legacyData
-				legacyPath = legacyCandidate
-			} else if !os.IsNotExist(legacyErr) {
-				return nil, fmt.Errorf("read legacy lock file: %w", legacyErr)
-			}
-		}
+		return nil, fmt.Errorf("read lock file: %w", err)
 	}
 	if len(data) == 0 {
 		return l, nil
@@ -142,27 +120,20 @@ func ReadLockFile(path string) (*LockFile, error) {
 	// in the input, so we'd silently accept a missing `version` key.
 	l.Version = 0
 	if err := json.Unmarshal(data, l); err != nil {
-		// Route a wrong-typed `version` (e.g. a string) through the
-		// friendly template instead of leaking the raw Go unmarshal
-		// error. Any other JSON shape error stays generic — only the
-		// version field has a recovery story we can recommend.
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) && typeErr.Field == "version" {
 			rawVersion := extractRawVersion(data)
-			return nil, fmt.Errorf("%w: `version` must be an integer, got %s — restore from VCS or re-install skills against a fresh lockfile",
+			return nil, fmt.Errorf("%w: `version` must be an integer, got %s — delete the lock and reinstall",
 				ErrLockVersionUnsupported, rawVersion)
 		}
 		return nil, fmt.Errorf("parse lock file: %w", err)
 	}
 	if l.Version == 0 {
-		// Don't suggest `qvr lock upgrade` here — it reads through this
-		// same parser and would hit the same error, leaving the user in
-		// a loop. Recovery is out-of-band: VCS history or a fresh install.
-		return nil, fmt.Errorf("%w: lock file missing `version` field — restore from VCS or re-install skills against a fresh lockfile",
+		return nil, fmt.Errorf("%w: lock file missing `version` field — delete the lock and reinstall",
 			ErrLockVersionUnsupported)
 	}
 	if l.Version < MinSupportedLockFileVersion {
-		return nil, fmt.Errorf("%w: version %d is older than the minimum supported (%d) — this binary cannot read it",
+		return nil, fmt.Errorf("%w: version %d predates the v%d project-local pivot — delete the lock and reinstall",
 			ErrLockVersionUnsupported, l.Version, MinSupportedLockFileVersion)
 	}
 	if l.Version > LockFileVersion {
@@ -170,7 +141,6 @@ func ReadLockFile(path string) (*LockFile, error) {
 			ErrLockVersionUnsupported, l.Version, LockFileVersion)
 	}
 	l.path = path
-	l.legacyPath = legacyPath
 	if l.Skills == nil {
 		l.Skills = make(map[string]*LockEntry)
 	}
@@ -201,7 +171,6 @@ func (l *LockFile) Write() error {
 		return fmt.Errorf("create temp lock: %w", err)
 	}
 	tmpPath := tmp.Name()
-	// Best-effort cleanup if we fail mid-write.
 	cleanup := func() { _ = os.Remove(tmpPath) }
 
 	if _, err := tmp.Write(data); err != nil {
@@ -216,13 +185,6 @@ func (l *LockFile) Write() error {
 	if err := os.Rename(tmpPath, l.path); err != nil {
 		cleanup()
 		return fmt.Errorf("rename temp lock: %w", err)
-	}
-	// Best-effort cleanup of the legacy filename after a successful write.
-	// Failure here is non-fatal — the canonical file is already on disk, and
-	// `qvr doctor` will surface a leftover qvr.lock.json on its next run.
-	if l.legacyPath != "" && l.legacyPath != l.path {
-		_ = os.Remove(l.legacyPath)
-		l.legacyPath = ""
 	}
 	return nil
 }
@@ -275,9 +237,7 @@ func (l *LockFile) Entries() []*LockEntry {
 
 // extractRawVersion pulls the `version` field out of the raw JSON without
 // caring about its type, so the friendly error message can echo what the
-// user actually wrote (e.g. `"three"`). Falls back to `<unknown>` when the
-// field can't be re-parsed — the message still names the field by way of
-// the surrounding template, so we lose nothing useful.
+// user actually wrote (e.g. `"three"`).
 func extractRawVersion(data []byte) string {
 	var probe struct {
 		Version json.RawMessage `json:"version"`
@@ -288,9 +248,9 @@ func extractRawVersion(data []byte) string {
 	return string(probe.Version)
 }
 
-// DefaultLockPath returns the lock path based on whether --global was requested.
-// Local installs write alongside the project; global installs write under the
-// quiver home directory (caller supplies it).
+// DefaultLockPath returns the lock path. The `global` arg picks the location:
+// project-local writes alongside the project; global writes under the quiver
+// home directory.
 func DefaultLockPath(projectRoot, quiverHome string, global bool) string {
 	if global {
 		return filepath.Join(quiverHome, LockFileName)

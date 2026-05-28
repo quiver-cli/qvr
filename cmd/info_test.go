@@ -45,15 +45,15 @@ func TestBuildSkillInfo_FullSkill(t *testing.T) {
 	linkSkillInto(t, project, ".claude/skills", "demo", wt)
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Registry: "acme",
-		Branch:   "main",
-		Commit:   "deadbeef",
-		Worktree: wt,
-		Targets:  []string{"claude"},
+		Name:        "demo",
+		Registry:    "acme",
+		Ref:         "main",
+		ResolvedSHA: "deadbeef",
+		Worktree:    wt,
+		Targets:     []string{"claude"},
 	}
 
-	info, err := buildSkillInfo(entry, project)
+	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestBuildSkillInfo_BrokenSymlinkReportsError(t *testing.T) {
 		Worktree: wt,
 		Targets:  []string{"claude"},
 	}
-	info, err := buildSkillInfo(entry, project)
+	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
@@ -124,12 +124,12 @@ func TestBuildSkillInfo_LoadsFrontmatterFromSkillPath(t *testing.T) {
 	entry := &model.LockEntry{
 		Name:     "deploy-to-vercel",
 		Registry: "vercel",
-		Branch:   "main",
+		Ref:      "main",
 		Worktree: worktree,
 		Path:     skillRel,
 		Targets:  []string{"claude"},
 	}
-	info, err := buildSkillInfo(entry, t.TempDir())
+	info, err := buildSkillInfo(entry, t.TempDir(), false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestBuildSkillInfo_LinkedSkill(t *testing.T) {
 		Path:       src,
 		Targets:    []string{"claude"},
 	}
-	info, err := buildSkillInfo(entry, project)
+	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestBuildSkillInfo_PropagatesVerificationRecord(t *testing.T) {
 	entry := &model.LockEntry{
 		Name:     "demo",
 		Registry: "raks",
-		Branch:   "v0.2.0",
+		Ref:      "v0.2.0",
 		Worktree: wt,
 		Targets:  []string{"claude"},
 		Verification: &model.VerificationRecord{
@@ -198,7 +198,7 @@ func TestBuildSkillInfo_PropagatesVerificationRecord(t *testing.T) {
 			VerifiedAt: now,
 		},
 	}
-	info, err := buildSkillInfo(entry, project)
+	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestBuildSkillInfo_TargetWithNoSymlinkReportsError(t *testing.T) {
 		Worktree: wt,
 		Targets:  []string{"claude", "cursor"},
 	}
-	info, err := buildSkillInfo(entry, project)
+	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}

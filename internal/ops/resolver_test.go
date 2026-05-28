@@ -99,7 +99,7 @@ func TestResolver_EmptyLockfileNoAttribution(t *testing.T) {
 
 func TestResolver_AttributesRegistryInstall(t *testing.T) {
 	f := newFixture(t, &model.LockEntry{
-		Name: "foo", Registry: "team", Commit: "abc123",
+		Name: "foo", Registry: "team", ResolvedSHA: "abc123",
 	})
 	r, _ := NewResolver(f.lockPath)
 

@@ -48,7 +48,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(names) == 0 {
-		printer.Info("No installed skills. Run 'qvr install <skill>' first.")
+		printer.Info("No installed skills. Run 'qvr add <skill>' first.")
 		return nil
 	}
 
@@ -76,7 +76,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 			loopErr = fmt.Errorf("pull %s: %w", name, err)
 			break
 		}
-		entry.Commit = hash
+		entry.ResolvedSHA = hash
 		skill.RefreshVerification(entry)
 		lock.Put(entry)
 		printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))

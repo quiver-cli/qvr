@@ -62,8 +62,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if e.Disabled {
 			results = append(results, &skill.SyncStatus{
 				Name:    e.Name,
-				Branch:  e.Branch,
-				Commit:  e.Commit,
+				Branch:  e.Ref,
+				Commit:  e.ResolvedSHA,
 				Message: "disabled",
 			})
 			continue

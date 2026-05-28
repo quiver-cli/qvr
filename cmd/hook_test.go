@@ -40,7 +40,7 @@ func isolatedHome(t *testing.T, opsEnabled bool) (worktree string, readEvents fu
 		Version: model.LockFileVersion,
 		Skills: map[string]*model.LockEntry{
 			"foo": {
-				Name: "foo", Registry: "team", Commit: "abc123",
+				Name: "foo", Registry: "team", ResolvedSHA: "abc123",
 				Worktree:    worktree,
 				InstalledAt: time.Now(),
 				UpdatedAt:   time.Now(),

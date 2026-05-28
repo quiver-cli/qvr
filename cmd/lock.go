@@ -442,7 +442,7 @@ func provenanceFromLegacyEntry(entry *model.LockEntry, cfg *config.Config) model
 	}
 	prov := model.ProvenanceRef{
 		RegistryName: entry.Registry,
-		Ref:          entry.Branch,
+		Ref:          entry.Ref,
 		Subpath:      entry.Path,
 	}
 	switch {

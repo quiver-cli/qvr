@@ -292,7 +292,7 @@ func resolveByLock(arg string, requireHit bool) (string, []string, error) {
 	}
 	target := skill.EffectiveTarget(entry)
 	if target == "" {
-		return "", nil, fmt.Errorf("lock entry %q has no resolvable target — try `qvr install` to rebuild it", arg)
+		return "", nil, fmt.Errorf("lock entry %q has no resolvable target — try `qvr sync` to rebuild it", arg)
 	}
 	// EffectiveTarget already points at the SKILL.md-bearing dir for
 	// nested layouts. Confirm SKILL.md is there before handing off.

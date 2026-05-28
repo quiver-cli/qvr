@@ -15,7 +15,10 @@ import (
 )
 
 // outdatedRow describes one installed skill's freshness against its registry.
+// Scope is populated only when --all is set so single-lock JSON output stays
+// backward-compatible.
 type outdatedRow struct {
+	Scope     string `json:"scope,omitempty"`
 	Name      string `json:"name"`
 	Registry  string `json:"registry"`
 	Branch    string `json:"branch"`
@@ -40,19 +43,27 @@ type remoteResult struct {
 	err  error
 }
 
-var outdatedGlobal bool
+var (
+	outdatedGlobal bool
+	outdatedAll    bool
+)
 
 var outdatedCmd = &cobra.Command{
 	Use:   "outdated",
 	Short: "Show installed skills with newer upstream commits",
 	Long: `Per-registry git ls-remote, compared against each lock entry's pinned
-commit. No objects are downloaded — use qvr pull to actually update.`,
+commit. No objects are downloaded — use qvr pull to actually update.
+
+Defaults to the project lock; --global reads the user-global lock instead,
+and --all unions both (adds a SCOPE column).`,
 	RunE: runOutdated,
 }
 
 func init() {
 	outdatedCmd.Flags().BoolVar(&outdatedGlobal, "global", false,
 		"read the user-global lock file instead of the project lock")
+	outdatedCmd.Flags().BoolVar(&outdatedAll, "all", false,
+		"union project and global locks (adds a SCOPE column)")
 	rootCmd.AddCommand(outdatedCmd)
 }
 
@@ -61,32 +72,47 @@ func runOutdated(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	lock, err := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), outdatedGlobal))
+	locks, err := loadScopedLocks(projectRoot, outdatedGlobal, outdatedAll)
 	if err != nil {
-		return fmt.Errorf("read lock: %w", err)
+		return err
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	entries := lock.Entries()
-	if len(entries) == 0 {
+
+	// Collect every entry up front so ls-remote runs once per registry
+	// across both locks rather than re-fetching per-scope.
+	var allEntries []*model.LockEntry
+	for _, s := range locks {
+		allEntries = append(allEntries, s.Lock.Entries()...)
+	}
+	if len(allEntries) == 0 {
 		printer.Info("No installed skills.")
 		return nil
 	}
 
 	gc := git.NewGoGitClient()
-	remotes := fetchRemotes(cmd.Context(), gc, cfg, entries)
+	remotes := fetchRemotes(cmd.Context(), gc, cfg, allEntries)
 
-	rows := make([]outdatedRow, 0, len(entries))
-	for _, e := range entries {
-		rows = append(rows, computeOutdated(e, remotes[e.Registry]))
+	var rows []outdatedRow
+	for _, s := range locks {
+		for _, e := range s.Lock.Entries() {
+			row := computeOutdated(e, remotes[e.Registry])
+			if outdatedAll {
+				row.Scope = s.Scope
+			}
+			rows = append(rows, row)
+		}
 	}
 
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(rows)
 	}
 	headers := []string{"SKILL", "BRANCH", "LOCAL", "REMOTE", "STATE"}
+	if outdatedAll {
+		headers = append([]string{"SCOPE"}, headers...)
+	}
 	tbl := make([][]string, 0, len(rows))
 	for _, r := range rows {
 		remoteCol := shortSHA(r.Remote)
@@ -95,7 +121,11 @@ func runOutdated(cmd *cobra.Command, args []string) error {
 		if r.LatestTag != "" {
 			remoteCol = r.LatestTag
 		}
-		tbl = append(tbl, []string{r.Name, r.Branch, shortSHA(r.Local), remoteCol, r.State})
+		row := []string{r.Name, r.Branch, shortSHA(r.Local), remoteCol, r.State}
+		if outdatedAll {
+			row = append([]string{r.Scope}, row...)
+		}
+		tbl = append(tbl, row)
 	}
 	printer.Table(headers, tbl)
 	return nil
@@ -153,8 +183,8 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 	row := outdatedRow{
 		Name:     entry.Name,
 		Registry: entry.Registry,
-		Branch:   entry.Branch,
-		Local:    entry.Commit,
+		Branch:   entry.Ref,
+		Local:    entry.ResolvedSHA,
 	}
 	if entry.Source == "link" {
 		row.State = outStateLink
@@ -167,10 +197,10 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 		}
 		return row
 	}
-	remoteHash, matchKind, ok := lookupRemoteRefKind(remote.refs, entry.Branch)
+	remoteHash, matchKind, ok := lookupRemoteRefKind(remote.refs, entry.Ref)
 	if !ok {
 		row.State = outStateUnreachable
-		row.Reason = fmt.Sprintf("ref %q not found on remote", entry.Branch)
+		row.Reason = fmt.Sprintf("ref %q not found on remote", entry.Ref)
 		return row
 	}
 	row.Remote = remoteHash
@@ -179,8 +209,8 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 	// what "behind" should mean here is "a newer semver tag exists upstream".
 	// Compare pinned tag against the highest-sorted semver tag in the remote
 	// refs and, if newer, surface the new tag so `qvr upgrade` has a target.
-	if matchKind == "tag" && model.IsSemverTag(entry.Branch) {
-		if latestName, latestHash := latestSemverRemoteTag(remote.refs); latestName != "" && latestName != entry.Branch {
+	if matchKind == "tag" && model.IsSemverTag(entry.Ref) {
+		if latestName, latestHash := latestSemverRemoteTag(remote.refs); latestName != "" && latestName != entry.Ref {
 			row.LatestTag = latestName
 			row.Remote = latestHash
 			row.State = outStateBehind
@@ -191,7 +221,7 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 		return row
 	}
 
-	if remoteHash == entry.Commit {
+	if remoteHash == entry.ResolvedSHA {
 		row.State = outStateUpToDate
 	} else {
 		row.State = outStateBehind

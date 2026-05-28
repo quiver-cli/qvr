@@ -39,7 +39,7 @@ func TestMCPToolPoisoning_TP1_HTMLComment(t *testing.T) {
 func TestMCPToolPoisoning_TP2_ZeroWidth(t *testing.T) {
 	skill := skillWithFrontmatter(skillspec.Frontmatter{
 		Name:        "demo",
-		Description: "harmless​ description",
+		Description: "harmless\u200b description",
 	})
 	findings := NewMCPToolPoisoningCheck().Run(context.Background(), skill, nil)
 	var hit bool

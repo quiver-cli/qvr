@@ -54,7 +54,7 @@ func NewSyncer(wt git.WorktreeManager, gc git.GitClient) *Syncer {
 // Status reports the git state for the given entry. Purely local — no network,
 // no fetches — so `qvr status` stays fast.
 func (s *Syncer) Status(entry *model.LockEntry) (*SyncStatus, error) {
-	st := &SyncStatus{Name: entry.Name, Branch: entry.Branch, Commit: entry.Commit}
+	st := &SyncStatus{Name: entry.Name, Branch: entry.Ref, Commit: entry.ResolvedSHA}
 	if entry.Source == "link" {
 		// Link-installed skills aren't tracked via git.
 		st.Message = "link"
@@ -143,7 +143,7 @@ func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOpti
 		return "", fmt.Errorf("commit: %w", err)
 	}
 
-	branch := entry.Branch
+	branch := entry.Ref
 	if branch == "" {
 		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
 			branch = head.Name().Short()
@@ -187,7 +187,7 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	}
 
 	// Fetch remote branch into refs/remotes/origin/<branch>.
-	branch := entry.Branch
+	branch := entry.Ref
 	if branch == "" {
 		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
 			branch = head.Name().Short()
@@ -320,8 +320,8 @@ func (s *Syncer) CreateEditBranch(ctx context.Context, entry *model.LockEntry, n
 		return nil, warning, fmt.Errorf("head commit: %w", err)
 	}
 	updated := *entry
-	updated.Branch = newBranch
-	updated.Commit = commit
+	updated.Ref = newBranch
+	updated.ResolvedSHA = commit
 	updated.UpdatedAt = time.Now().UTC()
 	return &updated, warning, nil
 }
@@ -352,8 +352,8 @@ func (s *Syncer) Switch(ctx context.Context, entry *model.LockEntry, newRef stri
 		return nil, fmt.Errorf("head commit: %w", err)
 	}
 	updated := *entry
-	updated.Branch = newRef
-	updated.Commit = commit
+	updated.Ref = newRef
+	updated.ResolvedSHA = commit
 	updated.UpdatedAt = time.Now().UTC()
 	return &updated, nil
 }

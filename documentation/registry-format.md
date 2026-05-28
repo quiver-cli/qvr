@@ -57,13 +57,13 @@ Skills are versioned via **Git branches and tags**:
 
 ```bash
 # Install latest (default branch)
-qvr install code-review
+qvr add code-review
 
 # Install specific branch
-qvr install code-review@v2
+qvr add code-review@v2
 
 # Install specific tag
-qvr install code-review@v1.0.0
+qvr add code-review@v1.0.0
 ```
 
 **Resolution order**: exact tag → exact branch → error.

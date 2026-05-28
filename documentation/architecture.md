@@ -29,18 +29,25 @@ The solution uses Git's own primitives:
 │   ├── acme.git/                    # Bare clone (objects + refs only)
 │   └── community.git/              # Another bare clone
 │
-├── worktrees/                       # One per installed skill@version
-│   ├── acme--code-review--main/     # Sparse: only skills/code-review/
-│   ├── acme--deploy-helper--v2/     # Sparse: only skills/deploy-helper/
-│   └── community--test-runner--main/
-│
-├── standalone/                      # Direct single-skill repos
-│   └── github.com--user--my-skill/
+├── worktrees/                       # One per resolved skill@SHA
+│   ├── acme--code-review--abc1234/  # Sparse: only skills/code-review/
+│   ├── acme--deploy--def5678/       # Sparse: only skills/deploy-helper/
+│   └── community--test-runner--9ab1c2d/
 │
 ├── config.yaml
+├── qvr.lock                         # Global ambient lock (--global lane)
 └── cache/
     └── index/                       # Cached registry skill indexes
+
+<project>/
+├── qvr.lock                         # Project lock — source of truth for agents
+└── .claude/skills/<skill>  -->      symlink into ~/.quiver/worktrees/
 ```
+
+Single-skill repos live under the same `registries/` tree — `qvr registry add`
+is the only entrypoint, so the indexer's job is to walk whatever's there
+(one skill or many). The legacy `subdir/` and `standalone/` directories
+from earlier prototypes have been collapsed.
 
 ### Data Flow
 
@@ -82,7 +89,7 @@ The solution uses Git's own primitives:
 
 ### Cold Path (Network)
 
-`qvr update`, `qvr install`:
+`qvr update`, `qvr add` / `qvr sync`:
 - `git fetch` on bare clone (one fetch = all refs)
 - Create worktree + sparse checkout (disk I/O)
 - Only when explicitly requested

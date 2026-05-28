@@ -97,9 +97,9 @@ git push origin v2
 
 Users install specific versions:
 ```bash
-qvr install code-review@v1      # Branch
-qvr install code-review@v1.0.0  # Tag
-qvr install code-review         # Default branch (main)
+qvr add code-review@v1      # Branch
+qvr add code-review@v1.0.0  # Tag
+qvr add code-review         # Default branch (main)
 ```
 
 ## Team Collaboration

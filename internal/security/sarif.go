@@ -29,8 +29,8 @@ type SarifReport struct {
 
 // SarifRun is one analysis pass over the skill.
 type SarifRun struct {
-	Tool    SarifTool      `json:"tool"`
-	Results []SarifResult  `json:"results"`
+	Tool    SarifTool     `json:"tool"`
+	Results []SarifResult `json:"results"`
 }
 
 type SarifTool struct {
@@ -57,11 +57,11 @@ type SarifText struct {
 }
 
 type SarifResult struct {
-	RuleID    string          `json:"ruleId,omitempty"`
-	Level     string          `json:"level"`
-	Message   SarifText       `json:"message"`
-	Locations []SarifLocation `json:"locations,omitempty"`
-	Properties map[string]any `json:"properties,omitempty"`
+	RuleID     string          `json:"ruleId,omitempty"`
+	Level      string          `json:"level"`
+	Message    SarifText       `json:"message"`
+	Locations  []SarifLocation `json:"locations,omitempty"`
+	Properties map[string]any  `json:"properties,omitempty"`
 }
 
 type SarifLocation struct {

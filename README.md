@@ -8,11 +8,9 @@
   the git-native agent skills manager · CLI: qvr
 ```
 
-> **Status: pre-alpha (v0.4.5).** What ships today: scaffold, validate,
-> config, registry (TTL-cached index + `update --check` dry-run), search,
-> version, add, install, pull/push, publish, edit → push → release flow,
-> upgrade/switch, AGENTS.md auto-sync, disable/enable, doctor, info, ls,
-> diff, outdated. Expect breakage.
+> **Status: pre-alpha.** Project-local lockfile, shared SHA-keyed cache,
+> strict visibility — the v4 model below. Surface is stable enough to use;
+> internals still moving.
 
 ---
 
@@ -24,9 +22,12 @@ across your coding agents (Claude Code, Cursor, Copilot, Codex,
 Windsurf, anything that reads skills from a directory).
 
 - Registries are **plain Git repos**. No central server to run.
+- Each project owns a **`qvr.lock`** — only skills explicitly added to
+  that lock are visible to the agent. No ambient surprises.
 - Skills install as **git worktrees + sparse checkout**, symlinked
   into each agent's skills directory. Independent per-skill
-  versioning for free.
+  versioning for free; two projects pinning the same SHA share one
+  worktree.
 - The hot path (`qvr read`) is **just follow a symlink**. No git,
   no network, no runtime.
 - Push your edits back upstream. Bidirectional sync, not just pull.
@@ -36,22 +37,20 @@ Windsurf, anything that reads skills from a directory).
 ## How it's wired
 
 ```
- ~/.quiver/
+ ~/.quiver/                              shared cache, ambient toolbox
  |
- +-- registries/<name>.git/       bare clones (no working tree)
- |                                  |
- |                                  v
- +-- worktrees/<reg>--<skill>--<branch>/     per-skill worktree
- |   |                             |   |       sparse checkout
- |   |                             |   |
- |   v                             v   v
- |  .claude/skills/<skill> ---> symlink
- |  .cursor/rules/<skill>  ---> symlink
- |  .github/copilot/skills ---> symlink
- |
- +-- standalone/<slug>/           single-skill repos
- +-- cache/index/<name>.json      cached registry indexes
- +-- config.yaml
+ +-- config.yaml                         registered sources (URLs + names)
+ +-- qvr.lock                            global ambient lock (--global lane)
+ +-- registries/<name>.git/              bare clones — every URL lives here
+ +-- worktrees/<reg>--<skill>--<sha7>/   immutable, SHA-keyed
+ +-- cache/index/<name>.json             registry index TTL cache
+
+
+ <project>/
+ +-- qvr.lock                            project lock — source of truth
+ +-- .claude/skills/<skill>      --> symlink into ~/.quiver/worktrees/
+ +-- .cursor/rules/<skill>       --> symlink into ~/.quiver/worktrees/
+ +-- .github/copilot/skills/...  --> symlink into ~/.quiver/worktrees/
 
 
       cold           warm            hot
@@ -62,44 +61,57 @@ Windsurf, anything that reads skills from a directory).
      on update     no network     zero ops
 ```
 
-## Registries
+## Registering a source
 
-Two ways to pull skills onto your machine. Pick by shape, not by preference.
-
-### Multi-skill registry — `qvr registry add <name> <url>`
-
-A registry is a plain Git repo that gets bare-cloned to
-`~/.quiver/registries/<name>.git/`. Skills inside it are **discovered by
-the indexer** — you don't list them anywhere.
+Tell `qvr` where skills live. Any git clone URL works — one skill or
+fifty, doesn't matter. The indexer walks the repo and finds them.
 
 ```
-    $ qvr registry add vercel https://github.com/vercel-labs/agent-skills
-    $ qvr registry list                  # all configured registries
-    $ qvr registry list vercel           # skills in one registry
-    $ qvr registry list vercel anthropic # skills across several
+    $ qvr registry add https://github.com/vercel-labs/agent-skills
+    registered as vercel-labs--agent-skills
+
+    $ qvr registry add https://github.com/user/my-skill
+    registered as user--my-skill
+
+    $ qvr registry list                              # all registered sources
+    $ qvr registry list vercel-labs--agent-skills    # skills inside one source
 ```
 
-The URL must be a **git clone URL**, not a GitHub web path:
+Use `--name <alias>` to override the auto-inferred `<org>--<repo>` name
+(handy when two orgs publish a repo with the same name).
+
+Accepted URL forms:
 
 ```
     ok   https://github.com/org/repo
     ok   https://github.com/org/repo.git
     ok   git@github.com:org/repo.git
-    no   https://github.com/org/repo/tree/main/skills   <- web UI path
+    no   https://github.com/org/repo/tree/main/skills    <- web UI path
 ```
 
-`/tree/<branch>/<subdir>` is how github.com renders a folder in the browser;
-git has no concept of cloning a subdirectory. If the skills you want live
-inside a subfolder, just clone the whole repo — the indexer walks it.
+`tree/<branch>/<subdir>` is how github.com renders a folder in the browser;
+git has no concept of cloning a subdirectory. Register the repo URL — the
+indexer walks it.
 
-### Single-skill repo — `qvr add <url>`
+## Installing a skill into a project
 
-For one-offs that ship as their own repo with a root-level `SKILL.md`.
-Clones into `~/.quiver/standalone/<slug>/`.
+Two steps — register the source once, then add skills from it to as many
+projects as you want.
 
 ```
-    $ qvr add https://github.com/user/my-skill
+    $ qvr add tdd                            # writes ./qvr.lock, symlinks .claude/skills/tdd
+    $ qvr add tdd@v2                         # pin a branch or tag
+    $ qvr add --global diagnose              # ambient: appears in every Claude session
+    $ qvr sync                               # reconcile project against qvr.lock
 ```
+
+Anything under `.claude/skills/` that isn't in `qvr.lock` is hidden from
+the agent on `qvr sync`. The lockfile is the only source of truth for
+what your agent loads.
+
+`qvr link <local-path>` symlinks a local directory you're actively
+developing — different from `qvr add`, which always goes through a
+registered source and a pinned commit.
 
 ## Indexer
 
@@ -121,12 +133,12 @@ at `HEAD` and builds a skills list. It accepts two layouts:
 - **Layout B** — no `skills/` dir, but a root `SKILL.md` → the repo is
   treated as one skill at `.`.
 
-A skill with malformed frontmatter is silently skipped — one broken SKILL.md
-doesn't fail the whole index build.
+A skill with malformed frontmatter is silently skipped — one broken
+SKILL.md doesn't fail the whole index build.
 
 For each entry the index records: `name`, `description`, `metadata` from
 frontmatter; the `path` inside the repo; and the full list of **branches
-and tags**, which become the versions you can `install <skill>@<ref>`.
+and tags**, which become the versions you can `qvr add <skill>@<ref>`.
 
 ### Index cache
 
@@ -168,47 +180,48 @@ Requires Go 1.22+.
     $ qvr init my-skill
     $ qvr validate my-skill
 
-    # add a registry (bare clone, no working tree)
-    $ qvr registry add team git@github.com:acme/skills.git
+    # register a source (bare clone, no working tree)
+    $ qvr registry add git@github.com:acme/skills.git
     $ qvr registry list
 
     # find skills
     $ qvr search deploy
     $ qvr version list code-review
 
-    # onboard a single-skill repo
-    $ qvr add github.com/user/my-skill
+    # add a skill into the current project
+    $ qvr add code-review
+    $ qvr add code-review@v1.2.0
 ```
 
 ## Versioning skills
 
 A **ref is a ref**. Quiver treats branches, tags, and commit SHAs
-uniformly — `qvr install foo@<anything-git-knows>` works. What
+uniformly — `qvr add foo@<anything-git-knows>` works. What
 differs is how you use each:
 
 | Track | Best for | Example |
 |---|---|---|
-| **Tags** (`v1.2.0`)  | Shared releases, other people installing your skill | `qvr install foo@v1.2.0` |
-| **Branches** (`main`, `experiment`) | Rolling dev tracks, local edit branches | `qvr install foo@experiment` |
-| **SHAs** (`abc1234`) | CI-grade pins (lockfile does this for you) | `qvr install foo@abc1234` |
+| **Tags** (`v1.2.0`)  | Shared releases, other people installing your skill | `qvr add foo@v1.2.0` |
+| **Branches** (`main`, `experiment`) | Rolling dev tracks, local edit branches | `qvr add foo@experiment` |
+| **SHAs** (`abc1234`) | CI-grade pins (lockfile does this for you) | `qvr add foo@abc1234` |
 
 ### Default resolution
 
-Bare `qvr install foo` picks the **latest semver tag** when any
+Bare `qvr add foo` picks the **latest semver tag** when any
 exist (e.g., `v1.0.0` beats `v0.9.0`). If the registry has no semver
 tags, falls back to the registry's default branch. Non-semver tags
 like `stable` or `latest` are ignored for resolution — they tend to
-move and make "bare install" non-reproducible.
+move and make "bare add" non-reproducible.
 
-The lockfile (`qvr.lock.json`) always pins the **commit SHA**
-regardless of ref type, so reruns on another machine get the same
-bytes even if the tag or branch shifts upstream.
+The lockfile (`qvr.lock`) always pins the **resolved commit SHA**
+regardless of ref type, so reruns on another machine via `qvr sync`
+get the same bytes even if the tag or branch shifts upstream.
 
 ### The edit → push → release flow
 
 ```
     # pin to a specific release
-    $ qvr install foo@v1.2.0
+    $ qvr add foo@v1.2.0
 
     # branch off so edits don't touch upstream main
     $ qvr edit foo                 # creates qvr/<user>/foo locally
@@ -219,7 +232,7 @@ bytes even if the tag or branch shifts upstream.
     $ qvr publish .claude/skills/foo --tag v1.3.0
 
     # teammate picks up the new release
-    $ qvr registry update team
+    $ qvr registry update vercel-labs--agent-skills
     $ qvr upgrade foo              # resolves latest semver tag, moves worktree
 ```
 
@@ -232,14 +245,31 @@ Key properties:
   `main` by accident.
 - `qvr publish --tag` creates an annotated tag on the new commit
   and pushes both.
-- `qvr upgrade` follows the tag channel (latest semver); pass
-  `--to <ref>` to pin a specific ref.
+- `qvr upgrade` follows the tag channel (latest semver); pass an
+  explicit `<ref>` to repin elsewhere.
 - `qvr switch <skill> <ref>` moves to any ref without branching —
   useful for quick version flips.
 
-Two worktrees of the same skill at different refs coexist on disk
-(under `~/.quiver/worktrees/<reg>--<skill>--<ref>/`) — switching
-between them is a symlink repoint, not a re-clone.
+Two worktrees of the same skill at different SHAs coexist on disk
+(under `~/.quiver/worktrees/<reg>--<skill>--<sha7>/`) — switching
+between them is a symlink repoint, not a re-clone. Two projects
+pinning the same SHA share one worktree.
+
+## Inspection
+
+Every read-mode command defaults to the project lock; pass `--global` to
+read the ambient lock instead, or `--all` to union both (adds a SCOPE
+column where it makes sense).
+
+```
+    qvr list                    skills in the project lock
+    qvr list --all              project + global, with scope column
+    qvr info <skill>            structured details — frontmatter, refs, targets
+    qvr outdated                per-registry ls-remote vs. pinned SHAs
+    qvr diff <skill>            local worktree changes against HEAD
+    qvr doctor                  diagnose broken installs, orphan artifacts,
+                                unreferenced registries; --strict to fail on those
+```
 
 ## Roadmap
 
@@ -248,15 +278,19 @@ Shipping today:
 - **Foundation** — `init`, `validate`, `config`, `skillspec` parser
 - **Registry** — `add`, `remove`, `list`, `update` (with `--check` dry-run),
   `search`, `version`, TTL-cached index
-- **Install / publish** — worktrees, symlinks, `pull`/`push`, `publish`,
-  edit → push → release flow, `upgrade`/`switch`, AGENTS.md auto-sync,
-  `doctor`/`info`/`ls`/`diff`/`outdated`, `disable`/`enable`, private
-  registries
+- **Project-local install** — `add`, `sync`, `link`, worktrees, symlinks,
+  `pull`/`push`, `publish`, edit → push → release flow, `upgrade`/`switch`,
+  AGENTS.md auto-sync, `doctor`/`info`/`list`/`diff`/`outdated`,
+  `disable`/`enable`, private registries
 
 Planned:
 
-- Teams: namespaces, forks, `TEAMS.yaml`
-- Local dashboard + prebuilt binary distribution
+- `qvr cache prune` / `qvr cache list` with a `projects.json` reachability
+  registry behind it.
+- `qvr add --local` vendor mode (materialize real files into the project)
+  + a `qvr publish` flow that can round-trip vendored edits back upstream.
+- Teams: namespaces, forks, `TEAMS.yaml`.
+- Local dashboard + prebuilt binary distribution.
 
 ## Documentation
 

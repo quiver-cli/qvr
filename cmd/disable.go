@@ -58,7 +58,7 @@ func runDisable(cmd *cobra.Command, args []string) error {
 	if err := lock.Write(); err != nil {
 		return fmt.Errorf("write lock: %w", err)
 	}
-	removed, err := disableSkill(entry, projectRoot)
+	removed, err := disableSkill(entry, projectRoot, disableGlobal)
 	if err != nil {
 		entry.Disabled = false
 		lock.Put(entry)
@@ -89,10 +89,10 @@ func runDisable(cmd *cobra.Command, args []string) error {
 // disableSkill removes the symlinks for every target on the entry. Missing
 // symlinks are ignored — disable is intentionally idempotent so repeating it
 // or running it after a manual cleanup is a no-op rather than an error.
-func disableSkill(entry *model.LockEntry, projectRoot string) ([]string, error) {
+func disableSkill(entry *model.LockEntry, projectRoot string, global bool) ([]string, error) {
 	var removed []string
 	for _, t := range entry.Targets {
-		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, entry.Global)
+		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, global)
 		if err != nil {
 			return removed, fmt.Errorf("resolve %s: %w", t, err)
 		}

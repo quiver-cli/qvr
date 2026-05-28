@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,11 +19,25 @@ var registryCmd = &cobra.Command{
 }
 
 var registryAddCmd = &cobra.Command{
-	Use:   "add <name> <url>",
-	Short: "Add a Git repository as a skill registry",
-	Args:  cobra.ExactArgs(2),
-	RunE:  runRegistryAdd,
+	Use:   "add <url>",
+	Short: "Register a Git repository as a skill source",
+	Long: `Register a Git repository as a source of skills. The repo can hold one
+skill or many — the indexer walks it on first clone.
+
+The name is inferred as <org>--<repo> from the URL. Override with --name when
+two repos share the same name across orgs, or when the URL doesn't carry a
+usable org segment.
+
+  qvr registry add https://github.com/vercel-labs/agent-skills
+  qvr registry add git@github.com:org/repo.git --name internal-tools
+
+GitHub /tree/<ref>/<path> and /blob/<ref>/<path> web URLs are rejected with
+an explanatory error — git can't clone a subdirectory; pass the repo URL.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runRegistryAdd,
 }
+
+var registryAddName string
 
 var registryRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
@@ -55,6 +70,8 @@ var registryUpdateCmd = &cobra.Command{
 }
 
 func init() {
+	registryAddCmd.Flags().StringVar(&registryAddName, "name", "",
+		"override the auto-inferred <org>--<repo> name (use to disambiguate collisions)")
 	registryUpdateCmd.Flags().BoolVar(&registryUpdateCheck, "check", false,
 		"check for upstream changes without downloading")
 	registryUpdateCmd.Flags().BoolVarP(&registryUpdateVerbose, "verbose", "v", false,
@@ -66,16 +83,37 @@ func init() {
 }
 
 func runRegistryAdd(cmd *cobra.Command, args []string) error {
-	name, repoURL := args[0], args[1]
+	repoURL := args[0]
 
 	if err := rejectWebURL(repoURL); err != nil {
 		return err
+	}
+
+	// Sanitize before naming — we don't want an embedded token surfacing in
+	// the inferred slug (and the Manager will reject any name that contains
+	// credentials-shaped characters anyway).
+	cleanURL, _, err := git.SanitizeURL(repoURL)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+
+	name := strings.TrimSpace(registryAddName)
+	if name == "" {
+		name = registry.InferRegistryName(cleanURL)
+		if name == "" {
+			return fmt.Errorf("could not infer a registry name from %q — pass --name <alias>", repoURL)
+		}
 	}
 
 	mgr := registry.NewManager(git.NewGoGitClient())
 
 	reg, err := mgr.Add(cmd.Context(), name, repoURL)
 	if err != nil {
+		// Manager.Add surfaces ErrRegistryExists when the name is taken.
+		// Reformat with a `--name` hint so the user knows the override path.
+		if errors.Is(err, registry.ErrRegistryExists) {
+			return fmt.Errorf("registry %q already exists — pass --name <alias> to use a different name", name)
+		}
 		return fmt.Errorf("add registry: %w", err)
 	}
 
@@ -124,7 +162,7 @@ func runRegistryList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(registries) == 0 {
-		printer.Info("No registries configured. Run 'qvr registry add <name> <url>' to add one.")
+		printer.Info("No registries configured. Run 'qvr registry add <url>' to register one.")
 		return nil
 	}
 
@@ -268,16 +306,12 @@ func rejectWebURL(raw string) error {
 		return nil
 	}
 	switch parts[2] {
-	case "tree":
+	case "tree", "blob":
 		return fmt.Errorf("that's a web URL, not a clone URL\n"+
-			"  to register the repo:   %s://%s/%s/%s.git\n"+
-			"  to install one skill:   qvr add %s",
-			u.Scheme, u.Host, parts[0], parts[1], raw)
-	case "blob":
-		return fmt.Errorf("that's a web URL, not a clone URL\n"+
-			"  use `qvr add %s` to install a single skill from this path, or\n"+
-			"  use `qvr registry add <name> %s://%s/%s/%s.git` to register the whole repo",
-			raw, u.Scheme, u.Host, parts[0], parts[1])
+			"  git can't clone a subdirectory — register the whole repo and add the skill by name:\n"+
+			"    qvr registry add %s://%s/%s/%s.git\n"+
+			"    qvr add <skill>",
+			u.Scheme, u.Host, parts[0], parts[1])
 	}
 	return nil
 }

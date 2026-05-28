@@ -37,10 +37,3 @@ type RegistryStatus struct {
 	Skipped            []SkippedSkill `json:"skipped,omitempty"`
 	Error              string         `json:"error,omitempty"`
 }
-
-// StandaloneRepo represents a directly cloned single-skill repo.
-type StandaloneRepo struct {
-	URL  string `json:"url"`
-	Path string `json:"path"`
-	Slug string `json:"slug"`
-}

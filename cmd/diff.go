@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
@@ -16,6 +15,7 @@ var (
 	diffStat   bool
 	diffStaged bool
 	diffGlobal bool
+	diffAll    bool
 )
 
 var diffCmd = &cobra.Command{
@@ -31,6 +31,7 @@ func init() {
 	diffCmd.Flags().BoolVar(&diffStat, "stat", false, "show diffstat summary instead of full patch")
 	diffCmd.Flags().BoolVar(&diffStaged, "staged", false, "diff staged changes (--cached)")
 	diffCmd.Flags().BoolVar(&diffGlobal, "global", false, "read the user-global lock file instead of the project lock")
+	diffCmd.Flags().BoolVar(&diffAll, "all", false, "search both project and global locks (errors when both contain the skill)")
 	rootCmd.AddCommand(diffCmd)
 }
 
@@ -40,11 +41,11 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	lock, err := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), diffGlobal))
+	locks, err := loadScopedLocks(projectRoot, diffGlobal, diffAll)
 	if err != nil {
-		return fmt.Errorf("read lock: %w", err)
+		return err
 	}
-	entry, err := lock.Get(name)
+	entry, _, err := findEntryAcrossLocks(name, locks)
 	if err != nil {
 		return err
 	}

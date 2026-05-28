@@ -71,6 +71,31 @@ func TestValidate_NameConsecutiveHyphens(t *testing.T) {
 	assertHasError(t, result, "name", "consecutive")
 }
 
+// TestValidate_NameRejectsTraversalAndSlash pins the adversarial cases the
+// loader must catch before a malicious frontmatter name turns into a
+// lockfile-write that escapes the agent skills directory. The regex
+// `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` rejects `/`, `..`, null bytes, leading
+// dots, etc. — this test is the spec, not the implementation.
+func TestValidate_NameRejectsTraversalAndSlash(t *testing.T) {
+	hostile := []string{
+		"../escape",
+		"..",
+		"foo/bar",
+		"foo\x00bar",
+		".hidden",
+		" leading-space",
+	}
+	for _, name := range hostile {
+		t.Run(name, func(t *testing.T) {
+			s := makeSkill(name, "Desc.", name)
+			result := skill.Validate(s)
+			if result.Valid {
+				t.Errorf("hostile name %q should be invalid, got valid", name)
+			}
+		})
+	}
+}
+
 func TestValidate_NameSingleChar(t *testing.T) {
 	s := makeSkill("a", "Desc.", "a")
 	result := skill.Validate(s)

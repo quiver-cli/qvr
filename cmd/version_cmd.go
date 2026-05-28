@@ -133,7 +133,7 @@ func currentInstalledRef(skillName string) string {
 		}
 		return ""
 	}
-	return entry.Branch
+	return entry.Ref
 }
 
 func shortHash(h string) string {

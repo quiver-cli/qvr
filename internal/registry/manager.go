@@ -302,26 +302,6 @@ func (m *Manager) Check(ctx context.Context, name string) ([]model.RegistryStatu
 	return results, nil
 }
 
-// AddStandalone clones a standalone single-skill repo.
-func (m *Manager) AddStandalone(ctx context.Context, url string) (*model.StandaloneRepo, error) {
-	slug := URLToSlug(url)
-	path := filepath.Join(config.Dir(), "standalone", slug)
-
-	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("%w: standalone repo already exists at %s", ErrRegistryExists, path)
-	}
-
-	if err := m.Git.Clone(ctx, url, path); err != nil {
-		return nil, fmt.Errorf("clone standalone repo: %w", err)
-	}
-
-	return &model.StandaloneRepo{
-		URL:  url,
-		Path: path,
-		Slug: slug,
-	}, nil
-}
-
 // Search runs a substring search across every configured registry, pulling
 // each index through the cache. Results are merged and sorted by score.
 func (m *Manager) Search(query string) ([]SearchResult, error) {

@@ -2,8 +2,11 @@ package model_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,13 +19,14 @@ func TestLockFile_WriteRead(t *testing.T) {
 
 	l := model.NewLockFile(path)
 	l.Put(&model.LockEntry{
-		Name:     "code-review",
-		Registry: "acme",
-		Path:     "skills/code-review",
-		Branch:   "v2",
-		Commit:   "abc123",
-		Worktree: "/tmp/wt",
-		Targets:  []string{"claude", "cursor"},
+		Name:        "code-review",
+		Registry:    "acme",
+		Path:        "skills/code-review",
+		Ref:         "v2",
+		ResolvedSHA: "abc123",
+		Worktree:    "/tmp/wt",
+		InstallPath: "/proj/.claude/skills/code-review",
+		Targets:     []string{"claude", "cursor"},
 	})
 
 	if err := l.Write(); err != nil {
@@ -37,8 +41,11 @@ func TestLockFile_WriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if entry.Branch != "v2" || entry.Commit != "abc123" {
+	if entry.Ref != "v2" || entry.ResolvedSHA != "abc123" {
 		t.Errorf("fields not preserved: %+v", entry)
+	}
+	if entry.InstallPath != "/proj/.claude/skills/code-review" {
+		t.Errorf("InstallPath not preserved: %q", entry.InstallPath)
 	}
 	if entry.InstalledAt.IsZero() || entry.UpdatedAt.IsZero() {
 		t.Error("timestamps should be set by Put")
@@ -103,7 +110,6 @@ func TestLockFile_Remove(t *testing.T) {
 }
 
 func TestLockFile_AtomicWrite(t *testing.T) {
-	// Verify no .tmp files remain after a successful write.
 	dir := t.TempDir()
 	l := model.NewLockFile(filepath.Join(dir, model.LockFileName))
 	l.Put(&model.LockEntry{Name: "a"})
@@ -117,6 +123,56 @@ func TestLockFile_AtomicWrite(t *testing.T) {
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) == ".tmp" {
 			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
+// TestLockFile_ConcurrentWritesAreAtomic hammers the lock from multiple
+// goroutines so the rename-over-temp scheme is exercised under contention.
+// Pre-Phase-6 hypothetical: a writer's tmp file could survive on the
+// filesystem if another writer raced past it. After this test, the
+// invariant is named: regardless of who wins, the final lock is well-formed
+// JSON and no `.lock-*.tmp` siblings linger.
+func TestLockFile_ConcurrentWritesAreAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, model.LockFileName)
+
+	const writers = 16
+	const writes = 8
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := range writers {
+		go func(id int) {
+			defer wg.Done()
+			for j := range writes {
+				l := model.NewLockFile(path)
+				l.Put(&model.LockEntry{Name: fmt.Sprintf("w%d-%d", id, j)})
+				if err := l.Write(); err != nil {
+					t.Errorf("writer %d: %v", id, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Final lock must parse cleanly under v4.
+	final, err := model.ReadLockFile(path)
+	if err != nil {
+		t.Fatalf("read final lock: %v", err)
+	}
+	if final.Version != model.LockFileVersion {
+		t.Errorf("version = %d, want %d", final.Version, model.LockFileVersion)
+	}
+	// And no stray temp siblings — `.lock-*.tmp` is the canonical scratch
+	// name, and any survivor here means a writer crashed mid-rename.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".lock-") {
+			t.Errorf("leftover temp file after concurrent writes: %s", e.Name())
 		}
 	}
 }
@@ -183,85 +239,21 @@ func TestLockFile_DisabledRoundTrip(t *testing.T) {
 	}
 }
 
-func TestLockFile_LegacyFilenameFallback(t *testing.T) {
-	// A v0.4.5-era qvr.lock.json on disk should be transparently read when
-	// the canonical qvr.lock is absent, then rewritten to the new path on
-	// the next Write() (with the legacy file removed).
-	dir := t.TempDir()
-	canonical := filepath.Join(dir, model.LockFileName)
-	legacy := filepath.Join(dir, model.LegacyLockFileName)
-
-	seed := model.NewLockFile(legacy)
-	seed.Put(&model.LockEntry{Name: "foo", Worktree: "/w", Targets: []string{"claude"}})
-	if err := seed.Write(); err != nil {
-		t.Fatalf("seed legacy: %v", err)
-	}
-
-	// ReadLockFile against the canonical path finds the legacy file instead.
-	loaded, err := model.ReadLockFile(canonical)
-	if err != nil {
-		t.Fatalf("read with fallback: %v", err)
-	}
-	if _, err := loaded.Get("foo"); err != nil {
-		t.Errorf("entry lost on fallback read: %v", err)
-	}
-	if loaded.Path() != canonical {
-		t.Errorf("Path() = %q, want canonical %q", loaded.Path(), canonical)
-	}
-
-	if err := loaded.Write(); err != nil {
-		t.Fatalf("write after fallback: %v", err)
-	}
-	if _, err := os.Stat(canonical); err != nil {
-		t.Errorf("canonical file should exist after write: %v", err)
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("legacy file should be removed after migration, stat err = %v", err)
-	}
-}
-
-func TestLockFile_LegacyFilenameFallbackPreferred(t *testing.T) {
-	// When BOTH the canonical and legacy filenames exist, the canonical
-	// wins. The legacy file is left alone (a future write will not touch
-	// it, since legacyPath is only set when we fell back to it).
-	dir := t.TempDir()
-	canonical := filepath.Join(dir, model.LockFileName)
-	legacy := filepath.Join(dir, model.LegacyLockFileName)
-
-	current := model.NewLockFile(canonical)
-	current.Put(&model.LockEntry{Name: "fresh", Worktree: "/w"})
-	if err := current.Write(); err != nil {
-		t.Fatalf("seed canonical: %v", err)
-	}
-
-	stale := model.NewLockFile(legacy)
-	stale.Put(&model.LockEntry{Name: "stale", Worktree: "/old"})
-	if err := stale.Write(); err != nil {
-		t.Fatalf("seed legacy: %v", err)
-	}
-
-	loaded, err := model.ReadLockFile(canonical)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if _, err := loaded.Get("fresh"); err != nil {
-		t.Errorf("canonical entry missing: %v", err)
-	}
-	if _, err := loaded.Get("stale"); err == nil {
-		t.Errorf("legacy entry should not be merged in when canonical exists")
-	}
-}
-
 func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
-	// version < MinSupported / missing / >LockFileVersion all error.
+	// v4 is the floor — anything older is rejected outright (qvr is
+	// pre-release with no users, so the only recourse is to delete the
+	// lock and reinstall). Future versions (>LockFileVersion) and missing
+	// version field all error.
 	cases := []struct {
 		name string
 		body string
+		want string // substring expected in the error message
 	}{
-		{"missing version", `{"skills": {}}`},
-		{"version=0", `{"version": 0, "skills": {}}`},
-		{"version=1 pre-history", `{"version": 1, "skills": {}}`},
-		{"version=999 future", `{"version": 999, "skills": {}}`},
+		{"missing version", `{"skills": {}}`, "missing"},
+		{"version=0", `{"version": 0, "skills": {}}`, "missing"},
+		{"version=2 legacy", `{"version": 2, "skills": {}}`, "delete the lock"},
+		{"version=3 legacy", `{"version": 3, "skills": {}}`, "delete the lock"},
+		{"version=999 future", `{"version": 999, "skills": {}}`, "upgrade qvr"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,36 +269,26 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 			if !errors.Is(err, model.ErrLockVersionUnsupported) {
 				t.Errorf("expected ErrLockVersionUnsupported, got %v", err)
 			}
+			if !contains(err.Error(), tc.want) {
+				t.Errorf("error %q missing substring %q", err.Error(), tc.want)
+			}
 		})
 	}
 }
 
-// Regression for #31: a non-integer `version` field (e.g. a string) used to
-// surface as a raw Go json.UnmarshalTypeError — "json: cannot unmarshal
-// string into Go struct field LockFile.version of type int". It should
-// instead route through the friendly ErrLockVersionUnsupported template so
-// the user sees actionable recovery advice.
+// Regression: a non-integer `version` field (string, bool, array) used to
+// surface as a raw Go json.UnmarshalTypeError. It should route through the
+// friendly ErrLockVersionUnsupported template so the user sees actionable
+// recovery advice — and the advice should now mention deleting the lock.
 func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 	cases := []struct {
 		name        string
 		body        string
-		wantInError string // substring that must appear in the formatted error
+		wantInError string
 	}{
-		{
-			name:        "string version",
-			body:        `{"version":"three","skills":{}}`,
-			wantInError: `"three"`,
-		},
-		{
-			name:        "bool version",
-			body:        `{"version":true,"skills":{}}`,
-			wantInError: "true",
-		},
-		{
-			name:        "array version",
-			body:        `{"version":[3],"skills":{}}`,
-			wantInError: "[3]",
-		},
+		{"string version", `{"version":"three","skills":{}}`, `"three"`},
+		{"bool version", `{"version":true,"skills":{}}`, "true"},
+		{"array version", `{"version":[3],"skills":{}}`, "[3]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,9 +305,6 @@ func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 				t.Errorf("expected ErrLockVersionUnsupported, got %v", err)
 			}
 			msg := err.Error()
-			// The raw json unmarshal error must not leak — it would tell the
-			// user about Go struct fields and types, which is meaningless to
-			// them and doesn't suggest recovery.
 			if contains(msg, "Go struct field") || contains(msg, "json:") {
 				t.Errorf("raw json error leaked into message: %q", msg)
 			}
@@ -333,24 +312,6 @@ func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 				t.Errorf("error %q missing expected substring %q", msg, tc.wantInError)
 			}
 		})
-	}
-}
-
-// Regression for #31: the missing-version recovery message used to suggest
-// `qvr lock upgrade`, which runs through the same parser and hits the same
-// error — circular advice. It should point to out-of-band recovery instead.
-func TestLockFile_MissingVersionMessageIsNotCircular(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, model.LockFileName)
-	if err := os.WriteFile(path, []byte(`{"skills":{}}`), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	_, err := model.ReadLockFile(path)
-	if err == nil {
-		t.Fatal("expected error for missing version field")
-	}
-	if contains(err.Error(), "qvr lock upgrade") {
-		t.Errorf("missing-version message still recommends `qvr lock upgrade` (circular): %q", err.Error())
 	}
 }
 
@@ -366,19 +327,15 @@ func contains(haystack, needle string) bool {
 	return false
 }
 
-func TestLockFile_AcceptsSupportedVersions(t *testing.T) {
-	// v2 (current min) and v3 (current max) both load cleanly.
+func TestLockFile_AcceptsCurrentVersion(t *testing.T) {
 	dir := t.TempDir()
-	for _, version := range []int{model.MinSupportedLockFileVersion, model.LockFileVersion} {
-		path := filepath.Join(dir, model.LockFileName)
-		body := []byte(`{"version": ` + itoa(version) + `, "skills": {}}`)
-		if err := os.WriteFile(path, body, 0o644); err != nil {
-			t.Fatalf("seed v%d: %v", version, err)
-		}
-		if _, err := model.ReadLockFile(path); err != nil {
-			t.Errorf("v%d should load: %v", version, err)
-		}
-		_ = os.Remove(path)
+	path := filepath.Join(dir, model.LockFileName)
+	body := []byte(`{"version": ` + itoa(model.LockFileVersion) + `, "skills": {}}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := model.ReadLockFile(path); err != nil {
+		t.Errorf("v%d should load: %v", model.LockFileVersion, err)
 	}
 }
 
@@ -410,4 +367,32 @@ func TestDefaultLockPath(t *testing.T) {
 	if global != filepath.Join("/quiver", model.LockFileName) {
 		t.Errorf("global path: %s", global)
 	}
+}
+
+func TestLockFile_IsGlobal(t *testing.T) {
+	home := "/q"
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"unset path", "", false},
+		{"global location", filepath.Join(home, model.LockFileName), true},
+		{"project location", filepath.Join("/proj", model.LockFileName), false},
+		{"clean-equivalent global", filepath.Join(home, "./", model.LockFileName), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := model.NewLockFile(tc.path)
+			if got := l.IsGlobal(home); got != tc.want {
+				t.Errorf("IsGlobal(%q, home=%q) = %v, want %v", tc.path, home, got, tc.want)
+			}
+		})
+	}
+	t.Run("empty home is never global", func(t *testing.T) {
+		l := model.NewLockFile(filepath.Join(home, model.LockFileName))
+		if l.IsGlobal("") {
+			t.Error("empty home should not match")
+		}
+	})
 }

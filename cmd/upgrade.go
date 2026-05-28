@@ -63,7 +63,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("no semver tags found for %s in registry %s; pass --to <ref> to pick manually", name, loc.RegistryName)
 		}
 	}
-	if target == entry.Branch {
+	if target == entry.Ref {
 		printer.Info(fmt.Sprintf("%s: already on %s", name, target))
 		return nil
 	}
@@ -73,7 +73,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("upgrade: %w", err)
 	}
-	if err := skill.ApplySwitch(updated, projectRoot); err != nil {
+	if err := skill.ApplySwitch(updated, projectRoot, upgradeGlobal); err != nil {
 		return err
 	}
 
@@ -87,6 +87,6 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(updated)
 	}
-	printer.Success(fmt.Sprintf("%s: upgraded to %s (%s)", updated.Name, updated.Branch, shortHash(updated.Commit)))
+	printer.Success(fmt.Sprintf("%s: upgraded to %s (%s)", updated.Name, updated.Ref, shortHash(updated.ResolvedSHA)))
 	return nil
 }

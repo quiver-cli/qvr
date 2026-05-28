@@ -36,7 +36,7 @@ func TestCollapseWhitespace(t *testing.T) {
 // the file means "don't clobber the project with auto-generated artefacts."
 func TestRefreshAgentsMDIfPresent_NoopWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
-	entries := []*model.LockEntry{{Name: "demo", Registry: "acme", Branch: "main"}}
+	entries := []*model.LockEntry{{Name: "demo", Registry: "acme", Ref: "main"}}
 	if err := refreshAgentsMDIfPresent(dir, entries); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestRefreshAgentsMDIfPresent_RewritesWhenPresent(t *testing.T) {
 	if err := os.WriteFile(path, []byte("stale content"), 0o644); err != nil {
 		t.Fatalf("seed AGENTS.md: %v", err)
 	}
-	entries := []*model.LockEntry{{Name: "demo", Registry: "acme", Branch: "v1.0.0"}}
+	entries := []*model.LockEntry{{Name: "demo", Registry: "acme", Ref: "v1.0.0"}}
 	if err := refreshAgentsMDIfPresent(dir, entries); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRefreshAgentsMDIfPresent_RewritesWhenPresent(t *testing.T) {
 func TestRefreshAgentsMDFromLock(t *testing.T) {
 	dir := t.TempDir()
 	lock := model.NewLockFile(filepath.Join(dir, model.LockFileName))
-	lock.Put(&model.LockEntry{Name: "demo", Registry: "acme", Branch: "v1.0.0"})
+	lock.Put(&model.LockEntry{Name: "demo", Registry: "acme", Ref: "v1.0.0"})
 	if err := lock.Write(); err != nil {
 		t.Fatalf("write lock: %v", err)
 	}

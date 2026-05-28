@@ -1,89 +1,10 @@
 package git
 
 import (
-	"errors"
-	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 )
-
-// SubdirURL describes a subdirectory inside a remote git repo, parsed from a
-// platform-specific browse URL (e.g. a GitHub `/blob/<ref>/<path>` link).
-type SubdirURL struct {
-	RepoURL string // canonical clone URL, e.g. "https://github.com/owner/repo.git"
-	Ref     string // branch, tag, or commit
-	Subpath string // path inside the repo, no leading or trailing slash
-}
-
-// ErrNotSubdirURL reports that the input URL does not match any known
-// subdirectory-pointing pattern. Callers can use this to fall back to
-// "treat as a plain clone URL" rather than failing.
-var ErrNotSubdirURL = errors.New("not a recognized subdirectory URL")
-
-// ParseSubdirURL recognizes browse URLs that point at a subdirectory inside a
-// remote repo and extracts (clone URL, ref, subpath). Currently supports
-// GitHub `/blob/<ref>/<path>` and `/tree/<ref>/<path>` URLs. For other hosts
-// or for refs containing slashes, callers should accept explicit --ref /
-// --subdir flags instead.
-//
-// Returns ErrNotSubdirURL when the URL doesn't match any known pattern, so
-// callers can fall back cleanly.
-func ParseSubdirURL(raw string) (*SubdirURL, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, ErrNotSubdirURL
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, ErrNotSubdirURL
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, ErrNotSubdirURL
-	}
-	host := strings.ToLower(u.Host)
-	switch host {
-	case "github.com", "www.github.com":
-		return parseGitHubSubdir(u)
-	}
-	return nil, ErrNotSubdirURL
-}
-
-// parseGitHubSubdir handles the github.com `/owner/repo/(blob|tree)/<ref>/<path>` shape.
-func parseGitHubSubdir(u *url.URL) (*SubdirURL, error) {
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 5 {
-		return nil, ErrNotSubdirURL
-	}
-	owner, repo := parts[0], parts[1]
-	if parts[2] != "blob" && parts[2] != "tree" {
-		return nil, ErrNotSubdirURL
-	}
-	ref := parts[3]
-	subparts := parts[4:]
-	subpath := strings.Trim(strings.Join(subparts, "/"), "/")
-	if owner == "" || repo == "" || ref == "" || subpath == "" {
-		return nil, ErrNotSubdirURL
-	}
-	repo = strings.TrimSuffix(repo, ".git")
-	return &SubdirURL{
-		RepoURL: fmt.Sprintf("https://github.com/%s/%s.git", owner, repo),
-		Ref:     ref,
-		Subpath: subpath,
-	}, nil
-}
-
-// LeafName returns the last non-empty segment of the subpath, suitable as a
-// default skill name (e.g. "skills/jchopard69/x-article-editor" → "x-article-editor").
-func (s *SubdirURL) LeafName() string {
-	parts := strings.Split(strings.Trim(s.Subpath, "/"), "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			return parts[i]
-		}
-	}
-	return ""
-}
 
 // SanitizeURL removes embedded credentials from a remote URL and reports
 // whether any were present.

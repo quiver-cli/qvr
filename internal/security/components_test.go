@@ -8,9 +8,9 @@ import (
 
 func TestClassifyFile(t *testing.T) {
 	cases := []struct {
-		path  string
-		want  string
-		bin   bool
+		path string
+		want string
+		bin  bool
 	}{
 		{"SKILL.md", "markdown", false},
 		{"scripts/install.sh", "shell", false},

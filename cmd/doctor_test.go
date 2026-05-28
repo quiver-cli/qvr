@@ -196,6 +196,48 @@ func TestDoctorChecks_ExtraSymlinkSurfaced(t *testing.T) {
 	}
 }
 
+// TestScanUnreferencedRegistries_FlagsConfiguredButUnused: a registry that
+// lives in cfg.Registries but isn't named by any lock entry should surface
+// as an informational unreferenced-registry check. This is the Phase 4
+// cleanup-prompt the user sees when they've removed every skill from a
+// registry but forgot to `qvr registry remove` it.
+func TestScanUnreferencedRegistries_FlagsConfiguredButUnused(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+
+	cfg := config.Default()
+	cfg.Registries["unused"] = config.RegistryConfig{URL: "https://example/unused"}
+	cfg.Registries["used"] = config.RegistryConfig{URL: "https://example/used"}
+
+	project := t.TempDir()
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Registry: "used",
+		Targets:  []string{"claude"},
+	})
+	locks := []scopedLock{{Scope: "project", Lock: lock}}
+
+	checks := scanUnreferencedRegistries(cfg, locks, project)
+	var got *doctorCheck
+	for i := range checks {
+		if checks[i].Skill == "unused" {
+			got = &checks[i]
+		}
+		if checks[i].Skill == "used" {
+			t.Errorf("referenced registry %q should not appear: %+v", "used", checks[i])
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected unreferenced-registry check for %q, got %+v", "unused", checks)
+	}
+	if got.Type != "unreferenced-registry" {
+		t.Errorf("type = %q, want unreferenced-registry", got.Type)
+	}
+	if !got.OK {
+		t.Errorf("unreferenced-registry should default to informational (OK=true), got %+v", got)
+	}
+}
+
 func TestDoctorChecks_LinkInstallSkipped(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("QUIVER_HOME", t.TempDir())

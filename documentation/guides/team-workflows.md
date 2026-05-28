@@ -22,9 +22,9 @@ qvr registry add ml-ops git@github.com:acme/ml-skills.git
 Skills from different registries are namespaced to avoid collision:
 
 ```bash
-qvr install acme/code-review          # From org registry
-qvr install platform/deploy-helper    # From platform registry
-qvr install ml-ops/model-deploy       # From ML ops registry
+qvr add acme/code-review          # From org registry
+qvr add platform/deploy-helper    # From platform registry
+qvr add ml-ops/model-deploy       # From ML ops registry
 ```
 
 ## Forking Skills

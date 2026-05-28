@@ -45,7 +45,7 @@ func runEnable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot enable link install %q", name)
 	}
 
-	created, err := enableSkill(entry, projectRoot)
+	created, err := enableSkill(entry, projectRoot, enableGlobal)
 	if err != nil {
 		return err
 	}
@@ -71,14 +71,14 @@ func runEnable(cmd *cobra.Command, args []string) error {
 
 // enableSkill re-creates symlinks for each declared target. Idempotent:
 // CreateSymlink returns nil for symlinks already pointing at the worktree.
-func enableSkill(entry *model.LockEntry, projectRoot string) ([]string, error) {
+func enableSkill(entry *model.LockEntry, projectRoot string, global bool) ([]string, error) {
 	target := skill.EffectiveTarget(entry)
 	if target == "" {
 		return nil, fmt.Errorf("skill %q has no worktree to link to", entry.Name)
 	}
 	var created []string
 	for _, t := range entry.Targets {
-		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, entry.Global)
+		linkPath, err := skill.ResolveTargetPath(t, entry.Name, projectRoot, global)
 		if err != nil {
 			return created, fmt.Errorf("resolve %s: %w", t, err)
 		}

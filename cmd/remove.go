@@ -19,7 +19,7 @@ var removeCmd = &cobra.Command{
 	Use:   "remove <skill>...",
 	Short: "Remove installed skills",
 	Long: `Remove symlinks, worktree, and lock entry for one or more installed skills.
-Pass --global to operate on the user-global lock file (mirrors ` + "`qvr install --global`" + `).`,
+Pass --global to operate on the user-global lock file (mirrors ` + "`qvr add --global`" + `).`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runRemove,
 }

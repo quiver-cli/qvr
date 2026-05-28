@@ -1,9 +1,9 @@
 # Agent Integration Guide
 
-> **Status: v0.4.5.** Target paths, `--target <agent>`, and `--global`
-> all ship today. `AGENTS.md` auto-refreshes on install/remove/switch
-> when present. Per-agent hook adapters (`qvr ops install-hooks`) are
-> in flight.
+> **Status: v0.5.0.** Target paths, `--target <agent>`, and `--global`
+> all ship today. `AGENTS.md` auto-refreshes via `qvr docs` (regenerated
+> on add/remove/switch). Per-agent hook adapters (`qvr ops install-hooks`)
+> are in flight.
 
 qvr works with any AI coding agent that reads skills from a directory. Here's how to set up each agent.
 
@@ -13,10 +13,10 @@ Claude Code reads skills from `.claude/skills/` (local) or `~/.claude/skills/` (
 
 ```bash
 # Install a skill for Claude Code
-qvr install code-review --target claude
+qvr add code-review --target claude
 
 # Global install (available in all projects)
-qvr install code-review --target claude --global
+qvr add code-review --target claude --global
 
 # Verify
 ls -la .claude/skills/
@@ -31,10 +31,10 @@ Cursor reads rules from `.cursor/rules/` (local) or `~/.cursor/rules/` (global).
 
 ```bash
 # Install for Cursor
-qvr install code-review --target cursor
+qvr add code-review --target cursor
 
 # Global
-qvr install code-review --target cursor --global
+qvr add code-review --target cursor --global
 
 # Verify
 ls -la .cursor/rules/
@@ -46,7 +46,7 @@ ls -la .cursor/rules/
 Copilot reads from `.github/copilot/skills/` (local) or `~/.github/copilot/skills/` (global).
 
 ```bash
-qvr install code-review --target copilot
+qvr add code-review --target copilot
 ```
 
 ## OpenAI Codex CLI
@@ -54,7 +54,7 @@ qvr install code-review --target copilot
 Codex reads from `.codex/skills/` (local) or `~/.codex/skills/` (global).
 
 ```bash
-qvr install code-review --target codex
+qvr add code-review --target codex
 ```
 
 ## Windsurf
@@ -62,7 +62,7 @@ qvr install code-review --target codex
 Windsurf reads from `.windsurf/skills/` (local) or `~/.windsurf/skills/` (global).
 
 ```bash
-qvr install code-review --target windsurf
+qvr add code-review --target windsurf
 ```
 
 ## Generic / Other Agents
@@ -70,7 +70,7 @@ qvr install code-review --target windsurf
 For agents not in the built-in target list, use `project`:
 
 ```bash
-qvr install code-review --target project
+qvr add code-review --target project
 # → .agent/skills/code-review
 ```
 
@@ -85,7 +85,7 @@ qvr link ~/.quiver/worktrees/acme--code-review--main/skills/code-review /path/to
 Install the same skill for multiple agents at once:
 
 ```bash
-qvr install code-review --target claude --target cursor --target copilot
+qvr add code-review --target claude --target cursor --target copilot
 ```
 
 All three agents now share the same skill (same source, via symlinks). Changes to the skill are visible to all agents simultaneously.
@@ -116,10 +116,10 @@ qvr read code-review --output json
 Generate an AGENTS.md file that lists all installed skills for agent discovery:
 
 ```bash
-qvr sync
+qvr docs
 # Creates AGENTS.md in current directory
 
-qvr sync --output ./AGENTS.md --target claude
+qvr docs --output ./AGENTS.md --target claude
 ```
 
 The generated AGENTS.md includes:
@@ -130,7 +130,8 @@ The generated AGENTS.md includes:
 ## Recommended Workflow
 
 1. **Set your default target**: `qvr config set default_target claude`
-2. **Install team skills**: `qvr install code-review deploy-helper test-runner`
-3. **Generate AGENTS.md**: `qvr sync` (optional, depends on agent)
+2. **Install team skills**: `qvr add code-review deploy-helper test-runner`
+3. **Generate AGENTS.md**: `qvr docs` (optional, depends on agent)
+3a. **Reconcile project against the lock**: `qvr sync` (removes orphan symlinks, rebuilds missing worktrees from cache)
 4. **Keep updated**: `qvr pull` periodically
 5. **Push improvements**: If agent modifies a skill, `qvr push <skill>`

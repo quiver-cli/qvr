@@ -23,7 +23,7 @@ func TestDisableSkill_RemovesSymlinks(t *testing.T) {
 		Worktree: src,
 		Targets:  []string{"claude", "cursor"},
 	}
-	removed, err := disableSkill(entry, project)
+	removed, err := disableSkill(entry, project, false)
 	if err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -47,10 +47,10 @@ func TestDisableSkill_Idempotent(t *testing.T) {
 		Worktree: src,
 		Targets:  []string{"claude"},
 	}
-	if _, err := disableSkill(entry, project); err != nil {
+	if _, err := disableSkill(entry, project, false); err != nil {
 		t.Fatalf("first disable: %v", err)
 	}
-	removed, err := disableSkill(entry, project)
+	removed, err := disableSkill(entry, project, false)
 	if err != nil {
 		t.Fatalf("second disable should not error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestEnableSkill_RestoresSymlinks(t *testing.T) {
 		Worktree: src,
 		Targets:  []string{"claude", "cursor"},
 	}
-	created, err := enableSkill(entry, project)
+	created, err := enableSkill(entry, project, false)
 	if err != nil {
 		t.Fatalf("enable: %v", err)
 	}
@@ -92,17 +92,17 @@ func TestEnableSkill_Idempotent(t *testing.T) {
 		Worktree: src,
 		Targets:  []string{"claude"},
 	}
-	if _, err := enableSkill(entry, project); err != nil {
+	if _, err := enableSkill(entry, project, false); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := enableSkill(entry, project); err != nil {
+	if _, err := enableSkill(entry, project, false); err != nil {
 		t.Errorf("second enable should be a no-op: %v", err)
 	}
 }
 
 func TestEnableSkill_NoWorktree(t *testing.T) {
 	entry := &model.LockEntry{Name: "demo", Targets: []string{"claude"}}
-	_, err := enableSkill(entry, t.TempDir())
+	_, err := enableSkill(entry, t.TempDir(), false)
 	if err == nil {
 		t.Fatal("expected error when worktree is empty")
 	}
@@ -131,7 +131,7 @@ func TestEnableSkill_HonorsSkillPath(t *testing.T) {
 		Worktree: worktree,
 		Targets:  []string{"claude"},
 	}
-	created, err := enableSkill(entry, project)
+	created, err := enableSkill(entry, project, false)
 	if err != nil {
 		t.Fatalf("enable: %v", err)
 	}
@@ -154,14 +154,14 @@ func TestDisableEnableRoundTrip(t *testing.T) {
 		Targets:  []string{"claude"},
 	}
 
-	if _, err := disableSkill(entry, project); err != nil {
+	if _, err := disableSkill(entry, project, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(project, ".claude/skills/demo")); !os.IsNotExist(err) {
 		t.Errorf("symlink should be gone after disable")
 	}
 
-	if _, err := enableSkill(entry, project); err != nil {
+	if _, err := enableSkill(entry, project, false); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 	if err := skill.VerifyTarget(filepath.Join(project, ".claude/skills/demo"), src); err != nil {

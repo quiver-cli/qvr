@@ -17,14 +17,23 @@ import (
 
 // doctorCheck records a single health-check result. Type is one of:
 //
-//	worktree       — the lock entry's worktree dir exists.
-//	registry       — the entry's referenced registry is configured and cloned.
-//	                 Skipped for Source == "subdir" entries (qvr add installs)
-//	                 since those don't live in cfg.Registries by design.
-//	symlink        — each target symlink points at the worktree.
-//	extra-symlink  — an agent dir holds a symlink not tracked by the lock.
+//	worktree              — the lock entry's worktree dir exists.
+//	registry              — the entry's referenced registry is configured and cloned.
+//	                        Skipped for Source == "subdir" entries (qvr add installs)
+//	                        since those don't live in cfg.Registries by design.
+//	symlink               — each target symlink points at the worktree.
+//	extra-symlink         — an agent dir holds a symlink not tracked by the lock.
+//	orphan-worktree       — a ~/.quiver/worktrees/ entry no lock references.
+//	orphan-registry       — a ~/.quiver/registries/ bare clone not in config.
+//	orphan-cache          — a cache/index entry for a removed registry.
+//	unreferenced-registry — a configured registry with no skills referenced
+//	                        by any reachable lock.
+//
+// Scope labels the lock the entry came from when --all is set ("project" or
+// "global"); empty for single-scope runs.
 type doctorCheck struct {
 	Type    string `json:"type"`
+	Scope   string `json:"scope,omitempty"`
 	Skill   string `json:"skill,omitempty"`
 	Target  string `json:"target,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -34,6 +43,7 @@ type doctorCheck struct {
 
 var (
 	doctorGlobal bool
+	doctorAll    bool
 	doctorStrict bool
 )
 
@@ -45,14 +55,18 @@ and target symlink resolves cleanly. Also surfaces symlinks under agent
 directories that have no matching lock entry, plus orphan artifacts left
 behind under ~/.quiver/ (worktrees, bare clones, staging dirs, caches).
 
-Exits non-zero on any check failure. Orphan artifacts are informational by
-default — pass --strict to fail the exit code on those too.`,
+Defaults to the project lock; --global diagnoses the user-global lock
+instead; --all unions both. Exits non-zero on any check failure. Orphan
+artifacts and unreferenced-registry checks are informational by default —
+pass --strict to fail the exit code on those too.`,
 	RunE: runDoctor,
 }
 
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorGlobal, "global", false,
 		"diagnose the user-global lock file instead of the project lock")
+	doctorCmd.Flags().BoolVar(&doctorAll, "all", false,
+		"diagnose both project and global locks (adds a SCOPE column)")
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false,
 		"exit non-zero when orphan artifacts are detected (informational by default)")
 	rootCmd.AddCommand(doctorCmd)
@@ -63,16 +77,25 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), doctorGlobal)
-	lock, err := model.ReadLockFile(lockPath)
+	locks, err := loadScopedLocks(projectRoot, doctorGlobal, doctorAll)
 	if err != nil {
-		return fmt.Errorf("read lock: %w", err)
+		return err
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	checks := runDoctorChecks(lock, cfg, projectRoot)
+
+	var checks []doctorCheck
+	for _, s := range locks {
+		scoped := runDoctorChecks(s.Lock, cfg, projectRoot)
+		if doctorAll {
+			for i := range scoped {
+				scoped[i].Scope = s.Scope
+			}
+		}
+		checks = append(checks, scoped...)
+	}
 
 	failed := 0
 	for _, c := range checks {
@@ -81,11 +104,14 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Orphan-artifact scan: walk ~/.quiver/{worktrees,registries,subdir,
-	// standalone,cache/index} and surface entries with no claim from any lock
-	// file or config entry. Informational by default; --strict promotes
-	// each one to a failure.
-	orphans := scanOrphans(cfg, lock, doctorGlobal, projectRoot)
+	// Orphan-artifact scan: walk ~/.quiver/{worktrees,registries,cache/index}
+	// and surface entries with no claim from any lock file or config entry.
+	// Informational by default; --strict promotes each one to a failure.
+	// We pass the first lock as "primary" so scanOrphans still consults the
+	// opposite-scope lock; under --all both scopes are already in the lock
+	// list so the primary/other distinction collapses to "all entries."
+	primary := locks[0]
+	orphans := scanOrphans(cfg, primary.Lock, primary.Scope == "global", projectRoot)
 	if doctorStrict {
 		for i := range orphans {
 			orphans[i].OK = false
@@ -94,12 +120,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	checks = append(checks, orphans...)
 
+	// unreferenced-registry: a configured registry that no reachable lock
+	// (across both scopes) names. Informational; --strict promotes to fail.
+	unref := scanUnreferencedRegistries(cfg, locks, projectRoot)
+	if doctorStrict {
+		for i := range unref {
+			unref[i].OK = false
+		}
+		failed += len(unref)
+	}
+	checks = append(checks, unref...)
+
 	// When the project lock is empty but the user has skills installed in
 	// the global lock, "0/0 checks passed" reads like success and hides the
 	// fact that nothing was actually inspected. Surface a clear hint so CI
 	// runs and ad-hoc invocations don't silently miss broken global state.
 	globalHint := ""
-	if !doctorGlobal && len(lock.Skills) == 0 {
+	if !doctorGlobal && !doctorAll && len(primary.Lock.Skills) == 0 {
 		globalLockPath := model.DefaultLockPath(projectRoot, config.Dir(), true)
 		if globalLock, gerr := model.ReadLockFile(globalLockPath); gerr == nil && len(globalLock.Skills) > 0 {
 			globalHint = fmt.Sprintf("project lock is empty; %d skill(s) installed globally — run `qvr doctor --global` to diagnose them", len(globalLock.Skills))
@@ -130,7 +167,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 		orphanCount, lockFailed := 0, 0
 		for _, c := range checks {
-			if strings.HasPrefix(c.Type, "orphan-") {
+			if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" {
 				orphanCount++
 				continue
 			}
@@ -148,7 +185,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(printer.Out, "\n%d/%d lock-tracked checks passed",
 				lockChecks-lockFailed, lockChecks)
 			if orphanCount > 0 {
-				fmt.Fprintf(printer.Out, ", %d orphan artifact(s) found", orphanCount)
+				fmt.Fprintf(printer.Out, ", %d orphan/unreferenced artifact(s) found", orphanCount)
 			}
 			fmt.Fprintln(printer.Out)
 			if globalHint != "" {
@@ -164,8 +201,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 }
 
 // runDoctorChecks is the side-effect-free heart of `qvr doctor` — given a lock
-// file, config, and project root, it returns the full list of checks.
+// file, config, and project root, it returns the full list of checks. The
+// lock's location decides whether symlink targets resolve against project
+// agent dirs or user-global ones.
 func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot string) []doctorCheck {
+	global := lock.IsGlobal(config.Dir())
 	var checks []doctorCheck
 	knownLinks := make(map[string]struct{})
 
@@ -183,7 +223,7 @@ func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot strin
 			checks = append(checks, checkRegistry(e, cfg))
 		}
 		for _, t := range e.Targets {
-			c, linkPath := checkSymlink(e, t, projectRoot)
+			c, linkPath := checkSymlink(e, t, projectRoot, global)
 			checks = append(checks, c)
 			// Even disabled entries claim their symlink path so a disabled
 			// skill's old symlink — if some other process re-creates one —
@@ -240,9 +280,9 @@ func checkRegistry(e *model.LockEntry, cfg *config.Config) doctorCheck {
 	return c
 }
 
-func checkSymlink(e *model.LockEntry, target, projectRoot string) (doctorCheck, string) {
+func checkSymlink(e *model.LockEntry, target, projectRoot string, global bool) (doctorCheck, string) {
 	c := doctorCheck{Type: "symlink", Skill: e.Name, Target: target}
-	linkPath, err := skill.ResolveTargetPath(target, e.Name, projectRoot, e.Global)
+	linkPath, err := skill.ResolveTargetPath(target, e.Name, projectRoot, global)
 	if err != nil {
 		c.Message = err.Error()
 		return c, ""
@@ -324,31 +364,12 @@ func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bo
 		},
 	)...)
 
-	// Subdir clones orphan: bare clone whose slug isn't claimed by any subdir lock entry.
-	checks = append(checks, scanOrphanDir(
-		registry.SubdirRoot(), "orphan-subdir",
-		"leftover from `qvr add` (no matching lock entry)",
-		func(path string) bool {
-			base := filepath.Base(path)
-			// Staging dirs are always orphans — they only exist while an
-			// install is in flight, and a leftover here means a crashed run.
-			if strings.HasSuffix(base, ".staging") {
-				return true
-			}
-			slug := strings.TrimSuffix(base, ".git")
-			_, claimed := claimedSubdir[slug]
-			return !claimed
-		},
-	)...)
-
-	// Standalone clones orphan: every dir under standalone/ — the install
-	// path doesn't write a lock entry today, so anything there is orphan
-	// disk state by design (see issue #4).
-	checks = append(checks, scanOrphanDir(
-		filepath.Join(config.Dir(), "standalone"), "orphan-standalone",
-		"standalone clone with no install record",
-		func(string) bool { return true },
-	)...)
+	// Subdir / standalone orphan scans were removed in v4 — both directories
+	// were collapsed into registries/, so the registry orphan scan above
+	// covers everything. claimedSubdir is retained on the lock-entry loop
+	// upstream so a v4 migration that leaves stale "subdir" Source labels
+	// still resolves the right registry.
+	_ = claimedSubdir
 
 	// Index cache orphan: cache/index/<name>.json where <name> isn't a configured registry.
 	cacheDir := filepath.Join(config.Dir(), "cache", "index")
@@ -371,6 +392,63 @@ func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bo
 		}
 	}
 
+	return checks
+}
+
+// scanUnreferencedRegistries reports configured registries whose name appears
+// in no reachable lock entry. The user can prune these with `qvr registry
+// remove <name>` once they confirm nothing local depends on them. Under
+// --all we already see both locks via the scopedLock list; in single-scope
+// mode we look at the opposite scope too so a global-only-referenced registry
+// isn't flagged when the user runs `qvr doctor` from a fresh project.
+func scanUnreferencedRegistries(cfg *config.Config, locks []scopedLock, projectRoot string) []doctorCheck {
+	if len(cfg.Registries) == 0 {
+		return nil
+	}
+	referenced := map[string]struct{}{}
+	collect := func(l *model.LockFile) {
+		if l == nil {
+			return
+		}
+		for _, e := range l.Entries() {
+			if e.Registry != "" {
+				referenced[e.Registry] = struct{}{}
+			}
+		}
+	}
+	for _, s := range locks {
+		collect(s.Lock)
+	}
+	// Always pull in the opposite-scope lock so a registry referenced only
+	// from the lock we're not inspecting doesn't appear unreferenced. The
+	// project lock lives under projectRoot, so the path needs it — empty
+	// projectRoot here would resolve to a relative path and silently miss
+	// the actual project entries.
+	if len(locks) == 1 {
+		other := !locks[0].Lock.IsGlobal(config.Dir())
+		if otherLock, err := model.ReadLockFile(model.DefaultLockPath(projectRoot, config.Dir(), other)); err == nil {
+			collect(otherLock)
+		}
+	}
+
+	var names []string
+	for name := range cfg.Registries {
+		if _, ok := referenced[name]; !ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	var checks []doctorCheck
+	for _, name := range names {
+		checks = append(checks, doctorCheck{
+			Type:    "unreferenced-registry",
+			Skill:   name,
+			Path:    registry.RegistryPath(name),
+			OK:      true,
+			Message: "configured but no lock entry references it",
+		})
+	}
 	return checks
 }
 
@@ -439,15 +517,19 @@ func renderDoctorCheck(c doctorCheck) {
 	marker := "✗"
 	if c.OK {
 		marker = "✓"
-		// Orphan rows are informational, not "passing" — they need a
-		// distinct glyph or users skim past them assuming everything's fine.
-		if strings.HasPrefix(c.Type, "orphan-") {
+		// Orphan / unreferenced rows are informational, not "passing" —
+		// they need a distinct glyph or users skim past them assuming
+		// everything's fine.
+		if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" {
 			marker = "!"
 		}
 	}
 	label := c.Type
+	if c.Scope != "" {
+		label = fmt.Sprintf("[%s] %s", c.Scope, label)
+	}
 	if c.Skill != "" {
-		label = fmt.Sprintf("%s %s", c.Type, c.Skill)
+		label = fmt.Sprintf("%s %s", label, c.Skill)
 	}
 	if c.Target != "" {
 		label += " [" + c.Target + "]"

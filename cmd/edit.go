@@ -59,7 +59,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// Idempotent no-op: matches the behavior of `switch`/`upgrade`/`install`
 	// so wrapper scripts can call `qvr edit <skill>` defensively without
 	// guarding with `qvr info` first.
-	if branch == entry.Branch {
+	if branch == entry.Ref {
 		if printer.Format == output.FormatJSON {
 			return printer.JSON(map[string]any{
 				"skill":   entry,
@@ -76,7 +76,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("edit: %w", err)
 	}
-	if err := skill.ApplySwitch(updated, projectRoot); err != nil {
+	if err := skill.ApplySwitch(updated, projectRoot, editGlobal); err != nil {
 		return err
 	}
 
@@ -97,7 +97,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if warning != "" {
 		printer.Warning(warning)
 	}
-	printer.Success(fmt.Sprintf("%s: editing on %s (from %s)", updated.Name, updated.Branch, shortHash(updated.Commit)))
+	printer.Success(fmt.Sprintf("%s: editing on %s (from %s)", updated.Name, updated.Ref, shortHash(updated.ResolvedSHA)))
 	return nil
 }
 

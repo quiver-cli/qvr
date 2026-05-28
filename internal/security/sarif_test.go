@@ -68,15 +68,21 @@ func TestSARIF_SeverityPreservedInProperties(t *testing.T) {
 
 	critProps := sarif.Runs[0].Results[0].Properties
 	assert.Equal(t, "critical", critProps["severity"])
-	assert.Equal(t, "critical", critProps["problem"].(map[string]any)["severity"])
+	critProblem, ok := critProps["problem"].(map[string]any)
+	require.True(t, ok, "critical: problem must be a map")
+	assert.Equal(t, "critical", critProblem["severity"])
 
 	errProps := sarif.Runs[0].Results[1].Properties
 	assert.Equal(t, "error", errProps["severity"])
-	assert.Equal(t, "high", errProps["problem"].(map[string]any)["severity"])
+	errProblem, ok := errProps["problem"].(map[string]any)
+	require.True(t, ok, "error: problem must be a map")
+	assert.Equal(t, "high", errProblem["severity"])
 
 	infoProps := sarif.Runs[0].Results[2].Properties
 	assert.Equal(t, "info", infoProps["severity"])
-	assert.Equal(t, "low", infoProps["problem"].(map[string]any)["severity"])
+	infoProblem, ok := infoProps["problem"].(map[string]any)
+	require.True(t, ok, "info: problem must be a map")
+	assert.Equal(t, "low", infoProblem["severity"])
 }
 
 // TestSARIF_PerDetectorRuleIDs verifies the secrets/unicode/permissions

@@ -1,11 +1,12 @@
 # Getting Started
 
-> **Status: v0.4.5.** Shipping today: `qvr init`, `validate`, `config`,
-> `registry`, `search`, `version`, `add`, `install`, `remove`, `pull`,
-> `push`, `publish`, `edit`, `upgrade`, `switch`, `link`, `read`,
-> `list`, `ls`, `info`, `diff`, `status`, `outdated`, `disable`,
-> `enable`, `doctor`, `sync`. The local React dashboard (`qvr ui`) is
-> in flight.
+> **Status: v0.5.0.** Project-local lockfile model: `qvr init`, `validate`,
+> `config`, `registry add/list/update/remove`, `search`, `version`, `add`,
+> `remove`, `sync` (strict reconciler), `docs` (AGENTS.md), `pull`, `push`,
+> `publish`, `edit`, `upgrade`, `switch`, `link`, `read`, `list`, `ls`,
+> `info`, `diff`, `status`, `outdated`, `disable`, `enable`, `doctor`
+> (with `--global` and `--all` across inspections). The local React
+> dashboard (`qvr ui`) is in flight.
 
 ## Install
 
@@ -45,13 +46,13 @@ qvr search code-review --output json
 
 ```bash
 # Install to Claude Code
-qvr install code-review --target claude
+qvr add code-review --target claude
 
 # Install to multiple agents
-qvr install code-review --target claude --target cursor
+qvr add code-review --target claude --target cursor
 
 # Install a specific version
-qvr install code-review@v2 --target claude
+qvr add code-review@v2 --target claude
 ```
 
 ### 4. Use the skill

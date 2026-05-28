@@ -3,38 +3,51 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
+	"github.com/raks097/quiver/internal/registry"
 	"github.com/raks097/quiver/internal/skill"
 	"github.com/spf13/cobra"
 )
 
 var (
-	syncOutputPath string
-	syncGlobal     bool
+	syncGlobal        bool
+	syncDryRun        bool
+	syncKeepUntracked bool
 )
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Generate AGENTS.md from installed skills",
-	Long: `Walk every installed skill's SKILL.md and emit a single AGENTS.md in the
-current directory summarising what's available to agents in this project.
+	Short: "Reconcile the project against qvr.lock",
+	Long: `Make the on-disk state match the lock file. For every entry in the
+lock, ensure its worktree exists in the shared cache and the agent-target
+symlinks point at it. Then strict-remove any symlinks under managed agent
+directories (.claude/skills/, .cursor/rules/, etc.) whose target is a
+qvr-managed cache path but which don't appear in the lock — that's the
+"hidden by default" guarantee.
 
-Pass --global to read the user-global lock file instead. The output path still
-defaults to ./AGENTS.md, so combine with -o when generating from a global lock.`,
+A symlink whose target sits outside the qvr-managed scope (e.g. into your
+own dev directory or somewhere weirder like /etc/passwd) is left alone
+and surfaced in the output so you can investigate; sync never removes
+anything we don't recognise as ours.
+
+Pass --global to reconcile against the user-global lock at ~/.quiver/qvr.lock.
+Pass --dry-run to see what would change without touching the filesystem.
+Pass --keep-untracked to downgrade orphan removal to a warning — handy
+when you mix hand-managed skills with qvr-managed ones in the same dir.`,
 	RunE: runSync,
 }
 
 func init() {
-	syncCmd.Flags().StringVarP(&syncOutputPath, "output-file", "o", "AGENTS.md",
-		"path to write the generated file (relative to cwd)")
 	syncCmd.Flags().BoolVar(&syncGlobal, "global", false,
-		"read the user-global lock file instead of the project lock")
+		"reconcile against the user-global lock instead of the project lock")
+	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false,
+		"report what would change without touching the filesystem")
+	syncCmd.Flags().BoolVar(&syncKeepUntracked, "keep-untracked", false,
+		"warn about orphan managed symlinks instead of removing them")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -47,105 +60,48 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read lock: %w", err)
 	}
-	outPath := syncOutputPath
-	if !filepath.IsAbs(outPath) {
-		outPath = filepath.Join(projectRoot, outPath)
-	}
-	entries := lock.Entries()
-	if err := writeAgentsMD(outPath, entries); err != nil {
-		return err
-	}
-	if printer.Format == output.FormatJSON {
-		return printer.JSON(map[string]any{
-			"path":   outPath,
-			"skills": len(entries),
-		})
-	}
-	printer.Success(fmt.Sprintf("Wrote %s (%d skill(s))", outPath, len(entries)))
-	return nil
-}
 
-// writeAgentsMD serializes the installed skill list to a single AGENTS.md at
-// outPath. Used directly by `qvr sync` and by switch/upgrade/pull to keep the
-// file fresh when it already exists (see refreshAgentsMDIfPresent).
-func writeAgentsMD(outPath string, entries []*model.LockEntry) error {
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	gc := git.NewGoGitClient()
+	wt := git.NewGoGitWorktree()
+	installer := skill.NewInstaller(registry.NewManager(gc), wt, gc)
+	reconciler := skill.NewReconciler(installer)
 
-	var b strings.Builder
-	b.WriteString("# Agents\n\n")
-	b.WriteString("Skills available to agents in this project. Managed by [Quiver](https://github.com/raks097/quiver).\n\n")
-	if len(entries) == 0 {
-		b.WriteString("_No skills installed._\n")
-	} else {
-		b.WriteString("## Skills\n\n")
-		for _, e := range entries {
-			desc := ""
-			if e.Worktree != "" {
-				loaded, err := skill.LoadFromPath(filepath.Join(e.Worktree, e.Path))
-				if err == nil {
-					desc = loaded.Frontmatter.Description
-				}
-			} else if e.LinkTarget != "" {
-				loaded, err := skill.LoadFromPath(e.LinkTarget)
-				if err == nil {
-					desc = loaded.Frontmatter.Description
-				}
-			}
-			origin := e.Registry
-			if e.Source == "link" {
-				origin = "link"
-			} else if origin == "" {
-				origin = "standalone"
-			}
-			version := e.Branch
-			if version == "" {
-				version = "-"
-			}
-			// Descriptions that come from YAML folded/block scalars can carry
-			// embedded newlines or trailing whitespace. Collapse to a single
-			// space so the _(registry@ref)_ marker always renders on the same
-			// line as the description, regardless of source formatting.
-			fmt.Fprintf(&b, "- **%s** — %s _(%s@%s)_\n", e.Name, collapseWhitespace(desc), origin, version)
-		}
-	}
-
-	if err := os.WriteFile(outPath, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", outPath, err)
-	}
-	return nil
-}
-
-// refreshAgentsMDIfPresent regenerates AGENTS.md at projectRoot — but only if
-// the file already exists. Callers (install/link/remove/disable/enable/edit/
-// switch/upgrade/pull) use this to keep the description cache in sync without
-// silently creating an AGENTS.md for users who deliberately haven't opted in
-// via `qvr sync`.
-func refreshAgentsMDIfPresent(projectRoot string, entries []*model.LockEntry) error {
-	outPath := filepath.Join(projectRoot, "AGENTS.md")
-	if _, err := os.Stat(outPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return nil // any other stat error: treat as "don't touch"
-	}
-	return writeAgentsMD(outPath, entries)
-}
-
-// refreshAgentsMDFromLock re-reads the lock file at projectRoot and refreshes
-// AGENTS.md if it already exists. Convenience wrapper for commands that
-// mutate the lock via a helper (Installer.Install/Link/Remove) and so don't
-// keep a live entries slice in hand.
-func refreshAgentsMDFromLock(projectRoot string) {
-	lock, err := model.ReadLockFile(filepath.Join(projectRoot, model.LockFileName))
+	result, err := reconciler.Reconcile(lock, projectRoot, config.Dir(), skill.ReconcileOptions{
+		DryRun:        syncDryRun,
+		KeepUntracked: syncKeepUntracked,
+	})
 	if err != nil {
-		return
+		return fmt.Errorf("sync: %w", err)
 	}
-	_ = refreshAgentsMDIfPresent(projectRoot, lock.Entries())
-}
 
-// collapseWhitespace flattens any run of whitespace (including newlines) into
-// a single space and trims the result. Keeps AGENTS.md rows uniform even when
-// skill authors use YAML folded (`>`) or block (`|`) scalars for descriptions.
-func collapseWhitespace(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	// Refresh AGENTS.md if the user has opted in (file already present). The
+	// reconciler may have changed which skills are visible, so the doc cache
+	// can otherwise lie until the next manual `qvr docs`.
+	if !syncGlobal && !syncDryRun {
+		_ = refreshAgentsMDIfPresent(projectRoot, lock.Entries())
+	}
+
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(result)
+	}
+
+	for _, name := range result.Installed {
+		printer.Success(fmt.Sprintf("Restored %s", name))
+	}
+	for _, path := range result.SymlinksFixed {
+		printer.Info(fmt.Sprintf("Linked %s", path))
+	}
+	for _, path := range result.Removed {
+		printer.Warning(fmt.Sprintf("Removed orphan %s", path))
+	}
+	for _, skipped := range result.Skipped {
+		printer.Info(fmt.Sprintf("Skipped %s", skipped))
+	}
+	for _, e := range result.Errors {
+		printer.Error(e)
+	}
+	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 {
+		printer.Success("Already in sync.")
+	}
+	return nil
 }

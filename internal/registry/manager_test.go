@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -386,34 +387,6 @@ func TestManager_Check_WithChanges(t *testing.T) {
 	}
 }
 
-func TestManager_AddStandalone(t *testing.T) {
-	mgr, _ := setupManagerTest(t)
-	srcDir := setupTestSourceRepo(t)
-
-	repo, err := mgr.AddStandalone(context.Background(), srcDir)
-	if err != nil {
-		t.Fatalf("AddStandalone: %v", err)
-	}
-
-	if repo.URL != srcDir {
-		t.Errorf("URL = %q, want %q", repo.URL, srcDir)
-	}
-	if _, err := os.Stat(repo.Path); err != nil {
-		t.Errorf("clone not found at %s", repo.Path)
-	}
-}
-
-func TestManager_AddStandalone_AlreadyExists(t *testing.T) {
-	mgr, _ := setupManagerTest(t)
-	srcDir := setupTestSourceRepo(t)
-
-	_, _ = mgr.AddStandalone(context.Background(), srcDir)
-	_, err := mgr.AddStandalone(context.Background(), srcDir)
-	if !errors.Is(err, registry.ErrRegistryExists) {
-		t.Errorf("expected ErrRegistryExists, got %v", err)
-	}
-}
-
 func TestManager_Add_WritesCacheOnFirstClone(t *testing.T) {
 	mgr, _ := setupManagerTest(t)
 	srcDir := setupTestSourceRepo(t)
@@ -627,6 +600,83 @@ func TestURLToSlug(t *testing.T) {
 			got := registry.URLToSlug(tt.url)
 			if got != tt.want {
 				t.Errorf("URLToSlug(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestWorktreePath_RefHostility pins the "ref is never shelled out"
+// guarantee: go-git handles all clone/checkout work, so a hostile ref
+// containing newlines, semicolons, or other shell metachars never reaches
+// a subprocess. The path-construction side still needs to produce a safe
+// directory name though — slashes and colons get flattened to "--", and
+// the worktree always lands under registry.WorktreesRoot() with no escape.
+func TestWorktreePath_RefHostility(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+
+	hostile := []string{
+		"main; rm -rf /",
+		"main\nrm",
+		"main`rm`",
+		"main$(rm)",
+		"feature/x:y",
+		"../../etc/passwd",
+	}
+	root := registry.WorktreesRoot()
+	for _, ref := range hostile {
+		t.Run(ref, func(t *testing.T) {
+			p := registry.WorktreePath("acme", "skill", ref)
+			// The path must stay rooted under worktrees/ — no `..` segment
+			// should escape, and the basename should not start with `..`.
+			if !strings.HasPrefix(p, root+string(filepath.Separator)) {
+				t.Errorf("WorktreePath escaped worktrees root: %q (root %q)", p, root)
+			}
+			base := filepath.Base(p)
+			if strings.HasPrefix(base, "..") {
+				t.Errorf("worktree basename starts with ..: %q", base)
+			}
+			// Ensure the path is filesystem-clean (no separator pollution
+			// beyond the one between root and basename).
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				t.Fatalf("Rel(%q, %q): %v", root, p, err)
+			}
+			if strings.Contains(rel, string(filepath.Separator)) {
+				t.Errorf("rel path under root contains separator: %q", rel)
+			}
+		})
+	}
+}
+
+// TestInferRegistryName covers the auto-naming path used by
+// `qvr registry add <url>` — always returns `<org>--<repo>` regardless of
+// the host or scheme. Hostile inputs that don't yield two usable segments
+// must return "" so the cmd layer can require an explicit --name.
+func TestInferRegistryName(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/vercel-labs/agent-skills", "vercel-labs--agent-skills"},
+		{"https://github.com/vercel-labs/agent-skills.git", "vercel-labs--agent-skills"},
+		{"https://github.com/Org/Repo", "org--repo"},
+		{"git@github.com:org/repo.git", "org--repo"},
+		{"ssh://git@gitlab.com/org/repo.git", "org--repo"},
+		{"https://gitlab.com/group/subgroup/repo", "subgroup--repo"},
+		{"https://example.com/repo", ""}, // no org segment
+		{"https://github.com/", ""},      // empty path
+		{"   ", ""},                      // whitespace
+		// Traversal in the path is neutralized: only the last two segments
+		// become the slug, and the result lands at ~/.quiver/registries/<slug>.git/
+		// so there's no escape — but verify the slug shape anyway.
+		{"https://github.com/../../etc/passwd", "etc--passwd"},
+		{"https://github.com/Foo_Bar/Quux.Plugin", "foo_bar--quux-plugin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			got := registry.InferRegistryName(tt.url)
+			if got != tt.want {
+				t.Errorf("InferRegistryName(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
 	}
