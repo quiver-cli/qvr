@@ -13,7 +13,7 @@ import (
 var (
 	outputFormat string
 	printer      *output.Printer
-	version      = "0.4.10"
+	version      = "0.4.11"
 )
 
 // errJSONHandled signals to Execute() that the command has already emitted a
