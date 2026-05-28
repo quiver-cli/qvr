@@ -627,50 +627,51 @@ func TestWorktreePath_RefHostility(t *testing.T) {
 		t.Run(ref, func(t *testing.T) {
 			p := registry.WorktreePath("acme", "skill", ref)
 			// The path must stay rooted under worktrees/ — no `..` segment
-			// should escape, and the basename should not start with `..`.
+			// should escape. v0.5 layout nests as `<registry>/<skill>/<sha>`
+			// so separators in the relative path are expected; what we
+			// disallow is any segment that resolves up out of the root.
 			if !strings.HasPrefix(p, root+string(filepath.Separator)) {
 				t.Errorf("WorktreePath escaped worktrees root: %q (root %q)", p, root)
 			}
-			base := filepath.Base(p)
-			if strings.HasPrefix(base, "..") {
-				t.Errorf("worktree basename starts with ..: %q", base)
-			}
-			// Ensure the path is filesystem-clean (no separator pollution
-			// beyond the one between root and basename).
 			rel, err := filepath.Rel(root, p)
 			if err != nil {
 				t.Fatalf("Rel(%q, %q): %v", root, p, err)
 			}
-			if strings.Contains(rel, string(filepath.Separator)) {
-				t.Errorf("rel path under root contains separator: %q", rel)
+			// `..--..--etc--passwd` is a literal directory name, not a
+			// traversal segment — slugSegment has already flattened the
+			// slashes. Only an exact `..` or empty segment would escape.
+			for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+				if seg == "" || seg == ".." || seg == "." {
+					t.Errorf("worktree rel %q contains traversal segment %q", rel, seg)
+				}
 			}
 		})
 	}
 }
 
 // TestInferRegistryName covers the auto-naming path used by
-// `qvr registry add <url>` — always returns `<org>--<repo>` regardless of
-// the host or scheme. Hostile inputs that don't yield two usable segments
+// `qvr registry add <url>` — always returns `<org>/<repo>` regardless of
+// the host or scheme (org is the parent dir; repo is the bare clone). Hostile inputs that don't yield two usable segments
 // must return "" so the cmd layer can require an explicit --name.
 func TestInferRegistryName(t *testing.T) {
 	tests := []struct {
 		url  string
 		want string
 	}{
-		{"https://github.com/vercel-labs/agent-skills", "vercel-labs--agent-skills"},
-		{"https://github.com/vercel-labs/agent-skills.git", "vercel-labs--agent-skills"},
-		{"https://github.com/Org/Repo", "org--repo"},
-		{"git@github.com:org/repo.git", "org--repo"},
-		{"ssh://git@gitlab.com/org/repo.git", "org--repo"},
-		{"https://gitlab.com/group/subgroup/repo", "subgroup--repo"},
+		{"https://github.com/vercel-labs/agent-skills", "vercel-labs/agent-skills"},
+		{"https://github.com/vercel-labs/agent-skills.git", "vercel-labs/agent-skills"},
+		{"https://github.com/Org/Repo", "org/repo"},
+		{"git@github.com:org/repo.git", "org/repo"},
+		{"ssh://git@gitlab.com/org/repo.git", "org/repo"},
+		{"https://gitlab.com/group/subgroup/repo", "subgroup/repo"},
 		{"https://example.com/repo", ""}, // no org segment
 		{"https://github.com/", ""},      // empty path
 		{"   ", ""},                      // whitespace
 		// Traversal in the path is neutralized: only the last two segments
 		// become the slug, and the result lands at ~/.quiver/registries/<slug>.git/
 		// so there's no escape — but verify the slug shape anyway.
-		{"https://github.com/../../etc/passwd", "etc--passwd"},
-		{"https://github.com/Foo_Bar/Quux.Plugin", "foo_bar--quux-plugin"},
+		{"https://github.com/../../etc/passwd", "etc/passwd"},
+		{"https://github.com/Foo_Bar/Quux.Plugin", "foo_bar/quux-plugin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {

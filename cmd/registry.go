@@ -24,9 +24,10 @@ var registryAddCmd = &cobra.Command{
 	Long: `Register a Git repository as a source of skills. The repo can hold one
 skill or many — the indexer walks it on first clone.
 
-The name is inferred as <org>--<repo> from the URL. Override with --name when
-two repos share the same name across orgs, or when the URL doesn't carry a
-usable org segment.
+The name is inferred as <org>/<repo> from the URL — the on-disk path nests
+the same way (~/.quiver/registries/<org>/<repo>.git/) so registries from the
+same org live together. Override with --name when two repos share the same
+name across orgs, or when the URL doesn't carry a usable org segment.
 
   qvr registry add https://github.com/vercel-labs/agent-skills
   qvr registry add git@github.com:org/repo.git --name internal-tools
@@ -71,7 +72,7 @@ var registryUpdateCmd = &cobra.Command{
 
 func init() {
 	registryAddCmd.Flags().StringVar(&registryAddName, "name", "",
-		"override the auto-inferred <org>--<repo> name (use to disambiguate collisions)")
+		"override the auto-inferred <org>/<repo> name (full literal override; pass <alias> or <org>/<alias>)")
 	registryUpdateCmd.Flags().BoolVar(&registryUpdateCheck, "check", false,
 		"check for upstream changes without downloading")
 	registryUpdateCmd.Flags().BoolVarP(&registryUpdateVerbose, "verbose", "v", false,

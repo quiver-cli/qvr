@@ -482,16 +482,25 @@ func TestValidateRegistryName(t *testing.T) {
 		name    string
 		wantErr bool
 	}{
+		// Flat single-segment names — the explicit `--name` lane.
 		{"acme", false},
 		{"my-registry", false},
 		{"reg_1", false},
 		{"a", false},
+		// v0.5 nested `<org>/<repo>` shape produced by InferRegistryName.
+		{"vercel-labs/agent-skills", false},
+		{"foo/bar", false},
+		// Rejections.
 		{"", true},
 		{"UPPER", true},
+		{"Org/Repo", true}, // uppercase in either segment
 		{"has space", true},
-		{"../evil", true},
-		{"hello/world", true},
-		{strings.Repeat("a", 65), true},
+		{"../evil", true},     // first segment starts with `.`
+		{"org/../evil", true}, // second segment starts with `.`
+		{"a/b/c", true},       // more than one slash
+		{"/repo", true},       // empty leading segment
+		{"org/", true},        // empty trailing segment
+		{strings.Repeat("a", 129), true},
 		{"-starts-hyphen", true},
 	}
 

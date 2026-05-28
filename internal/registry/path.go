@@ -10,23 +10,36 @@ import (
 	"github.com/raks097/quiver/internal/config"
 )
 
-var registryNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+// registryNameSegmentRe is the per-segment shape: lowercase alphanumeric
+// optionally followed by `[a-z0-9_-]*` and ending alphanumeric (single-char
+// segments are allowed by the leading-class match).
+var registryNameSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // slugRe matches slugs produced by URLToSlug: lowercase alphanumerics with
 // dots, dashes, and underscores. The "--" produced from "/" and ":" is
 // covered by the dash class.
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
-// ValidateRegistryName checks that a registry name is safe for use as a directory name.
+// ValidateRegistryName checks that a registry name is safe for use as a
+// (possibly nested) directory name. v0.5 auto-naming produces `<org>/<repo>`
+// so registries land under `~/.quiver/registries/<org>/<repo>.git/`. Each
+// segment must match registryNameSegmentRe, and only one `/` is permitted
+// — flat single-segment names (the explicit `--name` lane) still work.
 func ValidateRegistryName(name string) error {
 	if name == "" {
 		return errors.New("name cannot be empty")
 	}
-	if len(name) > 64 {
-		return fmt.Errorf("name %q exceeds 64 characters", name)
+	if len(name) > 128 {
+		return fmt.Errorf("name %q exceeds 128 characters", name)
 	}
-	if !registryNameRe.MatchString(name) {
-		return fmt.Errorf("name %q must be lowercase alphanumeric, hyphens, or underscores", name)
+	segments := strings.Split(name, "/")
+	if len(segments) > 2 {
+		return fmt.Errorf("name %q has more than one `/` — at most `<org>/<repo>` is allowed", name)
+	}
+	for _, seg := range segments {
+		if !registryNameSegmentRe.MatchString(seg) {
+			return fmt.Errorf("name %q: segment %q must be lowercase alphanumeric, hyphens, or underscores", name, seg)
+		}
 	}
 	return nil
 }
@@ -69,12 +82,18 @@ func URLToSlug(url string) string {
 }
 
 // InferRegistryName produces the auto-name for `qvr registry add <url>` —
-// `<org>--<repo>`, lowercased, with characters outside the registry-name
-// alphabet replaced by `-`. The last two non-empty path segments are the
-// org and repo respectively; this handles `https://host/org/repo[.git]`,
-// `git@host:org/repo.git`, and `ssh://git@host/org/repo.git` uniformly.
-// Returns "" when the URL has no usable org/repo shape so callers can
-// fall back to requiring an explicit `--name` flag.
+// `<org>/<repo>`, lowercased, with characters outside the registry-name
+// alphabet replaced by `-`. The last two non-empty path segments of the
+// clone URL become the org and repo respectively; this handles
+// `https://host/org/repo[.git]`, `git@host:org/repo.git`, and
+// `ssh://git@host/org/repo.git` uniformly. Returns "" when the URL has
+// no usable org/repo shape so callers can fall back to requiring an
+// explicit `--name` flag.
+//
+// On disk this nests as `~/.quiver/registries/<org>/<repo>.git/` so all
+// of one org's registries live under a single parent — clean to browse
+// and cross-platform (the only path separator involved is `/`, which
+// filepath.Join translates to the OS-native form).
 func InferRegistryName(rawURL string) string {
 	s := strings.TrimSpace(rawURL)
 	if s == "" {
@@ -114,7 +133,7 @@ func InferRegistryName(rawURL string) string {
 	if org == "" || repo == "" {
 		return ""
 	}
-	return org + "--" + repo
+	return org + "/" + repo
 }
 
 // sanitizeRegistryNameSegment lowercases the input and replaces any rune
@@ -153,14 +172,19 @@ func WorktreesRoot() string {
 // share one worktree and different SHAs (even on the same branch) never
 // collide. Ref names live only in the lockfile as human labels.
 //
-// The sha string is run through slugSegment so callers can still hand it a
-// branch name in transitional code paths without corrupting the directory
-// tree, but the canonical input is a SHA.
+// v0.5 layout: `~/.quiver/worktrees/<registry>/<skill>/<sha7>/`. With the
+// `<org>/<repo>` registry shape, the full path nests four levels under
+// WorktreesRoot — `<org>/<repo>/<skill>/<sha7>` — matching the registries
+// directory shape so `~/.quiver/` is easy to browse and to wipe by org.
+//
+// The skill and sha components go through slugSegment as a defence-in-depth
+// against hostile refs slipping in through transitional code paths; the
+// registry component is trusted because ValidateRegistryName has already
+// rejected anything that could escape the worktrees subtree.
 func WorktreePath(registry, skill, sha string) string {
-	safeSha := slugSegment(sha)
 	safeSkill := slugSegment(skill)
-	name := fmt.Sprintf("%s--%s--%s", registry, safeSkill, safeSha)
-	return filepath.Join(WorktreesRoot(), name)
+	safeSha := slugSegment(sha)
+	return filepath.Join(WorktreesRoot(), registry, safeSkill, safeSha)
 }
 
 // ShortSHA returns the cache-key form of a commit SHA — 7 hex characters,

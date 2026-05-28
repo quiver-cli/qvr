@@ -98,6 +98,12 @@ func (m *Manager) Add(ctx context.Context, name, url string) (*model.Registry, e
 	}
 
 	repoPath := RegistryPath(name)
+	// `git clone --mirror` doesn't auto-create the parent directory. With the
+	// v0.5 `<org>/<repo>` shape, the parent is the org directory which may
+	// not exist yet on first add for that org.
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create registry parent dir: %w", err)
+	}
 	if err := m.Git.BareClone(ctx, cleanURL, repoPath); err != nil {
 		return nil, fmt.Errorf("clone registry %s: %w", name, err)
 	}
@@ -147,6 +153,20 @@ func (m *Manager) Remove(name string) error {
 	repoPath := RegistryPath(name)
 	if err := os.RemoveAll(repoPath); err != nil {
 		return fmt.Errorf("%w: remove clone: %v", ErrRemoveFailed, err)
+	}
+
+	// If this was the last registry under its org dir (v0.5 `<org>/<repo>`
+	// shape), drop the empty parent so `registries/` doesn't accumulate
+	// hollow org directories. os.Remove only succeeds on empty dirs, so
+	// other registries under the same org keep the parent alive. Bounded
+	// to a couple of levels in case future schemes nest deeper.
+	parent := filepath.Dir(repoPath)
+	registriesRoot := filepath.Join(config.Dir(), "registries")
+	for parent != registriesRoot && parent != filepath.Dir(parent) {
+		if err := os.Remove(parent); err != nil {
+			break // not empty, or vanished — either way we're done
+		}
+		parent = filepath.Dir(parent)
 	}
 
 	// Drop the cache entry last — if config save succeeded, a stale cache

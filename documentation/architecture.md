@@ -26,28 +26,37 @@ The solution uses Git's own primitives:
 ```
 ~/.quiver/
 ├── registries/
-│   ├── acme.git/                    # Bare clone (objects + refs only)
-│   └── community.git/              # Another bare clone
+│   ├── vercel-labs/                       # Org parent
+│   │   └── agent-skills.git/              # Bare clone (objects + refs only)
+│   └── anthropics/
+│       └── skills.git/
 │
-├── worktrees/                       # One per resolved skill@SHA
-│   ├── acme--code-review--abc1234/  # Sparse: only skills/code-review/
-│   ├── acme--deploy--def5678/       # Sparse: only skills/deploy-helper/
-│   └── community--test-runner--9ab1c2d/
+├── worktrees/                             # SHA-keyed, shared across projects
+│   ├── vercel-labs/
+│   │   └── agent-skills/
+│   │       └── code-review/
+│   │           └── abc1234/               # Sparse: only skills/code-review/
+│   └── anthropics/
+│       └── skills/
+│           └── test-runner/
+│               └── def5678/
 │
 ├── config.yaml
-├── qvr.lock                         # Global ambient lock (--global lane)
+├── qvr.lock                               # Global ambient lock (--global lane)
 └── cache/
-    └── index/                       # Cached registry skill indexes
+    └── index/                             # Cached registry skill indexes
 
 <project>/
-├── qvr.lock                         # Project lock — source of truth for agents
-└── .claude/skills/<skill>  -->      symlink into ~/.quiver/worktrees/
+├── qvr.lock                               # Project lock — source of truth for agents
+└── .claude/skills/<skill>  -->            symlink into ~/.quiver/worktrees/.../<sha7>/
 ```
 
 Single-skill repos live under the same `registries/` tree — `qvr registry add`
 is the only entrypoint, so the indexer's job is to walk whatever's there
 (one skill or many). The legacy `subdir/` and `standalone/` directories
-from earlier prototypes have been collapsed.
+from earlier prototypes have been collapsed. Both `registries/` and
+`worktrees/` nest by `<org>/<repo>` so the on-disk shape is uniform and
+a whole org can be wiped or browsed at once.
 
 ### Data Flow
 

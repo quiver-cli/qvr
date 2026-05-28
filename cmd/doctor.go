@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -343,25 +344,23 @@ func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bo
 
 	var checks []doctorCheck
 
-	// Worktrees orphan: dir present under worktrees/ but no lock entry points at it.
-	checks = append(checks, scanOrphanDir(
-		registry.WorktreesRoot(), "orphan-worktree",
-		"not referenced by any lock file",
-		func(path string) bool {
-			_, claimed := claimedWorktrees[path]
-			return !claimed
-		},
+	// Worktrees orphan: any git worktree under worktrees/ with no lock
+	// entry pointing at it. v0.5 layout nests four levels under the root
+	// (`<org>/<repo>/<skill>/<sha7>`), while legacy state from earlier
+	// versions left flat single-level dirs there. We identify worktrees
+	// by the `.git` marker, so both layouts are detected the same way.
+	checks = append(checks, scanWorktreeOrphans(
+		registry.WorktreesRoot(),
+		claimedWorktrees,
 	)...)
 
-	// Registry bare clones orphan: dir name (minus .git) not in config and not in any subdir lock entry.
-	checks = append(checks, scanOrphanDir(
-		filepath.Join(config.Dir(), "registries"), "orphan-registry",
-		"no matching config entry",
-		func(path string) bool {
-			name := strings.TrimSuffix(filepath.Base(path), ".git")
-			_, claimed := claimedRegistries[name]
-			return !claimed
-		},
+	// Registry bare clones orphan: dir present under registries/ but no
+	// config entry references it. The on-disk layout is two-tier under
+	// v0.5 — `<org>/<repo>.git/` for auto-named adds, flat `<name>.git/`
+	// for explicit `--name` lanes — so we walk both shapes.
+	checks = append(checks, scanRegistryOrphans(
+		filepath.Join(config.Dir(), "registries"),
+		claimedRegistries,
 	)...)
 
 	// Subdir / standalone orphan scans were removed in v4 — both directories
@@ -452,27 +451,91 @@ func scanUnreferencedRegistries(cfg *config.Config, locks []scopedLock, projectR
 	return checks
 }
 
-// scanOrphanDir lists the immediate children of root and emits an
-// informational check for each one isOrphan reports as orphan. Returns
-// nothing when root doesn't exist — first-run state, not an error.
-func scanOrphanDir(root, checkType, message string, isOrphan func(absPath string) bool) []doctorCheck {
-	entries, err := os.ReadDir(root)
+// scanWorktreeOrphans finds every git worktree under the worktrees root
+// (identified by a `.git` marker, which `git worktree add` always creates)
+// and emits an informational check for any not in the claimed set. We use
+// WalkDir + a SkipDir at the worktree boundary so the walker doesn't
+// descend into checked-out content — bounded cost regardless of skill
+// size. Handles both the v0.5 nested layout (`<org>/<repo>/<skill>/<sha7>`)
+// and any flat legacy directories left over from earlier layouts.
+func scanWorktreeOrphans(root string, claimed map[string]struct{}) []doctorCheck {
+	var out []doctorCheck
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || path == root {
+			return nil //nolint:nilerr // tolerate per-entry stat errors; doctor is best-effort
+		}
+		if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+			return nil // not a worktree yet, keep descending
+		}
+		clean := filepath.Clean(path)
+		if _, ok := claimed[clean]; !ok {
+			out = append(out, doctorCheck{
+				Type:    "orphan-worktree",
+				Skill:   filepath.Base(path),
+				Path:    path,
+				OK:      true,
+				Message: "not referenced by any lock file",
+			})
+		}
+		return fs.SkipDir // every dir is either a worktree or an intermediate; stop at worktree boundary
+	})
+	return out
+}
+
+// scanRegistryOrphans walks the registries directory under the v0.5
+// `<org>/<repo>.git/` layout and emits an informational check for each
+// bare clone that no config entry claims. A flat `<name>.git/` at the
+// top level (the explicit `--name` lane) is treated identically. Any
+// other directory at the org level is left for future schemes — we
+// intentionally don't flag it as an orphan unless it contains `.git`
+// children, so a hand-placed scratch dir doesn't fail `qvr doctor`.
+func scanRegistryOrphans(root string, claimed map[string]struct{}) []doctorCheck {
+	topEntries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
 	var out []doctorCheck
-	for _, e := range entries {
-		full := filepath.Join(root, e.Name())
-		if !isOrphan(full) {
+	for _, top := range topEntries {
+		topPath := filepath.Join(root, top.Name())
+		if !top.IsDir() {
 			continue
 		}
-		out = append(out, doctorCheck{
-			Type:    checkType,
-			Skill:   e.Name(),
-			Path:    full,
-			OK:      true,
-			Message: message,
-		})
+		// Flat lane: `<name>.git/` directly under registries/.
+		if strings.HasSuffix(top.Name(), ".git") {
+			name := strings.TrimSuffix(top.Name(), ".git")
+			if _, ok := claimed[name]; !ok {
+				out = append(out, doctorCheck{
+					Type:    "orphan-registry",
+					Skill:   name,
+					Path:    topPath,
+					OK:      true,
+					Message: "no matching config entry",
+				})
+			}
+			continue
+		}
+		// Nested lane: `<org>/<repo>.git/` — recurse one level.
+		orgEntries, err := os.ReadDir(topPath)
+		if err != nil {
+			continue
+		}
+		for _, child := range orgEntries {
+			if !child.IsDir() || !strings.HasSuffix(child.Name(), ".git") {
+				continue
+			}
+			repo := strings.TrimSuffix(child.Name(), ".git")
+			name := top.Name() + "/" + repo
+			if _, ok := claimed[name]; ok {
+				continue
+			}
+			out = append(out, doctorCheck{
+				Type:    "orphan-registry",
+				Skill:   name,
+				Path:    filepath.Join(topPath, child.Name()),
+				OK:      true,
+				Message: "no matching config entry",
+			})
+		}
 	}
 	return out
 }
