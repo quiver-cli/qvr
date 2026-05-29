@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/raks097/quiver/internal/config"
@@ -214,7 +215,16 @@ func TestDoctorChecks_SubdirSourceSkipsRegistry(t *testing.T) {
 	}
 }
 
-func TestDoctorChecks_ExtraSymlinkSurfaced(t *testing.T) {
+// Pre-v0.6.2 this asserted "any unrecognised symlink is `extra-symlink`
+// (✗)". Issue #68 split that bucket: symlinks whose target is OUTSIDE
+// the qvr-managed scope are now `orphan-external-symlink` (`!`), and
+// only symlinks pointing INTO ~/.quiver/ but missing from the lock
+// stay `extra-symlink`. writeFullSkill writes into an arbitrary tempdir
+// outside QUIVER_HOME, so this orphan symlink falls into the external
+// bucket; the test asserts the new categorisation. The other half of
+// the policy (managed-target stays extra-symlink) is covered by
+// TestScanExtraSymlinks_InsideScopeStillFailsAsExtra.
+func TestDoctorChecks_OrphanExternalSymlinkSurfaced(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
 	project := t.TempDir()
 	orphanSrc := writeFullSkill(t, "orphan")
@@ -223,12 +233,12 @@ func TestDoctorChecks_ExtraSymlinkSurfaced(t *testing.T) {
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 
 	checks := runDoctorChecks(lock, config.Default(), project)
-	got := findCheck(t, checks, "extra-symlink", "orphan")
+	got := findCheck(t, checks, "orphan-external-symlink", "orphan")
 	if got.Target != "claude" {
 		t.Errorf("expected claude target, got %q", got.Target)
 	}
-	if got.OK {
-		t.Errorf("extra symlinks should be reported as not OK: %+v", got)
+	if !got.OK {
+		t.Errorf("external-target symlinks should be informational (OK=true), got %+v", got)
 	}
 }
 
@@ -271,6 +281,184 @@ func TestScanUnreferencedRegistries_FlagsConfiguredButUnused(t *testing.T) {
 	}
 	if !got.OK {
 		t.Errorf("unreferenced-registry should default to informational (OK=true), got %+v", got)
+	}
+}
+
+// Regression for #62: two unreferenced worktrees that share a SHA prefix
+// (the dspy-skills monorepo case where every skill rides one master SHA)
+// must surface as distinct rows in `qvr doctor` — pre-fix the renderer
+// collapsed both to the leaf segment, so the user couldn't tell them
+// apart.
+func TestDoctorChecks_OrphanWorktreePathDisambiguates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+
+	// Two orphan worktrees with the same sha7 leaf but different
+	// <registry>/<skill> parents.
+	a := filepath.Join(registry.WorktreesRoot(), "dspy", "agent-builder", "5970598")
+	b := filepath.Join(registry.WorktreesRoot(), "dspy", "evaluation-suite", "5970598")
+	for _, p := range []string{a, b} {
+		if err := os.MkdirAll(filepath.Join(p, ".git"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+	}
+
+	project := t.TempDir()
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	checks := scanOrphans(config.Default(), lock, false, project)
+
+	var orphans []doctorCheck
+	for _, c := range checks {
+		if c.Type == "orphan-worktree" {
+			orphans = append(orphans, c)
+		}
+	}
+	if len(orphans) != 2 {
+		t.Fatalf("want 2 orphan-worktree checks, got %d: %+v", len(orphans), orphans)
+	}
+	if orphans[0].Skill == orphans[1].Skill {
+		t.Errorf("orphans collapsed to same label %q — should disambiguate via path", orphans[0].Skill)
+	}
+	for _, o := range orphans {
+		// The label should carry the <registry>/<skill>/<sha7> segments,
+		// not just the bare sha7.
+		if !strings.Contains(o.Skill, "/") {
+			t.Errorf("orphan label %q missing path separators — looks like a bare leaf", o.Skill)
+		}
+	}
+}
+
+// Regression for #60: `qvr doctor --global` must walk the user-home
+// agent dirs (~/.claude/skills, …) when comparing against the global
+// lock, not the surrounding project's dirs. Pre-fix it always walked
+// projectRoot, so every project-scope symlink looked like an orphan
+// against the global lock and broke `qvr doctor --global` in any repo
+// with project skills installed alongside global ones.
+func TestScanExtraSymlinks_GlobalScopeIgnoresProjectSymlinks(t *testing.T) {
+	// Use HOME as the global root so the user-home dirs are isolated to
+	// the test tempdir. expandHome resolves "~/.claude/skills" against
+	// the t.Setenv-overridden HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Plant a project-scope symlink under the test project's
+	// .claude/skills dir. Pre-#60 this would surface as extra-symlink
+	// when scanning with global=true.
+	project := t.TempDir()
+	target := writeFullSkill(t, "project-skill")
+	linkSkillInto(t, project, ".claude/skills", "project-skill", target)
+
+	extras := scanExtraSymlinks(project, map[string]struct{}{}, true /*global*/)
+	for _, e := range extras {
+		if e.Skill == "project-skill" {
+			t.Errorf("global-scope walk should not flag project-scope symlink as extra: %+v", e)
+		}
+	}
+}
+
+// Companion: in project scope, the same setup MUST surface the project
+// symlink as an extra — confirms we didn't accidentally disable both
+// paths.
+func TestScanExtraSymlinks_ProjectScopeSurfacesProjectSymlinks(t *testing.T) {
+	project := t.TempDir()
+	target := writeFullSkill(t, "project-skill")
+	linkSkillInto(t, project, ".claude/skills", "project-skill", target)
+
+	extras := scanExtraSymlinks(project, map[string]struct{}{}, false /*global*/)
+	var seen bool
+	for _, e := range extras {
+		if e.Skill == "project-skill" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Errorf("project-scope walk should still flag the project-scope symlink: %+v", extras)
+	}
+}
+
+// Regression for #68: a symlink in the agent dir whose target sits
+// OUTSIDE the qvr-managed scope (e.g. into ~/.agents/skills/...,
+// claudeskills.io, MCP-managed dirs) must surface as an informational
+// orphan-external-symlink (`!` glyph, OK=true, no count against
+// `lock-tracked checks failed`), matching `qvr sync`'s policy of
+// "leave it alone, surface it." Pre-fix doctor hard-failed with `✗
+// extra-symlink` on every such link, breaking `qvr doctor --global` in
+// any user setup with mixed agent-dir managers.
+func TestScanExtraSymlinks_OutsideScopeSurfacesAsInformational(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	project := t.TempDir()
+
+	// Plant a symlink under .claude/skills/external whose target sits
+	// outside QUIVER_HOME — e.g. another tool's managed dir.
+	external := filepath.Join(t.TempDir(), "another-tool", "find-skills")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatalf("mkdir external: %v", err)
+	}
+	claudeDir := filepath.Join(project, ".claude", "skills")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	if err := os.Symlink(external, filepath.Join(claudeDir, "find-skills")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	extras := scanExtraSymlinks(project, map[string]struct{}{}, false /*global*/)
+	var got *doctorCheck
+	for i := range extras {
+		if extras[i].Skill == "find-skills" {
+			got = &extras[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected an entry for find-skills, got %+v", extras)
+	}
+	if got.Type != "orphan-external-symlink" {
+		t.Errorf("type = %q, want orphan-external-symlink", got.Type)
+	}
+	if !got.OK {
+		t.Errorf("external symlinks must be informational (OK=true), got %+v", got)
+	}
+	if !strings.Contains(got.Message, "outside qvr scope") {
+		t.Errorf("message should mention outside qvr scope, got %q", got.Message)
+	}
+}
+
+// Companion: a symlink whose target IS inside the qvr-managed scope
+// (the worktrees cache) but isn't named in the lock should STILL surface
+// as an extra-symlink (✗) — that's the real orphan sync would prune.
+func TestScanExtraSymlinks_InsideScopeStillFailsAsExtra(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+	project := t.TempDir()
+
+	// Target lives inside ~/.quiver/worktrees (a real qvr-managed dir).
+	managed := filepath.Join(home, "worktrees", "fake", "demo", "abc1234")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatalf("mkdir managed: %v", err)
+	}
+	claudeDir := filepath.Join(project, ".claude", "skills")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	if err := os.Symlink(managed, filepath.Join(claudeDir, "orphan-managed")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	extras := scanExtraSymlinks(project, map[string]struct{}{}, false /*global*/)
+	var got *doctorCheck
+	for i := range extras {
+		if extras[i].Skill == "orphan-managed" {
+			got = &extras[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected an entry for orphan-managed, got %+v", extras)
+	}
+	if got.Type != "extra-symlink" {
+		t.Errorf("type = %q, want extra-symlink", got.Type)
+	}
+	if got.OK {
+		t.Errorf("a managed-but-unlocked symlink must hard-fail, got OK=true")
 	}
 }
 

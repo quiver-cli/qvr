@@ -5,7 +5,66 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 )
+
+// Issue #64: `qvr validate <name>` should resolve a bare installed-skill
+// name through the lock the same way `qvr scan` does, instead of surfacing
+// a raw `stat: no such file or directory`. Exercises resolveSkillArg via
+// the lock path (no chdir, name not present in cwd).
+func TestResolveSkillArg_ResolvesInstalledNameViaLock(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	reg, name, commit := "vr", "demo", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
+	skillRel := filepath.Join("skills", "demo")
+	writeSkillAt(t, filepath.Join(worktree, skillRel), name)
+
+	project := t.TempDir()
+	prev, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("chdir project: %v", err)
+	}
+
+	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	lock.Put(&model.LockEntry{
+		Name:     name,
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
+		Path:     skillRel,
+		Ref:      "main",
+		Commit:   commit,
+	})
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	resolved, _, err := resolveSkillArg(name, false /*global*/)
+	if err != nil {
+		t.Fatalf("expected lock resolution for bare name, got error: %v", err)
+	}
+	want := filepath.Join(worktree, skillRel)
+	if resolved != want {
+		t.Errorf("resolved = %q, want %q", resolved, want)
+	}
+}
+
+// Path-like positionals (./foo, /abs, foo/bar) must always go through
+// the filesystem resolver — the lock fallback is only for bare names.
+func TestResolveSkillArg_PathArgUsesFilesystem(t *testing.T) {
+	root := t.TempDir()
+	writeSkillAt(t, root, "demo")
+
+	resolved, _, err := resolveSkillArg(root, false)
+	if err != nil {
+		t.Fatalf("path arg should resolve via filesystem: %v", err)
+	}
+	if resolved != root {
+		t.Errorf("resolved = %q, want %q", resolved, root)
+	}
+}
 
 func writeSkillAt(t *testing.T, dir, name string) {
 	t.Helper()

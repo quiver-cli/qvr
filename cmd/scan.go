@@ -3,13 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/security"
 	"github.com/raks097/quiver/internal/skill"
@@ -101,7 +96,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	resolved, discovered, err := resolveScanTarget(dir)
+	resolved, discovered, err := resolveSkillArg(dir, scanGlobal)
 	if err != nil {
 		if printer.Format == output.FormatJSON {
 			_ = printer.JSON(map[string]any{
@@ -223,90 +218,9 @@ func exceedsThreshold(result *security.ScanResult, threshold security.Severity) 
 	return countAbove(result.Summary, threshold) > 0
 }
 
-// resolveScanTarget extends resolveSkillDir with a name → lock lookup:
-// a bare positional (no path separator, no leading dot) that isn't a
-// directory on disk falls through to the lock file. This lets the user
-// run `qvr scan my-installed-skill` without typing the full worktree
-// path. Path-like positionals always go through the filesystem resolver
-// — that matches the mental model `./foo` and `foo/bar` are paths.
-//
-// --global behaviour (issue #42):
-//   - the global lock is consulted first; a missing name produces a
-//     domain error ("no installed skill 'X' in global lock") rather
-//     than falling through to a CWD-relative stat that produced a
-//     misleading filesystem error
-//   - the resolved path uses [skill.EffectiveTarget] (same helper
-//     qvr info / qvr read use), so nested-registry layouts like
-//     mattpocock's skills/<category>/<name>/SKILL.md actually
-//     resolve instead of erroring at the worktree root
-func resolveScanTarget(arg string) (string, []string, error) {
-	if looksLikePath(arg) {
-		return resolveSkillDir(arg)
-	}
-
-	if scanGlobal {
-		// --global is an explicit signal: lock first, no fall-through
-		// to a relative-path stat. Issue #42 case 1.
-		return resolveByLock(arg, true /*requireHit*/)
-	}
-
-	if _, err := os.Stat(arg); err == nil {
-		// Bare arg happens to be a directory in cwd — prefer the
-		// filesystem reading.
-		return resolveSkillDir(arg)
-	}
-	return resolveByLock(arg, false)
-}
-
-// resolveByLock loads the (project or global) lock file and resolves
-// arg to the on-disk SKILL.md directory via [skill.EffectiveTarget].
-//
-// When requireHit is true (the --global path), a missing entry
-// becomes a typed user-facing error and the function never falls
-// back to filesystem resolution. When false (the default path), the
-// caller wants either-or semantics and we hand off to resolveSkillDir
-// on a miss so the bare-name → cwd-dir story still works.
-func resolveByLock(arg string, requireHit bool) (string, []string, error) {
-	projectRoot, err := os.Getwd()
-	if err != nil {
-		return "", nil, fmt.Errorf("resolve cwd: %w", err)
-	}
-	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), scanGlobal)
-	lock, lockErr := model.ReadLockFile(lockPath)
-	if lockErr != nil {
-		if requireHit {
-			return "", nil, fmt.Errorf("read global lock %s: %w", lockPath, lockErr)
-		}
-		return resolveSkillDir(arg)
-	}
-	entry, getErr := lock.Get(arg)
-	if getErr != nil {
-		if requireHit {
-			scope := "project"
-			if scanGlobal {
-				scope = "global"
-			}
-			return "", nil, fmt.Errorf("no installed skill %q in %s lock — run `qvr list --global` to see installed names", arg, scope)
-		}
-		return resolveSkillDir(arg)
-	}
-	target := skill.EffectiveTarget(entry)
-	if target == "" {
-		return "", nil, fmt.Errorf("lock entry %q has no resolvable target — try `qvr sync` to rebuild it", arg)
-	}
-	// EffectiveTarget already points at the SKILL.md-bearing dir for
-	// nested layouts. Confirm SKILL.md is there before handing off.
-	if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err == nil {
-		return target, nil, nil
-	}
-	// Fall through to the directory-walk resolver as a last resort —
-	// covers the legacy case where the lock predates the Path field.
-	return resolveSkillDir(target)
-}
-
-func looksLikePath(s string) bool {
-	return s == "." || s == ".." || strings.ContainsAny(s, "/\\") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../")
-}
+// Argument resolution (resolveScanTarget, resolveByLock, looksLikePath)
+// moved to cmd/resolve.go in v0.6.1 so qvr validate can share it (issue
+// #64). qvr scan calls resolveSkillArg(dir, scanGlobal) directly above.
 
 func countAbove(s security.Summary, threshold security.Severity) int {
 	cutoff := threshold.Rank()

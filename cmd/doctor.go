@@ -237,7 +237,14 @@ func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot strin
 		}
 	}
 
-	checks = append(checks, scanExtraSymlinks(projectRoot, knownLinks)...)
+	// Walk the agent dirs that match the lock's scope: project locks
+	// own the project-relative dirs (.claude/skills/, .cursor/rules/,
+	// etc.); the global lock owns the user-home variants
+	// (~/.claude/skills/, …). Pre-#60 this was always projectRoot,
+	// so a `qvr doctor --global` from inside a project flagged every
+	// project-scope symlink as an extra orphan against the global
+	// lock — see issue #60.
+	checks = append(checks, scanExtraSymlinks(projectRoot, knownLinks, global)...)
 
 	sort.SliceStable(checks, func(i, j int) bool {
 		if checks[i].Skill != checks[j].Skill {
@@ -464,9 +471,19 @@ func scanWorktreeOrphans(root string, claimed map[string]struct{}) []doctorCheck
 		}
 		clean := filepath.Clean(path)
 		if _, ok := claimed[clean]; !ok {
+			// Render the path relative to the worktrees root
+			// (`<registry>/<skill>/<sha7>`) so distinct orphans don't
+			// collapse to the same display label when two skills happen
+			// to share a commit prefix — the bug #62 case for monorepo
+			// registries like dspy-skills where every skill rides one
+			// master SHA. Falls back to the leaf if filepath.Rel fails.
+			label, rerr := filepath.Rel(root, path)
+			if rerr != nil || label == "" {
+				label = filepath.Base(path)
+			}
 			out = append(out, doctorCheck{
 				Type:    "orphan-worktree",
-				Skill:   filepath.Base(path),
+				Skill:   label,
 				Path:    path,
 				OK:      true,
 				Message: "not referenced by any lock file",
@@ -535,13 +552,55 @@ func scanRegistryOrphans(root string, claimed map[string]struct{}) []doctorCheck
 	return out
 }
 
+// agentDirForScope picks the agent dir scanExtraSymlinks should walk for a
+// given target and lock scope. Project-scope locks own the project-relative
+// dirs (.claude/skills/<name>); the global lock owns the user-home variants
+// (~/.claude/skills/<name>). Returning "" means skip this target — the
+// scanner treats unresolvable home expansions as best-effort.
+func agentDirForScope(t model.Target, projectRoot string, global bool) (string, error) {
+	if !global {
+		return filepath.Join(projectRoot, t.LocalDir), nil
+	}
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		return "", herr
+	}
+	g := t.GlobalDir
+	if strings.HasPrefix(g, "~/") {
+		g = filepath.Join(home, g[2:])
+	} else if g == "~" {
+		g = home
+	}
+	return g, nil
+}
+
 // scanExtraSymlinks looks under each known agent target dir for symlinks that
 // don't appear in the lock file. These are usually leftovers from a manual
 // `rm` of a lock entry or a previous tool — not catastrophic, but noisy.
-func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}) []doctorCheck {
+//
+// global=true walks the user-home agent dirs (~/.claude/skills, etc.) so
+// `qvr doctor --global` compares the global lock against the global
+// symlinks instead of the surrounding project's dirs — pre-#60 the
+// unconditional projectRoot walk made every project-scope symlink look
+// like an orphan against the global lock and broke `qvr doctor --global`
+// in CI.
+func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}, global bool) []doctorCheck {
 	var extras []doctorCheck
+	// Same managed-prefix policy `qvr sync` uses (issue #68). A symlink
+	// whose target lives inside the qvr-managed scope (the worktrees
+	// cache or the project vendor dir) but isn't named in the lock is a
+	// real `extra-symlink` failure — sync would prune it. A symlink
+	// whose target is some other tool's territory (claudeskills.io,
+	// MCP-managed dirs, hand-managed symlinks under ~/.agents/...) is
+	// not ours to touch; doctor surfaces it informationally (`!` glyph)
+	// so it doesn't permanently red-exit CI for users with a mixed
+	// agent-dir setup.
+	managedPrefixes := skill.ManagedRoots(projectRoot)
 	for tname, t := range model.Targets {
-		dir := filepath.Join(projectRoot, t.LocalDir)
+		dir, derr := agentDirForScope(t, projectRoot, global)
+		if derr != nil || dir == "" {
+			continue
+		}
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			continue
@@ -558,6 +617,26 @@ func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}) []doc
 			li, err := os.Lstat(full)
 			if err != nil || li.Mode()&os.ModeSymlink == 0 {
 				continue
+			}
+			// Follow the link and decide which bucket it belongs in.
+			// Readlink failure → treat as extra (the conservative
+			// default: if we can't tell where it points, surface it).
+			resolved, rerr := os.Readlink(full)
+			if rerr == nil {
+				if !filepath.IsAbs(resolved) {
+					resolved = filepath.Join(filepath.Dir(full), resolved)
+				}
+				if !skill.IsManaged(resolved, managedPrefixes) {
+					extras = append(extras, doctorCheck{
+						Type:    "orphan-external-symlink",
+						Skill:   entry.Name(),
+						Target:  tname,
+						Path:    full,
+						OK:      true, // informational — not a failure
+						Message: "target outside qvr scope (" + resolved + ") — left untouched",
+					})
+					continue
+				}
 			}
 			extras = append(extras, doctorCheck{
 				Type:    "extra-symlink",

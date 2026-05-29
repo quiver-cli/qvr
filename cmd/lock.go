@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/raks097/quiver/internal/config"
@@ -393,10 +395,17 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 		return nil, fmt.Errorf("read lock: %w", err)
 	}
 	// LockVersion reports the version of the file *on disk*. v5 reaches this
-	// path having already passed ReadLockFile's version gate, so the only
-	// remaining job is to fill in any entry with a missing SubtreeHash (e.g.
-	// installs where the initial hash computation failed). v4-and-older
-	// locks were rejected upstream.
+	// path having already passed ReadLockFile's version gate. The job here is
+	// twofold:
+	//   1. Fill any entry with a missing top-level SubtreeHash (e.g. installs
+	//      where the initial hash computation failed, or a hand-edited lock).
+	//   2. Re-run the configured scan gate against entries that lack a
+	//      verification.scan block, persisting the structured ScanRef so the
+	//      help text's "populate[s] Verification blocks for any entries
+	//      missing them" promise holds (issue #63). Skipped when
+	//      security.scan_on_install isn't configured — upgrade then only
+	//      fills the hash and the status reads "upgraded (hash only)".
+	cfg, _ := config.Load()
 	out := &UpgradeOutput{
 		LockVersion: lock.Version,
 		Entries:     []UpgradeEntryResult{}, // always [], never null
@@ -409,9 +418,7 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 		case entry.IsLink():
 			row.Status = "skipped"
 			row.Message = "link install — no upstream subtree to hash"
-		case entry.SubtreeHash != "":
-			row.Status = "unchanged"
-		default:
+		case entry.SubtreeHash == "":
 			if lockUpgradeDryRun {
 				row.Status = "would-upgrade"
 				row.Message = "would compute subtree hash"
@@ -431,7 +438,47 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 					changed = true
 				}
 			}
+		default:
+			row.Status = "unchanged"
 		}
+
+		// Issue #63 — also restore the verification.scan block when the
+		// gate is configured and the entry is missing one. Runs on both
+		// freshly-hashed entries (status="upgraded") and previously
+		// unchanged entries (status="unchanged") that just lack the
+		// scan record. We only mutate row.Status when we actually wrote
+		// the scan, so dry-run / skipped / link rows pass through.
+		if !lockUpgradeDryRun && !entry.IsLink() && entry.SubtreeHash != "" &&
+			(entry.Verification == nil || entry.Verification.Scan == nil) &&
+			gateAvailable(cfg, false) {
+			worktreePath := skill.EntryWorktreePath(entry)
+			skillDir := worktreePath
+			if entry.Path != "" {
+				skillDir = filepath.Join(worktreePath, entry.Path)
+			}
+			gate, gerr := ScanAndGate(context.Background(), skillDir, cfg, scanGateOptions{
+				Action:   "lock upgrade",
+				Subject:  entry.Name,
+				WarnOnly: true,
+			})
+			if gerr == nil && gate != nil && !gate.Skipped {
+				if scan := toScanRef(gate); scan != nil {
+					if entry.Verification == nil {
+						entry.Verification = &model.VerificationRecord{}
+					}
+					entry.Verification.Scan = scan
+					changed = true
+					// Promote unchanged rows to "upgraded" so callers
+					// see that something happened. Hash-side upgrades
+					// stay "upgraded".
+					if row.Status == "unchanged" {
+						row.Status = "upgraded"
+						row.Message = "restored verification.scan"
+					}
+				}
+			}
+		}
+
 		out.Entries = append(out.Entries, row)
 	}
 

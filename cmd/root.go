@@ -13,7 +13,7 @@ import (
 var (
 	outputFormat string
 	printer      *output.Printer
-	version      = "0.6.0"
+	version      = "0.6.1"
 )
 
 // errJSONHandled signals to Execute() that the command has already emitted a
@@ -22,6 +22,15 @@ var (
 // (the "{\"error\": \"...\"}" envelope) is skipped. Use this in JSON paths
 // where the body already carries "valid": false / "failed": N / etc.
 var errJSONHandled = errors.New("json payload already emitted")
+
+// errTextHandled is the text-mode equivalent of errJSONHandled — the command
+// already printed a per-skill `✗ ...: <reason>` line for every failure, so the
+// top-level `Error: ...` envelope would just duplicate the first one. Return
+// this from RunE when the command surfaced failures itself (e.g. batch
+// `qvr add` where two skills failed and one succeeded). Exit code stays 1.
+// Issue #66 — without this, partial-failure batches read like total failures
+// because the trailing duplicate `Error:` is the last line on stderr.
+var errTextHandled = errors.New("text already emitted failure")
 
 var rootCmd = &cobra.Command{
 	Use:   "qvr",
@@ -60,7 +69,7 @@ func Execute() {
 	// errJSONHandled means the command already emitted a structured JSON payload
 	// that encodes the failure (e.g. {"valid": false} or {"failed": 1}). Suppress
 	// the duplicate top-level envelope so the stream stays a single JSON doc.
-	if errors.Is(err, errJSONHandled) {
+	if errors.Is(err, errJSONHandled) || errors.Is(err, errTextHandled) {
 		os.Exit(1)
 	}
 	if outputFormat == "json" {

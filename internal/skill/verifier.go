@@ -88,7 +88,7 @@ func VerifySingleEntry(entry *model.LockEntry) VerifyEntryResult {
 
 	if entry.SubtreeHash == "" {
 		res.Status = VerifyStatusUnverified
-		res.Message = "no recorded subtree hash (run `qvr lock --repair`)"
+		res.Message = "no recorded subtree hash (run `qvr lock upgrade` to fill it)"
 		return res
 	}
 

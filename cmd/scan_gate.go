@@ -19,7 +19,7 @@ import (
 // scannerVersion is the qvr release whose rule set produced a ScanRef.
 // Stored on lockfile scan entries so a later `qvr lock verify` can detect
 // drift even when the scanner has been upgraded since the install.
-const scannerVersion = "0.6.0"
+const scannerVersion = "0.6.1"
 
 // scanGateOptions tunes a single ScanAndGate call.
 type scanGateOptions struct {

@@ -3,6 +3,7 @@ package skill_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,6 +128,12 @@ func TestVerifySingleEntry_unverifiedWhenNoHash(t *testing.T) {
 	got := skill.VerifySingleEntry(entry)
 	if got.Status != skill.VerifyStatusUnverified {
 		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusUnverified)
+	}
+	// Regression for #61: the hint must point at a real command. `qvr
+	// lock --repair` is a flag (verify --repair), not a subcommand; the
+	// gap-filling subcommand is `qvr lock upgrade`.
+	if !strings.Contains(got.Message, "qvr lock upgrade") {
+		t.Errorf("hint should reference `qvr lock upgrade`, got: %q", got.Message)
 	}
 }
 

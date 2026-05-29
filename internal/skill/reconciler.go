@@ -192,7 +192,7 @@ func (r *Reconciler) strictRemoveOrphans(lock *model.LockFile, projectRoot strin
 		}
 	}
 
-	managedPrefixes := managedRoots(projectRoot)
+	managedPrefixes := ManagedRoots(projectRoot)
 
 	for _, targetName := range model.TargetNames() {
 		dir, ok := agentDir(targetName, projectRoot, global)
@@ -228,7 +228,7 @@ func (r *Reconciler) strictRemoveOrphans(lock *model.LockFile, projectRoot strin
 			if !filepath.IsAbs(resolved) {
 				resolved = filepath.Join(filepath.Dir(full), resolved)
 			}
-			if !isManaged(resolved, managedPrefixes) {
+			if !IsManaged(resolved, managedPrefixes) {
 				// Symlink points outside the qvr-managed scope (e.g. into
 				// /etc/passwd or the user's own dev dir). The strict rule
 				// is to leave it alone and surface it.
@@ -256,10 +256,14 @@ func (r *Reconciler) strictRemoveOrphans(lock *model.LockFile, projectRoot strin
 	return nil
 }
 
-// managedRoots returns the absolute paths whose subtree is fair game for
+// ManagedRoots returns the absolute paths whose subtree is fair game for
 // strict removal: the shared worktrees cache and the project's vendor dir.
 // Anything else is "user territory" and stays untouched.
-func managedRoots(projectRoot string) []string {
+//
+// Exported so `qvr doctor` can apply the same policy as `qvr sync` for
+// agent-dir symlinks whose target sits outside qvr-managed scope (issue
+// #68) — same helper, no drift between commands.
+func ManagedRoots(projectRoot string) []string {
 	roots := []string{registry.WorktreesRoot()}
 	if projectRoot != "" {
 		roots = append(roots, filepath.Join(projectRoot, ".qvr"))
@@ -291,10 +295,15 @@ func agentDir(targetName, projectRoot string, global bool) (string, bool) {
 	return filepath.Join(projectRoot, t.LocalDir), true
 }
 
-// isManaged reports whether resolved lives under any managed prefix. We
+// IsManaged reports whether resolved lives under any managed prefix. We
 // compare on the cleaned absolute form so trailing slashes or `..` in the
 // symlink content can't sneak past the prefix check.
-func isManaged(resolved string, prefixes []string) bool {
+//
+// Exported alongside ManagedRoots so `qvr doctor` can distinguish
+// `extra-symlink` (target inside ~/.quiver/, an actual orphan we'd
+// remove on sync) from a benign symlink whose target is some other
+// tool's territory (issue #68).
+func IsManaged(resolved string, prefixes []string) bool {
 	abs, err := filepath.Abs(resolved)
 	if err != nil {
 		return false

@@ -12,17 +12,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	validateGlobal bool
+)
+
 var validateCmd = &cobra.Command{
-	Use:   "validate [path]",
+	Use:   "validate [path-or-name]",
 	Short: "Validate a skill's SKILL.md and directory structure",
 	Long: `Checks that SKILL.md frontmatter conforms to the agentskills.io
-specification. When the path is a registry root (skills/<name>/SKILL.md
-layout), the skill directory is auto-discovered.`,
+specification.
+
+The argument can be either a filesystem path (` + "`.`" + `, ` + "`./demo`" + `,
+` + "`/abs/path`" + `, etc.) or the name of an installed skill — when bare
+(no path separators), the name is resolved through the project's lock
+file (or the global lock when --global is set), so ` + "`qvr validate demo`" + `
+just works after ` + "`qvr add demo`" + `. This mirrors ` + "`qvr scan`" + `'s
+resolution behaviour (issue #64). When the path is a registry root
+(skills/<name>/SKILL.md layout), the skill directory is auto-discovered.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runValidate,
 }
 
 func init() {
+	validateCmd.Flags().BoolVar(&validateGlobal, "global", false,
+		"resolve a bare skill name through the user-global lock instead of the project lock")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -32,7 +45,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		dir = args[0]
 	}
 
-	resolved, discovered, err := resolveSkillDir(dir)
+	resolved, discovered, err := resolveSkillArg(dir, validateGlobal)
 	if err != nil {
 		if printer.Format == output.FormatJSON {
 			_ = printer.JSON(map[string]any{

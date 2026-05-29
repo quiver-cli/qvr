@@ -146,6 +146,14 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				printer.Warning(fmt.Sprintf("add %s: scan recorded only in memory (%v)", result.Name, recErr))
 			}
 			results = append(results, result)
+			// Issue #66: print the success marker inside the loop so
+			// per-skill output (scan warnings, then ✓ Added) reads in
+			// order. Previously every ✓ printed in a trailing loop
+			// after all failures, making partial-failure batches look
+			// like total failures on a CI scroll-by.
+			if printer.Format != output.FormatJSON {
+				printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
+			}
 		}
 		return nil
 	})
@@ -170,10 +178,16 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		return nil
 	}
-	for _, r := range results {
-		printer.Success(fmt.Sprintf("Added %s@%s → %v", r.Name, r.Version, r.Targets))
+	if firstErr != nil {
+		// Per-skill `✗ add <name>: <reason>` lines already surfaced
+		// every failure (see line ~105). Returning firstErr would make
+		// Cobra's Execute() print `Error: <first reason>` a second
+		// time, which CI logs and chats read as "the whole batch
+		// failed" even when successes ran (issue #66). Sentinel
+		// preserves the exit-1 contract without the duplicate.
+		return errTextHandled
 	}
-	return firstErr
+	return nil
 }
 
 // addJSONEnvelope is the stable shape emitted by `qvr add --output json`. The

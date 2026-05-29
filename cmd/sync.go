@@ -22,6 +22,7 @@ var (
 	syncDryRun        bool
 	syncKeepUntracked bool
 	syncNoScan        bool
+	syncStrict        bool
 )
 
 var syncCmd = &cobra.Command{
@@ -55,6 +56,8 @@ func init() {
 		"warn about orphan managed symlinks instead of removing them")
 	syncCmd.Flags().BoolVar(&syncNoScan, "no-scan", false,
 		"skip the per-skill security scan that normally surfaces issues found in restored worktrees")
+	syncCmd.Flags().BoolVar(&syncStrict, "strict", false,
+		"fail (non-zero exit) when any restored worktree's content hash diverges from the lock's recorded subtreeHash; default is to warn and continue")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -69,6 +72,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		result             *skill.ReconcileResult
 		latestLock         *model.LockFile
 		atOrAboveThreshold map[string]security.Severity
+		driftReports       []skill.VerifyEntryResult
 	)
 	lockErr := model.WithLock(lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
@@ -83,7 +87,12 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// missing ones from the lock — letting `qvr sync` succeed on a
 		// fresh checkout without making the user re-add registries by
 		// hand.
-		autoRegisterRegistriesFromLock(lock)
+		//
+		// Under --dry-run we still report what *would* be registered so
+		// the user gets the full picture of pending state changes, but
+		// we never call config.Save — dry-run's contract is no
+		// filesystem mutations.
+		autoRegisterRegistriesFromLock(lock, syncDryRun)
 
 		gc := git.NewGoGitClient()
 		wt := git.NewGoGitWorktree()
@@ -119,6 +128,25 @@ func runSync(cmd *cobra.Command, args []string) error {
 				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg)
 				if werr := lock.Write(); werr != nil {
 					return fmt.Errorf("persist scan results: %w", werr)
+				}
+			}
+
+			// Subtree-hash drift check (issue #65). The reconciler restored
+			// every worktree from the lock's recorded commit, but it does
+			// not verify the on-disk content matches the lock's recorded
+			// SubtreeHash. A stale, corrupted, or tampered entry passes
+			// reconcile cleanly and only surfaces on the next
+			// `qvr lock verify`. Run that verification here so sync is the
+			// integrity gate the user expects: warn on drift by default,
+			// promote to a non-zero exit under --strict.
+			for _, entry := range lock.Entries() {
+				if entry.IsLink() || entry.Disabled {
+					continue
+				}
+				r := skill.VerifySingleEntry(entry)
+				switch r.Status {
+				case skill.VerifyStatusDrift, skill.VerifyStatusFailed, skill.VerifyStatusUnverified:
+					driftReports = append(driftReports, r)
 				}
 			}
 		}
@@ -172,10 +200,41 @@ func runSync(cmd *cobra.Command, args []string) error {
 		printer.Warning(fmt.Sprintf("%d skill(s) raised findings at or above block_severity: %s — review and `qvr remove <name>` or `qvr switch <name> <safer-ref>` if needed",
 			len(names), strings.Join(names, ", ")))
 	}
-	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(atOrAboveThreshold) == 0 {
+	// Drift findings — issue #65. Surfaced after the reconcile summary so
+	// the user sees what was restored before what looks suspect. Under
+	// --strict, any non-OK entry flips the command to a non-zero exit;
+	// otherwise these are warnings and sync still returns success.
+	for _, d := range driftReports {
+		switch d.Status {
+		case skill.VerifyStatusDrift:
+			printer.Warning(fmt.Sprintf("%s: subtreeHash drift — recorded %s, on disk %s; run `qvr lock verify --repair` to seal the current content or `qvr remove %s --force && qvr add %s` to restore from upstream",
+				d.Name, shortHashLabel(driftExpected(d)), shortHashLabel(d.SubtreeHash), d.Name, d.Name))
+		case skill.VerifyStatusUnverified:
+			printer.Warning(fmt.Sprintf("%s: %s", d.Name, d.Message))
+		case skill.VerifyStatusFailed:
+			printer.Error(fmt.Sprintf("%s: hash check failed — %s", d.Name, d.Message))
+		}
+	}
+
+	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(atOrAboveThreshold) == 0 && len(driftReports) == 0 {
 		printer.Success("Already in sync.")
 	}
+	if syncStrict && len(driftReports) > 0 {
+		return fmt.Errorf("sync --strict: %d entr(y/ies) failed integrity check", len(driftReports))
+	}
 	return nil
+}
+
+// driftExpected returns the recorded SubtreeHash that the drift entry
+// disagreed with. Pulled from the structured Drift slice the verifier
+// emits so the render shows the *expected* hash alongside the on-disk one.
+func driftExpected(r skill.VerifyEntryResult) string {
+	for _, d := range r.Drift {
+		if d.Field == "subtreeHash" {
+			return d.Expected
+		}
+	}
+	return ""
 }
 
 // scanRestoredSkillsAfterSync runs the standard scan gate against every
@@ -205,9 +264,15 @@ func runSync(cmd *cobra.Command, args []string) error {
 //   - entries whose Source is an absolute path (link semantics — would
 //     not make a valid git remote)
 //
-// Write failures are logged to stderr but do not abort sync — the worst
-// case is the user runs `qvr registry add` manually for the missing entries.
-func autoRegisterRegistriesFromLock(lock *model.LockFile) {
+// dryRun=true skips the config.Save call so `qvr sync --dry-run` doesn't
+// mutate config.yaml — the dry-run contract is "no filesystem changes."
+// The notice on stderr is still emitted (prefixed `would register ...`)
+// so the user sees what a real sync would do.
+//
+// Write failures (real-run) are logged to stderr but do not abort sync —
+// the worst case is the user runs `qvr registry add` manually for the
+// missing entries.
+func autoRegisterRegistriesFromLock(lock *model.LockFile, dryRun bool) {
 	if lock == nil {
 		return
 	}
@@ -217,6 +282,10 @@ func autoRegisterRegistriesFromLock(lock *model.LockFile) {
 	}
 	if cfg.Registries == nil {
 		cfg.Registries = make(map[string]config.RegistryConfig)
+	}
+	verb := "registered"
+	if dryRun {
+		verb = "would register"
 	}
 	var added []string
 	var warned bool
@@ -237,7 +306,7 @@ func autoRegisterRegistriesFromLock(lock *model.LockFile) {
 		if !ok {
 			cfg.Registries[entry.Registry] = config.RegistryConfig{URL: entry.Source}
 			added = append(added, entry.Registry)
-			fmt.Fprintf(printer.Err, "registered registry %q → %s (from qvr.lock)\n", entry.Registry, entry.Source)
+			fmt.Fprintf(printer.Err, "%s registry %q → %s (from qvr.lock)\n", verb, entry.Registry, entry.Source)
 			continue
 		}
 		if existing.URL != entry.Source {
@@ -249,6 +318,11 @@ func autoRegisterRegistriesFromLock(lock *model.LockFile) {
 	}
 	if len(added) == 0 {
 		_ = warned
+		return
+	}
+	if dryRun {
+		// Dry-run already announced each pending registration above;
+		// skip the persist step so no filesystem mutation happens.
 		return
 	}
 	if saveErr := config.Save(cfg); saveErr != nil {

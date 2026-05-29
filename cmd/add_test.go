@@ -3,10 +3,33 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/raks097/quiver/internal/skill"
 )
+
+// Regression for #66: errTextHandled must be a distinct sentinel value
+// that wraps cleanly through errors.Is. Execute() relies on this to
+// suppress the duplicate `Error: ...` line that Cobra otherwise prints
+// after the per-skill `✗ add <name>: <reason>` line already surfaced
+// the failure. If a future refactor accidentally reuses errJSONHandled
+// or a plain string error, the suppression goes away and CI logs of
+// partial-failure batches look like total failures.
+func TestErrTextHandled_SentinelDistinctAndWrappable(t *testing.T) {
+	if errors.Is(errTextHandled, errJSONHandled) {
+		t.Error("errTextHandled and errJSONHandled must be distinct")
+	}
+	wrapped := fmt.Errorf("add demo: %w", errTextHandled)
+	if !errors.Is(wrapped, errTextHandled) {
+		t.Error("errTextHandled must survive errors.Is unwrap")
+	}
+	// A plain unrelated error must NOT match the sentinel — otherwise
+	// Execute() would silently swallow real errors from other commands.
+	if errors.Is(errors.New("nope"), errTextHandled) {
+		t.Error("errTextHandled must not match unrelated errors")
+	}
+}
 
 // TestBuildAddJSONEnvelope locks the JSON shape `qvr add --output json` emits
 // for each of the three outcomes the bug #54 fix has to cover:
