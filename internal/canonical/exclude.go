@@ -1,5 +1,7 @@
 package canonical
 
+import "strings"
+
 // ExcludedFromSubtree lists paths that are NOT part of a skill's canonical
 // subtree digest. These are wrapper artifacts produced *after* the digest
 // is computed (the signature can't be inside the thing it signs) or that
@@ -14,6 +16,18 @@ var ExcludedFromSubtree = map[string]bool{
 
 // IsExcluded reports whether a path (relative to the subtree root) should
 // be skipped during canonical-hash computation.
+//
+// Also excludes anything under `.git/` — these are git internal bookkeeping
+// files that change without any user action (index updates, gc, ref updates)
+// and have nothing to do with the skill content. Without this exclusion,
+// `qvr edit`'s eject hash diverges from `qvr lock verify`'s recomputation
+// the instant the .git/index ticks (issue #80).
 func IsExcluded(relPath string) bool {
-	return ExcludedFromSubtree[relPath]
+	if ExcludedFromSubtree[relPath] {
+		return true
+	}
+	if relPath == ".git" || strings.HasPrefix(relPath, ".git/") {
+		return true
+	}
+	return false
 }

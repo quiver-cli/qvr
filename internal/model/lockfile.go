@@ -37,6 +37,14 @@ var (
 	ErrLockVersionUnsupported = errors.New("unsupported lock file version")
 )
 
+// Install mode constants. Empty string means "shared" (default add semantics)
+// for backward compatibility — older v5 locks predate this field.
+const (
+	ModeShared = ""     // symlink → ~/.quiver/worktrees/.../  (default for `qvr add`)
+	ModeEdit   = "edit" // canonical real dir at EditPath (set by `qvr edit`)
+	ModeLink   = "link" // absolute path in Source (set by `qvr link`)
+)
+
 // LockEntry records a single installed skill's filesystem and git state.
 //
 // The on-disk shape carries only what the lock can't recover from another
@@ -89,6 +97,24 @@ type LockEntry struct {
 	// recomputation from disk.
 	SubtreeHash string `json:"subtreeHash"`
 
+	// SourceUpstream records the original upstream URL when an entry has
+	// moved off its first source — set by `qvr edit` (mirrors Source at
+	// eject time) and preserved through `qvr publish --fork --migrate`
+	// (when Source flips to the fork URL). Empty for entries that never
+	// diverged. Provenance only — never used to drive pushes.
+	SourceUpstream string `json:"sourceUpstream,omitempty"`
+
+	// Mode is the install mode: "" (shared, default for `qvr add`),
+	// "edit" (`qvr edit` ejected to EditPath), or "link" (`qvr link`).
+	// Empty-string default keeps existing v5 locks loading unchanged.
+	Mode string `json:"mode,omitempty"`
+
+	// EditPath is the project-relative path of the canonical edit copy
+	// when Mode == "edit" (e.g. ".claude/skills/auth"). All target
+	// symlinks point at this directory; siblings beyond the canonical
+	// target carry relative symlinks to it. Empty when Mode != "edit".
+	EditPath string `json:"editPath,omitempty"`
+
 	// Targets is the list of agent dirs the skill is symlinked into.
 	Targets []string `json:"targets"`
 
@@ -113,7 +139,18 @@ func (e *LockEntry) IsLink() bool {
 	if e == nil {
 		return false
 	}
-	return e.Ref == "local"
+	return e.Ref == "local" || e.Mode == ModeLink
+}
+
+// IsEdit reports whether this entry has been ejected into the project
+// via `qvr edit`. The agent target dir at EditPath is the canonical
+// source of truth — the shared worktree under ~/.quiver/worktrees/ is
+// no longer load-bearing for this skill.
+func (e *LockEntry) IsEdit() bool {
+	if e == nil {
+		return false
+	}
+	return e.Mode == ModeEdit
 }
 
 // LockFile is the on-disk record of installed skills.
@@ -257,13 +294,17 @@ func (l *LockFile) Write() error {
 // Put upserts an entry under its Name. The Name field is the in-memory
 // shadow of the map key (`json:"-"`), so callers set entry.Name before
 // calling. InstalledAt is auto-stamped on first insert and preserved on
-// updates.
+// updates so a no-op re-add doesn't churn the lockfile diff (issue #77).
 func (l *LockFile) Put(entry *LockEntry) {
 	if l.Skills == nil {
 		l.Skills = make(map[string]*LockEntry)
 	}
 	if entry.InstalledAt.IsZero() {
-		entry.InstalledAt = time.Now().UTC()
+		if prior, ok := l.Skills[entry.Name]; ok && !prior.InstalledAt.IsZero() {
+			entry.InstalledAt = prior.InstalledAt
+		} else {
+			entry.InstalledAt = time.Now().UTC()
+		}
 	}
 	l.Skills[entry.Name] = entry
 }

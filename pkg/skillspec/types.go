@@ -11,6 +11,10 @@ type Frontmatter struct {
 	Compatibility string            `yaml:"compatibility,omitempty" json:"compatibility,omitempty"`
 	Metadata      map[string]string `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 	AllowedTools  string            `yaml:"allowed-tools,omitempty" json:"allowed_tools,omitempty"`
+	// ForkedFrom records the upstream a `qvr publish --fork` derived this
+	// skill from. Format: "<git-url>@<commit-sha>". Optional; round-tripped
+	// only — never validated by `qvr validate`.
+	ForkedFrom string `yaml:"forked-from,omitempty" json:"forked_from,omitempty"`
 }
 
 // Skill represents a fully parsed SKILL.md file.

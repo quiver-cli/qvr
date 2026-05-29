@@ -19,7 +19,7 @@ import (
 // scannerVersion is the qvr release whose rule set produced a ScanRef.
 // Stored on lockfile scan entries so a later `qvr lock verify` can detect
 // drift even when the scanner has been upgraded since the install.
-const scannerVersion = "0.6.1"
+const scannerVersion = "0.7.0"
 
 // scanGateOptions tunes a single ScanAndGate call.
 type scanGateOptions struct {
@@ -47,11 +47,17 @@ type scanGateOptions struct {
 // block_severity threshold. Skipped is true when the gate did not run at all
 // (disabled, scan_on_install=false, no skill loadable, etc.) — callers
 // distinguish "scan ran clean" from "scan didn't happen" via this field.
+//
+// DisabledByFlag is true when the skip was a deliberate `--no-scan` opt-out
+// (vs scan_on_install=false in config). The lockfile records the former as
+// a "skipped" sentinel for attestation purposes (issue #78); the latter
+// means scanning is just not configured and is not per-entry attested.
 type scanGateResult struct {
-	Result    *security.ScanResult `json:"result,omitempty"`
-	Blocked   bool                 `json:"blocked"`
-	Skipped   bool                 `json:"skipped"`
-	Threshold security.Severity    `json:"threshold,omitempty"`
+	Result         *security.ScanResult `json:"result,omitempty"`
+	Blocked        bool                 `json:"blocked"`
+	Skipped        bool                 `json:"skipped"`
+	DisabledByFlag bool                 `json:"disabledByFlag,omitempty"`
+	Threshold      security.Severity    `json:"threshold,omitempty"`
 }
 
 // ScanAndGate runs the standard scanner against the skill at skillDir and
@@ -70,6 +76,10 @@ type scanGateResult struct {
 func ScanAndGate(ctx context.Context, skillDir string, cfg *config.Config, opts scanGateOptions) (*scanGateResult, error) {
 	out := &scanGateResult{Skipped: true}
 	if opts.Disabled {
+		// Distinguish "user explicitly opted out for this call" from "scanning
+		// isn't configured" so toScanRef can mint a "skipped" sentinel only
+		// for the deliberate-flag case (issues #78, #71).
+		out.DisabledByFlag = true
 		return out, nil
 	}
 	if cfg == nil || !cfg.Security.ScanOnInstall {
@@ -218,11 +228,31 @@ func gateAvailable(cfg *config.Config, disabled bool) bool {
 var _ output.Format = output.FormatText
 
 // toScanRef condenses a scanGateResult into the compact form persisted on a
-// lock entry's verification block. Returns nil when the gate was skipped
-// (scan_on_install=false, --no-scan, etc.) — the caller treats that as "no
-// scan signal to record" and leaves entry.Verification untouched.
+// lock entry's verification block.
+//
+// Returns nil when the gate didn't run for a non-deliberate reason
+// (scan_on_install=false in config, skill failed to load, etc.) — the caller
+// leaves entry.Verification untouched.
+//
+// Returns a "skipped" sentinel when the gate was deliberately disabled via
+// `--no-scan`. The sentinel carries no ReportSHA/Counts but does set
+// Reason="--no-scan" so a downstream attestation pipeline can distinguish
+// "scanned and clean" (Decision=="allowed", non-zero counts possible) from
+// "scan was deliberately skipped" (Decision=="skipped"). Issue #78.
 func toScanRef(gate *scanGateResult) *model.ScanRef {
-	if gate == nil || gate.Skipped || gate.Result == nil {
+	if gate == nil {
+		return nil
+	}
+	if gate.Skipped {
+		if gate.DisabledByFlag {
+			return &model.ScanRef{
+				Decision: "skipped",
+				Reason:   "--no-scan",
+			}
+		}
+		return nil
+	}
+	if gate.Result == nil {
 		return nil
 	}
 	decision := "allowed"
@@ -240,10 +270,36 @@ func toScanRef(gate *scanGateResult) *model.ScanRef {
 // hashScanResult fingerprints the structured ScanResult so `qvr lock verify`
 // can detect drift without re-running the scan. Uses encoding/json which
 // sorts map keys, so the same content always produces the same digest.
+//
+// Hashes a stripped view that omits ScannedAt: the wall-clock timestamp
+// changes on every run and makes reportSHA non-deterministic for the same
+// input, which violates the uv-parity idempotency invariant (a no-op
+// `qvr add <already-installed-skill>` would otherwise rewrite the lockfile
+// every time — issue #77). The Path field is also dropped because two
+// machines scanning the same skill from different absolute paths would
+// otherwise disagree on reportSHA.
+//
 // Marshal failure returns an empty string — ScanResult is JSON-clean by
 // construction, so this is defensive only.
 func hashScanResult(result *security.ScanResult) string {
-	data, err := json.Marshal(result)
+	if result == nil {
+		return ""
+	}
+	// Hash a snapshot view that omits machine-/run-specific fields.
+	view := struct {
+		Skill      string               `json:"skill"`
+		Checks     []string             `json:"checks"`
+		Components []security.Component `json:"components,omitempty"`
+		Findings   []security.Finding   `json:"findings"`
+		Summary    security.Summary     `json:"summary"`
+	}{
+		Skill:      result.Skill,
+		Checks:     result.Checks,
+		Components: result.Components,
+		Findings:   result.Findings,
+		Summary:    result.Summary,
+	}
+	data, err := json.Marshal(view)
 	if err != nil {
 		return ""
 	}
@@ -264,6 +320,39 @@ func severityCountsFromSummary(s security.Summary) model.SeverityCounts {
 	}
 }
 
+// applyScanToEntry writes the gate's result onto entry.Verification.Scan,
+// REPLACING any existing scan block. Used by code paths (e.g. publish) where
+// the entry's commit has just advanced and any prior scan attestation is
+// stale — keeping the old block in place would attribute the old commit's
+// findings to the new commit (issue #71).
+//
+// When toScanRef returns nil (gate ran for an unattested reason — config
+// has scan_on_install=false), clears entry.Verification.Scan to nil so the
+// stale block from a previous run doesn't leak forward. Also prunes
+// entry.Verification entirely when no other signals remain so the lockfile
+// stays compact.
+func applyScanToEntry(entry *model.LockEntry, gate *scanGateResult) {
+	if entry == nil {
+		return
+	}
+	scan := toScanRef(gate)
+	if scan == nil {
+		// Nothing to record. Clear any prior block so it isn't attributed to
+		// the just-advanced commit.
+		if entry.Verification != nil {
+			entry.Verification.Scan = nil
+			if entry.Verification.IsEmpty() {
+				entry.Verification = nil
+			}
+		}
+		return
+	}
+	if entry.Verification == nil {
+		entry.Verification = &model.VerificationRecord{}
+	}
+	entry.Verification.Scan = scan
+}
+
 // recordScanResult writes the gate's result into the named entry's
 // verification.scan slot on the lockfile at lockPath. No-op when the gate
 // produced no recordable signal (skipped, no result). Should be called
@@ -282,6 +371,22 @@ func recordScanResult(lockPath, name string, gate *scanGateResult) error {
 	entry, err := lock.Get(name)
 	if err != nil {
 		return fmt.Errorf("locate %s in lock: %w", name, err)
+	}
+	// Idempotency guard (issue #77): if the recorded scan already matches the
+	// new one, skip the write. Also refuse to downgrade a real attestation to
+	// a `--no-scan` sentinel — a no-op re-add with --no-scan should not
+	// destroy the prior commit's clean-scan record.
+	if entry.Verification != nil && entry.Verification.Scan != nil {
+		prior := entry.Verification.Scan
+		if scan.Decision == "skipped" && prior.Decision != "skipped" {
+			return nil
+		}
+		if prior.Decision == scan.Decision &&
+			prior.ReportSHA == scan.ReportSHA &&
+			prior.ScannerVersion == scan.ScannerVersion &&
+			prior.Reason == scan.Reason {
+			return nil
+		}
 	}
 	if entry.Verification == nil {
 		entry.Verification = &model.VerificationRecord{}

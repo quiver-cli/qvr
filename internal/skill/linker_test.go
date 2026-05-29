@@ -166,6 +166,30 @@ func TestVerifyTarget(t *testing.T) {
 	}
 }
 
+// TestVerifyTarget_DanglingSymlink guards issue #90: `qvr doctor` previously
+// reported ✓ symlink for an install-path symlink whose target had been
+// deleted out from under it (only the next-line worktree check caught the
+// breakage). VerifyTarget now stats the resolved target, so a dangling
+// symlink fails the check at the symlink line itself.
+func TestVerifyTarget_DanglingSymlink(t *testing.T) {
+	skillDir := makeSkillDir(t, "code-review")
+	linkPath := filepath.Join(t.TempDir(), "link")
+	if err := skill.CreateSymlink(linkPath, skillDir); err != nil {
+		t.Fatalf("CreateSymlink: %v", err)
+	}
+	// Delete the target out from under the symlink.
+	if err := os.RemoveAll(skillDir); err != nil {
+		t.Fatalf("rm target: %v", err)
+	}
+	err := skill.VerifyTarget(linkPath, skillDir)
+	if err == nil {
+		t.Fatal("expected VerifyTarget to flag a dangling symlink, got nil")
+	}
+	if !errors.Is(err, skill.ErrTargetNotExist) {
+		t.Errorf("expected ErrTargetNotExist for dangling symlink, got %v", err)
+	}
+}
+
 func TestResolveTargetPath(t *testing.T) {
 	path, err := skill.ResolveTargetPath("claude", "code-review", "/proj", false)
 	if err != nil {

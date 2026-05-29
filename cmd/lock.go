@@ -132,7 +132,7 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 			out = &VerifyOutput{LockVersion: lock.Version, Entries: []skill.VerifyEntryResult{}}
 			return nil
 		}
-		o, fail, err := lockVerifyInternal(lock)
+		o, fail, err := lockVerifyInternal(lock, projectRoot)
 		if err != nil {
 			return err
 		}
@@ -177,18 +177,18 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 // lockVerifyInternal is the read-modify-write loop extracted out of
 // runLockVerify so it can run inside WithLock. Returns the result, an
 // optional --frozen/--strict failure string, and any fatal error.
-func lockVerifyInternal(lock *model.LockFile) (*VerifyOutput, string, error) {
+func lockVerifyInternal(lock *model.LockFile, projectRoot string) (*VerifyOutput, string, error) {
 	out := &VerifyOutput{LockVersion: lock.Version, Entries: make([]skill.VerifyEntryResult, 0, len(lock.Skills))}
 	changed := false
 	for _, entry := range lock.Entries() {
-		result := skill.VerifySingleEntry(entry)
+		result := skill.VerifySingleEntry(entry, projectRoot)
 
 		switch result.Status {
 		case skill.VerifyStatusOK:
 			out.Summary.OK++
 		case skill.VerifyStatusDrift:
 			if lockVerifyRepair {
-				repair := skill.RepairSubtreeHashFromDisk(entry)
+				repair := skill.RepairSubtreeHashFromDisk(entry, projectRoot)
 				if repair.Failed {
 					// Couldn't compute a fresh hash — leave the drift
 					// report intact so the user still sees what diverged.
@@ -207,7 +207,7 @@ func lockVerifyInternal(lock *model.LockFile) (*VerifyOutput, string, error) {
 			}
 		case skill.VerifyStatusUnverified:
 			if lockVerifyRepair {
-				repair := skill.RepairSubtreeHashFromDisk(entry)
+				repair := skill.RepairSubtreeHashFromDisk(entry, projectRoot)
 				if repair.Failed {
 					result.Message = "repair failed: " + repair.Error
 					out.Summary.Unverified++

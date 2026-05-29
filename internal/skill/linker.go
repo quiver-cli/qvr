@@ -145,11 +145,24 @@ func VerifySymlink(linkPath string) error {
 // under the symlinked directory, so the effective target is the worktree root
 // joined with the skill's relative path inside the registry. Link installs
 // carry their absolute source in entry.Source and have no derived worktree.
-// Keeping this as one helper prevents the three-way drift between
-// `install`, `enable`, `doctor`, and `info` that shipped in v0.3.5.
-func EffectiveTarget(entry *model.LockEntry) string {
+// Edit installs (Mode == ModeEdit) live at <projectRoot>/<EditPath> — the
+// canonical agent target dir is itself a real directory, with sibling targets
+// repointed at it. Keeping this as one helper prevents the three-way drift
+// between `install`, `enable`, `doctor`, and `info` that shipped in v0.3.5.
+//
+// projectRoot is consulted only for edit-mode entries. Callers that don't
+// have a project root in scope (e.g. background diagnostics that only see
+// the lock file) may pass "" — edit-mode entries then resolve to a relative
+// path the caller must interpret against its own cwd.
+func EffectiveTarget(entry *model.LockEntry, projectRoot string) string {
 	if entry == nil {
 		return ""
+	}
+	if entry.IsEdit() && entry.EditPath != "" {
+		if projectRoot != "" && !filepath.IsAbs(entry.EditPath) {
+			return filepath.Join(projectRoot, entry.EditPath)
+		}
+		return entry.EditPath
 	}
 	if entry.IsLink() {
 		return entry.Source
@@ -164,7 +177,11 @@ func EffectiveTarget(entry *model.LockEntry) string {
 	return filepath.Join(worktree, entry.Path)
 }
 
-// VerifyTarget checks that a symlink points to the expected skillDir.
+// VerifyTarget checks that a symlink points to the expected skillDir AND
+// that the resolved target actually exists on disk. Catching dangling
+// symlinks at the symlink check (rather than relying on the worktree
+// check on the next line) makes `qvr doctor` honest at line-by-line
+// granularity — issue #90.
 func VerifyTarget(linkPath, skillDir string) error {
 	info, err := os.Lstat(linkPath)
 	if err != nil {
@@ -192,6 +209,31 @@ func VerifyTarget(linkPath, skillDir string) error {
 	}
 	if absTarget != absExpected {
 		return fmt.Errorf("%w: %s -> %s (want %s)", ErrSymlinkMismatch, linkPath, absTarget, absExpected)
+	}
+	// Stat the resolved target: a dangling symlink (target deleted out from
+	// under it) previously passed VerifyTarget cleanly because we only
+	// checked the link's name, not the existence of what it pointed at.
+	// Issue #90.
+	if _, err := os.Stat(absTarget); err != nil {
+		return fmt.Errorf("%w: %s -> %s: %v", ErrTargetNotExist, linkPath, absTarget, err)
+	}
+	return nil
+}
+
+// VerifyDirContainsSkill reports whether dir is a real directory that holds
+// a SKILL.md. Used by `qvr doctor` for mode:edit entries, where the
+// canonical target dir IS a real directory (the edit copy) rather than a
+// symlink — VerifyTarget would refuse it as `not a symlink` (issue #81).
+func VerifyDirContainsSkill(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
+		return fmt.Errorf("%w: %s", ErrTargetNotASkill, dir)
 	}
 	return nil
 }

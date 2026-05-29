@@ -45,3 +45,29 @@ func WithLock(path string, fn func() error) error {
 	defer func() { _ = fl.Unlock() }()
 	return fn()
 }
+
+// WithPublishLock acquires an exclusive, blocking flock at <quiverHome>/qvr.lock.lock
+// for the duration of fn. Unlike WithLock (which is keyed by a specific lock
+// file path), this is a single user-machine-wide gate for any publish — so
+// two concurrent `qvr publish` invocations (greenfield or installed, same
+// project or different) serialise on this sentinel rather than racing on the
+// remote registry's atomic ref check. Issue #88.
+//
+// Callers should wrap the ENTIRE publish — clone, commit, push, and any
+// post-push lockfile updates — inside fn. Releasing before the push lands
+// re-introduces the race the lock is meant to prevent.
+func WithPublishLock(quiverHome string, fn func() error) error {
+	if quiverHome == "" {
+		return fmt.Errorf("quiver home is empty")
+	}
+	if err := os.MkdirAll(quiverHome, 0o755); err != nil {
+		return fmt.Errorf("create quiver home: %w", err)
+	}
+	gatePath := filepath.Join(quiverHome, "qvr.lock.lock")
+	fl := flock.New(gatePath)
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("acquire publish lock %s: %w", gatePath, err)
+	}
+	defer func() { _ = fl.Unlock() }()
+	return fn()
+}

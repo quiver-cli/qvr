@@ -224,6 +224,43 @@ func TestManager_List(t *testing.T) {
 	}
 }
 
+// TestManager_List_Sorted guards issue #76: `qvr registry list` must produce
+// a deterministic order across runs. The implementation iterates a Go map,
+// whose iteration order is randomized — without the sort, scripts piping
+// the output through `head`, `awk`, or `diff` get nondeterministic answers.
+func TestManager_List_Sorted(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	srcA := setupTestSourceRepo(t)
+	srcB := setupTestSourceRepo(t)
+	srcC := setupTestSourceRepo(t)
+	// Add out of order so the underlying map iteration is unlikely to
+	// accidentally land sorted.
+	_, _ = mgr.Add(context.Background(), "charlie", srcC)
+	_, _ = mgr.Add(context.Background(), "alpha", srcA)
+	_, _ = mgr.Add(context.Background(), "bravo", srcB)
+
+	// Run List a handful of times; every result must be the same sorted order.
+	want := []string{"alpha", "bravo", "charlie"}
+	for i := 0; i < 5; i++ {
+		list, err := mgr.List()
+		if err != nil {
+			t.Fatalf("List #%d: %v", i, err)
+		}
+		got := make([]string, len(list))
+		for j, r := range list {
+			got[j] = r.Name
+		}
+		if len(got) != len(want) {
+			t.Fatalf("run %d: len(list) = %d, want %d", i, len(got), len(want))
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Errorf("run %d: list[%d] = %q, want %q (full=%v)", i, j, got[j], want[j], got)
+			}
+		}
+	}
+}
+
 func TestManager_List_Empty(t *testing.T) {
 	mgr, _ := setupManagerTest(t)
 

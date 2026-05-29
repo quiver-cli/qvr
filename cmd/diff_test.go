@@ -59,7 +59,7 @@ func TestSkillDiff_DirtyWorktreeReturnsHunk(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("modify: %v", err)
 	}
-	out, err := skillDiff(context.Background(), entry, false, false)
+	out, err := skillDiff(context.Background(), entry, "", false, false)
 	if err != nil {
 		t.Fatalf("skillDiff: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSkillDiff_DirtyWorktreeReturnsHunk(t *testing.T) {
 
 func TestSkillDiff_CleanWorktreeIsEmpty(t *testing.T) {
 	entry, _ := initWorktreeWithFile(t, "SKILL.md", "hello\n")
-	out, err := skillDiff(context.Background(), entry, false, false)
+	out, err := skillDiff(context.Background(), entry, "", false, false)
 	if err != nil {
 		t.Fatalf("skillDiff: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestSkillDiff_StagedFlag(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	unstaged, err := skillDiff(context.Background(), entry, false, false)
+	unstaged, err := skillDiff(context.Background(), entry, "", false, false)
 	if err != nil {
 		t.Fatalf("unstaged diff: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestSkillDiff_StagedFlag(t *testing.T) {
 		t.Errorf("after staging, --no-cached diff should be empty, got %q", unstaged)
 	}
 
-	staged, err := skillDiff(context.Background(), entry, true, false)
+	staged, err := skillDiff(context.Background(), entry, "", true, false)
 	if err != nil {
 		t.Fatalf("staged diff: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestSkillDiff_StatFlag(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("modify: %v", err)
 	}
-	out, err := skillDiff(context.Background(), entry, false, true)
+	out, err := skillDiff(context.Background(), entry, "", false, true)
 	if err != nil {
 		t.Fatalf("stat diff: %v", err)
 	}

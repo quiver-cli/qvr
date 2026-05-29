@@ -228,6 +228,85 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// TestRemove_RefusesEditWithoutForce is the regression guard for issue
+// #93: removing a mode:edit skill without --force must error AND must
+// leave the lock entry intact (no orphan state). Previously the lockfile
+// entry was dropped before the FS step ran; on the FS failure the user
+// was left with the eject dir on disk but no lock entry to drive recovery.
+func TestRemove_RefusesEditWithoutForce(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
+	h.addRegistry(t, "acme", remote)
+	if _, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+	}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// Eject so the entry is in mode:edit.
+	lock, _ := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
+	entry, _ := lock.Get("code-review")
+	if _, err := skill.EjectToTarget(skill.EjectRequest{Entry: entry, ProjectRoot: h.project}); err != nil {
+		t.Fatalf("eject: %v", err)
+	}
+	lock.Put(entry)
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock after eject: %v", err)
+	}
+
+	// Remove without --force should error and leave the lock entry intact.
+	err := h.installer.Remove("code-review", skill.InstallRequest{ProjectRoot: h.project, Force: false})
+	if err == nil {
+		t.Fatal("expected error removing mode:edit skill without --force, got nil")
+	}
+	reloaded, _ := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
+	if _, gerr := reloaded.Get("code-review"); gerr != nil {
+		t.Errorf("lock entry was dropped despite remove failing: %v (regression of #93)", gerr)
+	}
+	// Eject dir must still be on disk.
+	if _, err := os.Stat(filepath.Join(h.project, ".claude/skills/code-review/SKILL.md")); err != nil {
+		t.Errorf("eject dir removed even though remove errored: %v", err)
+	}
+}
+
+// TestRemove_ForceDeletesEditDir verifies that `qvr remove --force` on a
+// mode:edit skill rm -rf's the eject dir and clears the lock entry — the
+// happy path users opt into when they're sure they want to discard the
+// ejected edits.
+func TestRemove_ForceDeletesEditDir(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
+	h.addRegistry(t, "acme", remote)
+	if _, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+	}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	lock, _ := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
+	entry, _ := lock.Get("code-review")
+	if _, err := skill.EjectToTarget(skill.EjectRequest{Entry: entry, ProjectRoot: h.project}); err != nil {
+		t.Fatalf("eject: %v", err)
+	}
+	lock.Put(entry)
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock after eject: %v", err)
+	}
+
+	if err := h.installer.Remove("code-review", skill.InstallRequest{ProjectRoot: h.project, Force: true}); err != nil {
+		t.Fatalf("Remove --force: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.project, ".claude/skills/code-review")); !os.IsNotExist(err) {
+		t.Errorf("eject dir survived --force remove: %v", err)
+	}
+	reloaded, _ := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
+	if _, gerr := reloaded.Get("code-review"); gerr == nil {
+		t.Error("lock entry still present after Remove --force")
+	}
+}
+
 func TestRestoreAll(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})

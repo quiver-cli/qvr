@@ -87,7 +87,7 @@ func runEnable(cmd *cobra.Command, args []string) error {
 // enableSkill re-creates symlinks for each declared target. Idempotent:
 // CreateSymlink returns nil for symlinks already pointing at the worktree.
 func enableSkill(entry *model.LockEntry, projectRoot string, global bool) ([]string, error) {
-	target := skill.EffectiveTarget(entry)
+	target := skill.EffectiveTarget(entry, projectRoot)
 	if target == "" {
 		return nil, fmt.Errorf("skill %q has no worktree to link to", entry.Name)
 	}

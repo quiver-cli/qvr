@@ -39,6 +39,11 @@ type PublishRequest struct {
 	// so "publish to a feature branch then open a PR" works without the
 	// user having to pre-create the branch with raw git.
 	NoCreateBranch bool
+	// Force allows the publish to overwrite an existing same-name skill in
+	// the target registry. Without it, the publish refuses when
+	// skills/<name>/ already exists on the target branch — protecting
+	// against accidental or malicious overwrites (issue #72).
+	Force bool
 }
 
 // PublishResult summarises a publish outcome.
@@ -140,6 +145,15 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	}
 
 	dest := filepath.Join(stageDir, "skills", skill.Frontmatter.Name)
+	// Capture whether the registry already holds a same-name skill so we
+	// can distinguish "create new" from "overwrite existing" after the
+	// status check. A no-content-change re-publish on an existing skill is
+	// still a no-op ("nothing to publish") and proceeds without --force;
+	// an actual overwrite requires explicit --force (issue #72).
+	destPreExists := false
+	if _, err := os.Stat(dest); err == nil {
+		destPreExists = true
+	}
 	if err := copyDir(abs, dest); err != nil {
 		return nil, fmt.Errorf("copy skill: %w", err)
 	}
@@ -153,6 +167,12 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	}
 	if status.IsClean() {
 		return nil, errors.New("nothing to publish — skill already matches registry")
+	}
+	// Status is dirty AND the dest pre-existed → this is an overwrite, not
+	// a create. Refuse without --force (issue #72).
+	if destPreExists && !req.Force {
+		return nil, fmt.Errorf("publish: registry %q already contains a different version of skill %q at %s — pass --force to overwrite",
+			regName, skill.Frontmatter.Name, filepath.Join("skills", skill.Frontmatter.Name))
 	}
 	if req.DryRun {
 		return &PublishResult{

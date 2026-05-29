@@ -79,7 +79,7 @@ func resolveByLockScoped(arg string, requireHit, global bool) (string, []string,
 		}
 		return resolveSkillDir(arg)
 	}
-	target := skill.EffectiveTarget(entry)
+	target := skill.EffectiveTarget(entry, projectRoot)
 	if target == "" {
 		return "", nil, fmt.Errorf("lock entry %q has no resolvable target — try `qvr sync` to rebuild it", arg)
 	}

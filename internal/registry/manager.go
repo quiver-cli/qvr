@@ -232,6 +232,11 @@ func (m *Manager) List() ([]model.RegistryStatus, error) {
 		result = append(result, status)
 	}
 
+	// Sort by name so output is deterministic across runs. Go map iteration
+	// is randomized; without this `qvr registry list` produces a different
+	// order on every invocation, and scripts piping the output to `head`,
+	// `awk`, or `diff` get nondeterministic answers (issue #76).
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil
 }
 
@@ -468,5 +473,9 @@ func registryNames(cfg *config.Config, name string) []string {
 	for n := range cfg.Registries {
 		names = append(names, n)
 	}
+	// Sort so callers (Update, Check) iterate in a deterministic order — Go
+	// map iteration is randomized and downstream output is otherwise
+	// nondeterministic between runs (issue #76).
+	sort.Strings(names)
 	return names
 }

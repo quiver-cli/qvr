@@ -3,11 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/user"
-	"strings"
 
 	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/registry"
@@ -16,25 +13,33 @@ import (
 )
 
 var (
-	editBranch string
 	editGlobal bool
+	editAuthor string
+	editEmail  string
 )
 
 var editCmd = &cobra.Command{
 	Use:   "edit <skill>",
-	Short: "Branch a skill off its current ref so local edits don't touch upstream",
-	Long: `Create a new local branch on the skill's worktree at the current HEAD and
-switch the worktree onto it. Subsequent edits and 'qvr push' will land on the
-new branch, keeping shared refs (default branches, release tags) untouched.
+	Short: "Eject a skill into the project so you can modify it",
+	Long: `Promote the symlinked skill into a real directory inside the project so
+you can edit it directly. The canonical agent target dir (alphabetical-first
+installed target, e.g. .claude/skills/<name>/) becomes a real directory
+populated from the shared worktree; any other installed target dirs become
+relative symlinks pointing at it.
 
-The branch name defaults to qvr/<user>/<skill>; override with --branch.`,
+After eject, ` + "`qvr publish <skill>`" + ` ships your edits — either back to the
+original upstream (` + "`--tag v1.0.1`" + `) or to a brand-new remote
+(` + "`--fork <url> --migrate`" + `).
+
+Idempotent: running ` + "`qvr edit`" + ` again after the first eject is a no-op.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editBranch, "branch", "", "branch name to create (defaults to qvr/<user>/<skill>)")
 	editCmd.Flags().BoolVar(&editGlobal, "global", false, "operate on the user-global lock file instead of the project lock")
+	editCmd.Flags().StringVar(&editAuthor, "author", "", "git author for the initial commit (defaults to 'quiver')")
+	editCmd.Flags().StringVar(&editEmail, "email", "", "git author email for the initial commit (defaults to 'quiver@localhost')")
 	rootCmd.AddCommand(editCmd)
 }
 
@@ -46,17 +51,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), editGlobal)
 
-	branch := editBranch
-	if branch == "" {
-		branch = defaultEditBranch(name)
-	}
-
 	var (
-		updated          *model.LockEntry
-		warning          string
-		alreadyEditing   bool
-		alreadyEditEntry *model.LockEntry
-		latestLock       *model.LockFile
+		result       *skill.EjectResult
+		updatedEntry *model.LockEntry
+		latestLock   *model.LockFile
+		idempotent   bool
 	)
 	lockErr := model.WithLock(lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
@@ -67,89 +66,65 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-
-		// Idempotent no-op: matches the behavior of `switch`/`upgrade`/`install`
-		// so wrapper scripts can call `qvr edit <skill>` defensively without
-		// guarding with `qvr info` first.
-		if branch == entry.Ref {
-			alreadyEditing = true
-			alreadyEditEntry = entry
+		// Surface a friendlier error than EjectToTarget's generic refusal —
+		// users editing a link install are usually unaware that the link is
+		// already locally owned.
+		if entry.IsLink() {
+			return fmt.Errorf("%s is a link install at %s — edit the source path directly", name, entry.Source)
+		}
+		// Already ejected: no-op, return current state.
+		if entry.IsEdit() {
+			idempotent = true
+			updatedEntry = entry
 			return nil
 		}
 
-		syncer := skill.NewSyncer(git.NewGoGitWorktree(), git.NewGoGitClient())
-		u, w, err := syncer.CreateEditBranch(cmd.Context(), entry, branch)
+		r, err := skill.EjectToTarget(skill.EjectRequest{
+			Entry:       entry,
+			ProjectRoot: projectRoot,
+			Global:      editGlobal,
+			Author:      editAuthor,
+			AuthorEmail: editEmail,
+		})
 		if err != nil {
-			return fmt.Errorf("edit: %w", err)
+			return fmt.Errorf("edit %s: %w", name, err)
 		}
-		if err := skill.ApplySwitch(u, projectRoot, editGlobal); err != nil {
-			return err
-		}
-		lock.Put(u)
+		// EjectToTarget mutated entry; persist.
+		lock.Put(entry)
 		if err := lock.Write(); err != nil {
 			return fmt.Errorf("write lock: %w", err)
 		}
-		updated = u
-		warning = w
+		result = r
+		updatedEntry = entry
 		latestLock = lock
 		return nil
 	})
 	if lockErr != nil {
 		return lockErr
 	}
-	if alreadyEditing {
-		if printer.Format == output.FormatJSON {
-			return printer.JSON(map[string]any{
-				"skill":   alreadyEditEntry,
-				"status":  "already-editing",
-				"message": fmt.Sprintf("already editing on %s", branch),
-			})
-		}
-		printer.Info(fmt.Sprintf("%s: already editing on %s", alreadyEditEntry.Name, branch))
-		return nil
-	}
+
 	registry.TouchProject(lockPath)
 	if !editGlobal && latestLock != nil {
 		_ = refreshAgentsMDIfPresent(projectRoot, latestLock.Entries())
 	}
+
 	if printer.Format == output.FormatJSON {
-		out := map[string]any{"skill": updated}
-		if warning != "" {
-			out["warning"] = warning
+		payload := map[string]any{
+			"skill":      updatedEntry,
+			"idempotent": idempotent,
 		}
-		return printer.JSON(out)
+		if result != nil {
+			payload["eject"] = result
+		}
+		return printer.JSON(payload)
 	}
-	if warning != "" {
-		printer.Warning(warning)
+	if idempotent {
+		printer.Info(fmt.Sprintf("%s: already ejected at %s", updatedEntry.Name, updatedEntry.EditPath))
+		return nil
 	}
-	printer.Success(fmt.Sprintf("%s: editing on %s (from %s)", updated.Name, updated.Ref, shortHash(updated.Commit)))
+	printer.Success(fmt.Sprintf("%s: ejected to %s — edit files there, then `qvr publish %s --tag <ver>`", updatedEntry.Name, updatedEntry.EditPath, updatedEntry.Name))
+	if len(result.SiblingLinks) > 0 {
+		printer.Info(fmt.Sprintf("  repointed %d sibling target symlink(s)", len(result.SiblingLinks)))
+	}
 	return nil
-}
-
-func defaultEditBranch(skillName string) string {
-	login := "local"
-	if u, err := user.Current(); err == nil && u.Username != "" {
-		login = sanitizeLogin(u.Username)
-	}
-	return fmt.Sprintf("qvr/%s/%s", login, skillName)
-}
-
-// sanitizeLogin strips Windows DOMAIN\ prefixes and any characters that would
-// confuse a git ref name.
-func sanitizeLogin(s string) string {
-	if i := strings.LastIndex(s, "\\"); i >= 0 {
-		s = s[i+1:]
-	}
-	s = strings.ToLower(s)
-	clean := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-			clean = append(clean, r)
-		}
-	}
-	if len(clean) == 0 {
-		return "local"
-	}
-	return string(clean)
 }

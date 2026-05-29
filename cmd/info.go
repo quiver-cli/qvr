@@ -44,12 +44,17 @@ type skillInfo struct {
 	Registry      string            `json:"registry,omitempty"`
 	Branch        string            `json:"branch,omitempty"`
 	Commit        string            `json:"commit,omitempty"`
-	Worktree      string            `json:"worktree,omitempty"`
-	LinkTarget    string            `json:"link_target,omitempty"`
-	Source        string            `json:"source,omitempty"`
-	SubtreeHash   string            `json:"subtree_hash,omitempty"`
-	Targets       []targetStatus    `json:"targets"`
-	Files         []string          `json:"files"`
+	// CommitDrift, when non-empty, is the worktree's actual HEAD SHA when
+	// it differs from the recorded `commit` field. Populated by `qvr info`
+	// for issue #73 so tampered or unhealed lockfile entries are visible
+	// next to the recorded commit instead of buried behind `qvr lock verify`.
+	CommitDrift string         `json:"commit_drift,omitempty"`
+	Worktree    string         `json:"worktree,omitempty"`
+	LinkTarget  string         `json:"link_target,omitempty"`
+	Source      string         `json:"source,omitempty"`
+	SubtreeHash string         `json:"subtree_hash,omitempty"`
+	Targets     []targetStatus `json:"targets"`
+	Files       []string       `json:"files"`
 	// Verification surfaces real signals (scan, signature, eval, attestation,
 	// skill card) when present on the lock entry.
 	Verification *model.VerificationRecord `json:"verification,omitempty"`
@@ -124,9 +129,22 @@ func buildSkillInfo(entry *model.LockEntry, projectRoot string, global bool) (*s
 		info.Branch = entry.Ref
 		info.Commit = entry.Commit
 		info.Worktree = skill.EntryWorktreePath(entry)
+		// Cross-check entry.Commit against the worktree HEAD so a tampered
+		// lockfile entry surfaces here next to the recorded commit (issue
+		// #73). Suppress the warning when HEAD descends from entry.Commit —
+		// that's the normal "user committed locally; lockfile catches up at
+		// publish time" pattern (issue #99), not tamper. HEAD-read errors
+		// are non-fatal — info is read-only.
+		if entry.Commit != "" {
+			if head, hErr := skill.ResolveEntryHeadCommit(entry, projectRoot); hErr == nil && head != "" && head != entry.Commit {
+				if ancestor, _ := skill.EntryCommitIsAncestorOfHead(entry, projectRoot); !ancestor {
+					info.CommitDrift = head
+				}
+			}
+		}
 	}
 
-	skillDir := skill.EffectiveTarget(entry)
+	skillDir := skill.EffectiveTarget(entry, projectRoot)
 	if skillDir != "" {
 		if loaded, err := skill.LoadFromPath(skillDir); err == nil {
 			info.Description = loaded.Frontmatter.Description
@@ -182,6 +200,9 @@ func renderInfoText(info *skillInfo) {
 		}
 		if info.Commit != "" {
 			fmt.Fprintf(w, "Commit:      %s\n", info.Commit)
+		}
+		if info.CommitDrift != "" {
+			fmt.Fprintf(w, "  ✗ worktree HEAD is %s (lockfile commit field is out of date — see #73)\n", info.CommitDrift)
 		}
 		if info.Worktree != "" {
 			fmt.Fprintf(w, "Worktree:    %s\n", info.Worktree)

@@ -53,14 +53,27 @@ func NewSyncer(wt git.WorktreeManager, gc git.GitClient) *Syncer {
 
 // Status reports the git state for the given entry. Purely local — no network,
 // no fetches — so `qvr status` stays fast.
-func (s *Syncer) Status(entry *model.LockEntry) (*SyncStatus, error) {
+//
+// projectRoot lets mode:edit entries resolve their (project-relative) EditPath
+// to a real on-disk repo. Pass "" when no project is in scope; mode:edit
+// entries with a relative EditPath then resolve against the caller's cwd.
+func (s *Syncer) Status(entry *model.LockEntry, projectRoot string) (*SyncStatus, error) {
 	st := &SyncStatus{Name: entry.Name, Branch: entry.Ref, Commit: entry.Commit}
 	if entry.IsLink() {
 		// Link-installed skills aren't tracked via git.
 		st.Message = "link"
 		return st, nil
 	}
-	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
+	// mode:edit entries authoritatively live at <projectRoot>/<EditPath>
+	// (a real git repo). Shared entries live in the bare-clone worktree.
+	// Previously Status only looked at EntryWorktreePath, so file edits in
+	// the ejected dir were invisible to `qvr status` / `qvr diff` / `qvr
+	// lock verify` (issue #69).
+	repoPath := ResolveSkillRepoPath(entry, projectRoot)
+	if repoPath == "" {
+		repoPath = EntryWorktreePath(entry)
+	}
+	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		st.Broken = true
 		st.Message = fmt.Sprintf("worktree unreadable: %v", err)

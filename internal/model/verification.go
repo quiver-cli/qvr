@@ -40,11 +40,18 @@ type ArtifactRef struct {
 // ScanRef summarises a scanner pass. The full report lives on disk; only
 // the digest and counts ride in the lockfile so `qvr lock verify` can
 // detect drift without re-reading the report.
+//
+// Decision == "skipped" is a sentinel emitted when the gate was explicitly
+// disabled (e.g. `--no-scan`). It carries no ReportSHA/Counts but does
+// record Reason so a downstream attestation pipeline can tell "scanned
+// and clean" from "scan was skipped". Without this sentinel, an absent
+// or empty scan block is ambiguous (issue #78 / #71).
 type ScanRef struct {
-	ReportSHA      string         `json:"reportSHA"`
-	ScannerVersion string         `json:"scannerVersion"`
+	ReportSHA      string         `json:"reportSHA,omitempty"`
+	ScannerVersion string         `json:"scannerVersion,omitempty"`
 	Counts         SeverityCounts `json:"counts"`
 	Decision       string         `json:"decision"`
+	Reason         string         `json:"reason,omitempty"`
 	SarifPath      string         `json:"sarifPath,omitempty"`
 }
 

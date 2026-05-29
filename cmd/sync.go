@@ -125,7 +125,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if !syncDryRun {
 			cfg, cerr := config.Load()
 			if cerr == nil {
-				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg)
+				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg, projectRoot)
 				if werr := lock.Write(); werr != nil {
 					return fmt.Errorf("persist scan results: %w", werr)
 				}
@@ -143,7 +143,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				if entry.IsLink() || entry.Disabled {
 					continue
 				}
-				r := skill.VerifySingleEntry(entry)
+				r := skill.VerifySingleEntry(entry, projectRoot)
 				switch r.Status {
 				case skill.VerifyStatusDrift, skill.VerifyStatusFailed, skill.VerifyStatusUnverified:
 					driftReports = append(driftReports, r)
@@ -330,7 +330,7 @@ func autoRegisterRegistriesFromLock(lock *model.LockFile, dryRun bool) {
 	}
 }
 
-func scanRestoredSkillsAfterSync(ctx context.Context, lock *model.LockFile, cfg *config.Config) map[string]security.Severity {
+func scanRestoredSkillsAfterSync(ctx context.Context, lock *model.LockFile, cfg *config.Config, projectRoot string) map[string]security.Severity {
 	if !gateAvailable(cfg, syncNoScan) {
 		return nil
 	}
@@ -339,9 +339,21 @@ func scanRestoredSkillsAfterSync(ctx context.Context, lock *model.LockFile, cfg 
 		if entry.Disabled || entry.IsLink() {
 			continue
 		}
-		skillDir := skill.EffectiveTarget(entry)
+		skillDir := skill.EffectiveTarget(entry, projectRoot)
 		if skillDir == "" {
 			continue
+		}
+		// Idempotency optimization (issue #79): if we already have a scan
+		// attestation for an entry whose on-disk subtree hasn't changed
+		// since that scan, skip the rescan entirely. Sync becomes silent
+		// on no-state-change reruns. The recorded subtreeHash IS the
+		// fingerprint of what was scanned; if the hash still matches what
+		// we'd compute now, the prior scan still describes the on-disk
+		// state and the per-skill scan output is just noise.
+		if entry.Verification != nil && entry.Verification.Scan != nil && entry.SubtreeHash != "" {
+			if curHash, herr := skill.ComputeSubtreeHash(skillDir, ""); herr == nil && curHash == entry.SubtreeHash {
+				continue
+			}
 		}
 		// WarnOnly=true so the ⚠ template is used even for critical findings
 		// — sync never blocks, and the old "✗ scan blocked" template was

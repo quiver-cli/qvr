@@ -251,6 +251,29 @@ func TestLockFile_PutPreservesInstalledAt(t *testing.T) {
 	}
 }
 
+// TestLockFile_PutPreservesPriorInstalledAtOnUpdate guards issue #77: a no-op
+// re-add (e.g. `qvr add <already-installed-skill>`) builds a fresh LockEntry
+// with InstalledAt = zero and calls Put. Put must preserve the previously
+// recorded InstalledAt rather than stamping time.Now(), otherwise the
+// lockfile churns on every run and uv-parity idempotency is violated.
+func TestLockFile_PutPreservesPriorInstalledAtOnUpdate(t *testing.T) {
+	l := model.NewLockFile(filepath.Join(t.TempDir(), "lock.json"))
+	prior := time.Now().Add(-7 * 24 * time.Hour).UTC()
+	l.Put(&model.LockEntry{Name: "foo", InstalledAt: prior})
+
+	// Simulate a no-op re-add: fresh entry with the same name, InstalledAt
+	// zero. Without the fix, Put would stamp time.Now() here.
+	l.Put(&model.LockEntry{Name: "foo"})
+	entry, err := l.Get("foo")
+	if err != nil {
+		t.Fatalf("get foo: %v", err)
+	}
+	if !entry.InstalledAt.Equal(prior) {
+		t.Errorf("Put churned InstalledAt on no-op update: got %v want %v",
+			entry.InstalledAt, prior)
+	}
+}
+
 func TestLockFile_DisabledRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)

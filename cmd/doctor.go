@@ -215,6 +215,7 @@ func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot strin
 			continue
 		}
 		checks = append(checks, checkWorktree(e))
+		checks = append(checks, checkCommitIntegrity(e, projectRoot))
 		// In v5 the lock is self-contained — entry.Source carries the
 		// fetch URL on every non-link entry, so `qvr sync` will auto-
 		// register any missing registry. Doctor only flags a missing
@@ -275,6 +276,40 @@ func checkWorktree(e *model.LockEntry) doctorCheck {
 	return c
 }
 
+// checkCommitIntegrity verifies entry.Commit hasn't been hand-edited to a
+// SHA that doesn't exist in the repo (issue #73). A descendant relationship
+// (HEAD descends from entry.Commit, the normal "local commits pending publish"
+// state — issue #99) is fine and silent; the only thing surfaced as a failure
+// is "entry.Commit isn't reachable from HEAD at all".
+func checkCommitIntegrity(e *model.LockEntry, projectRoot string) doctorCheck {
+	c := doctorCheck{Type: "commit-integrity", Skill: e.Name}
+	if e.Commit == "" {
+		c.OK = true
+		c.Message = "no commit recorded; skipped"
+		return c
+	}
+	head, herr := skill.ResolveEntryHeadCommit(e, projectRoot)
+	if herr != nil || head == "" {
+		// Can't read HEAD — leave silent (worktree check above already
+		// flags the missing repo case).
+		c.OK = true
+		return c
+	}
+	if head == e.Commit {
+		c.OK = true
+		return c
+	}
+	if ancestor, _ := skill.EntryCommitIsAncestorOfHead(e, projectRoot); ancestor {
+		// Normal "user committed locally, lockfile hasn't caught up" —
+		// not tamper, no signal.
+		c.OK = true
+		return c
+	}
+	c.Message = fmt.Sprintf("lockfile commit %s is not reachable from worktree HEAD %s — tampered or detached (issue #73)",
+		e.Commit, head)
+	return c
+}
+
 func checkRegistry(e *model.LockEntry, cfg *config.Config) doctorCheck {
 	c := doctorCheck{Type: "registry", Skill: e.Name, Target: e.Registry}
 	if _, ok := cfg.Registries[e.Registry]; !ok {
@@ -304,9 +339,26 @@ func checkSymlink(e *model.LockEntry, target, projectRoot string, global bool) (
 		c.Message = "disabled (no symlink expected)"
 		return c, linkPath
 	}
-	expected := skill.EffectiveTarget(e)
+	expected := skill.EffectiveTarget(e, projectRoot)
 	if expected == "" {
 		c.Message = "no worktree to verify against"
+		return c, linkPath
+	}
+	// For mode:edit entries the canonical target dir IS a real directory
+	// (the edit dir), not a symlink. Doctor previously ran VerifyTarget on
+	// it and reported `✗ symlink ... is not a symlink` for every ejected
+	// skill (issue #81). Detect this case and check the directory's
+	// integrity instead — the install path resolves to the canonical when
+	// linkPath equals expected, which is the case for the canonical
+	// target. Sibling targets remain symlinks pointing at canonical and
+	// continue to use VerifyTarget.
+	if e.IsEdit() && linkPath == expected {
+		c.Type = "ejected"
+		if err := skill.VerifyDirContainsSkill(linkPath); err != nil {
+			c.Message = err.Error()
+			return c, linkPath
+		}
+		c.OK = true
 		return c, linkPath
 	}
 	if err := skill.VerifyTarget(linkPath, expected); err != nil {

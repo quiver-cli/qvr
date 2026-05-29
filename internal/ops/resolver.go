@@ -112,7 +112,11 @@ func NewResolver(lockPaths ...string) (Resolver, error) {
 // entry. Errors from EvalSymlinks (file-not-found) fall back to
 // Clean+Abs so disabled-but-present entries still resolve.
 func buildTarget(e *model.LockEntry) target {
-	raw := skill.EffectiveTarget(e)
+	// Pass "" for projectRoot — the session resolver only sees the lockfile,
+	// not the project it lives next to. Edit-mode entries will surface
+	// relative paths which filepath.Abs resolves against cwd; that's
+	// acceptable here because the resolver runs in the project's own cwd.
+	raw := skill.EffectiveTarget(e, "")
 	if raw == "" {
 		return target{}
 	}

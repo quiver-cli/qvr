@@ -20,7 +20,7 @@ func TestStatus_Clean(t *testing.T) {
 	entry := installCodeReview(t, h, remote)
 
 	s := newSyncer()
-	status, err := s.Status(entry)
+	status, err := s.Status(entry, "")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestStatus_Dirty(t *testing.T) {
 	_ = os.WriteFile(skillFile, append(data, []byte("\n# edit\n")...), 0o644)
 
 	s := newSyncer()
-	status, err := s.Status(entry)
+	status, err := s.Status(entry, "")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestStatus_BrokenWorktree(t *testing.T) {
 
 	_ = os.RemoveAll(skill.EntryWorktreePath(entry))
 	s := newSyncer()
-	status, err := s.Status(entry)
+	status, err := s.Status(entry, "")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}

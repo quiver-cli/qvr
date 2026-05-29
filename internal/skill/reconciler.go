@@ -100,6 +100,25 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			}
 			continue
 		}
+		if entry.IsEdit() {
+			// Edit-mode entries live at EditPath inside the project, not in
+			// the shared cache. The shared worktree is no longer load-bearing,
+			// so we don't try to (re-)install — just verify the edit dir is
+			// present and refresh sibling symlinks. If EditPath is missing
+			// after e.g. a teammate cloned the repo without the dir,
+			// surface a clear error rather than silently overwriting with
+			// shared-mode contents.
+			editDir := EffectiveTarget(entry, projectRoot)
+			if _, err := os.Stat(editDir); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: edit dir %s missing — re-run `qvr edit %s` to re-materialize from %s@%s",
+					entry.Name, editDir, entry.Name, entry.SourceUpstream, shortHashOrFull(entry.InstallCommit)))
+				continue
+			}
+			if err := r.fixSymlinks(entry, projectRoot, global, opts, res); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", entry.Name, err))
+			}
+			continue
+		}
 
 		worktreePath := EntryWorktreePath(entry)
 		needsRestore := worktreePath == ""
@@ -144,10 +163,23 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 // CreateSymlink is idempotent: an existing matching link is a no-op, a
 // mismatching one gets replaced. Per-target failures are appended to
 // res.Errors so the rest of the targets still get a chance.
+//
+// Edit-mode entries are handled specially: the canonical target dir IS the
+// edit copy (a real directory), so we never try to symlink over it. Sibling
+// targets get repointed at the canonical via CreateSymlink as usual.
 func (r *Reconciler) fixSymlinks(entry *model.LockEntry, projectRoot string, global bool, opts ReconcileOptions, res *ReconcileResult) error {
-	target := EffectiveTarget(entry)
+	target := EffectiveTarget(entry, projectRoot)
 	if target == "" {
 		return nil // nothing to link (e.g. fresh entry where install just failed)
+	}
+	// For edit-mode entries the canonical EditPath is itself a real directory
+	// that must not be replaced with a self-referential symlink. Identify the
+	// canonical absolute path so we can skip it in the per-target loop.
+	var canonicalAbs string
+	if entry.IsEdit() {
+		if abs, err := filepath.Abs(target); err == nil {
+			canonicalAbs = normalize(abs)
+		}
 	}
 	for _, t := range entry.Targets {
 		linkPath, err := ResolveTargetPath(t, entry.Name, projectRoot, global)
@@ -155,17 +187,38 @@ func (r *Reconciler) fixSymlinks(entry *model.LockEntry, projectRoot string, glo
 			res.Errors = append(res.Errors, fmt.Sprintf("%s/%s: %v", entry.Name, t, err))
 			continue
 		}
+		if canonicalAbs != "" {
+			if abs, err := filepath.Abs(linkPath); err == nil && normalize(abs) == canonicalAbs {
+				// This is the canonical edit dir itself — already the real
+				// source of truth, nothing to symlink.
+				continue
+			}
+		}
 		if opts.DryRun {
 			if existing, err := os.Lstat(linkPath); err != nil || existing.Mode()&os.ModeSymlink == 0 {
 				res.SymlinksFixed = append(res.SymlinksFixed, linkPath+" (would create)")
 			}
 			continue
 		}
+		// Suppress the "Linked …" report when the symlink already points at
+		// the right target — sync should be silent on no-state-change reruns
+		// (issue #79). Existing-but-wrong / missing links still go through
+		// CreateSymlink below and DO get reported.
+		alreadyCorrect := false
+		if absTarget, aerr := filepath.Abs(target); aerr == nil {
+			if existing, lerr := os.Lstat(linkPath); lerr == nil && existing.Mode()&os.ModeSymlink != 0 {
+				if cur, rerr := os.Readlink(linkPath); rerr == nil && cur == absTarget {
+					alreadyCorrect = true
+				}
+			}
+		}
 		if err := CreateSymlink(linkPath, target); err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("link %s/%s: %v", entry.Name, t, err))
 			continue
 		}
-		res.SymlinksFixed = append(res.SymlinksFixed, linkPath)
+		if !alreadyCorrect {
+			res.SymlinksFixed = append(res.SymlinksFixed, linkPath)
+		}
 	}
 	return nil
 }
@@ -322,4 +375,17 @@ func IsManaged(resolved string, prefixes []string) bool {
 
 func normalize(p string) string {
 	return filepath.Clean(p)
+}
+
+// shortHashOrFull returns a 7-char prefix for non-empty hashes, else the
+// literal "<unknown>" so reconcile error messages stay readable when an
+// entry pre-dates the InstallCommit field.
+func shortHashOrFull(h string) string {
+	if h == "" {
+		return "<unknown>"
+	}
+	if len(h) >= 7 {
+		return h[:7]
+	}
+	return h
 }

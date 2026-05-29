@@ -135,8 +135,8 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		}
 		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
 			if existing, gerr := existingLock.Get(name); gerr == nil && existing.Ref != "" && existing.Ref != version {
-				return nil, fmt.Errorf("%s already installed at %s; use `qvr switch %s %s` to change refs, or `qvr remove %s` first (pass --force to override)",
-					name, existing.Ref, name, version, name)
+				return nil, fmt.Errorf("%s already installed at %s; use `qvr switch %s %s` to change refs, or `qvr remove %s --force` to uninstall (then re-run `qvr add %s@%s`), or pass --force to `qvr add` to overwrite in place",
+					name, existing.Ref, name, version, name, name, version)
 			}
 		}
 	}
@@ -228,8 +228,18 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		return nil, fmt.Errorf("read lock file: %w", err)
 	}
 	targets := req.Targets
+	var priorVerification *model.VerificationRecord
 	if existing, err := lock.Get(name); err == nil {
 		targets = mergeTargets(existing.Targets, req.Targets)
+		// Preserve the prior Verification when the install is a no-op
+		// (same commit). Without this, a re-add wipes the scan attestation
+		// before the gate rewrites it — even when the new SHA matches, the
+		// intermediate "no verification" lockfile state churns concurrent
+		// readers, and any code path that doesn't re-run the gate would
+		// permanently lose the prior signal. Issue #77.
+		if existing.Commit == commit && existing.Verification != nil {
+			priorVerification = existing.Verification
+		}
 	}
 	subtreeHash, hashErr := ComputeSubtreeHash(finalPath, loc.Entry.Path)
 	if hashErr != nil {
@@ -249,6 +259,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		InstallCommit: commit,
 		SubtreeHash:   subtreeHash,
 		Targets:       targets,
+		Verification:  priorVerification,
 	}
 
 	// --frozen drift check: the just-installed worktree must hash to the
@@ -314,9 +325,20 @@ func (in *Installer) RestoreAll(req InstallRequest) ([]*InstallResult, error) {
 	return out, nil
 }
 
-// Remove tears down a skill: remove symlinks, worktree, and lock entry. Any
-// individual step failing still progresses through the rest so a partial
-// installation doesn't get stuck.
+// Remove tears down a skill: remove symlinks, worktree, and lock entry.
+//
+// Ordering invariant (issue #93): the filesystem teardown happens FIRST.
+// Only if every required FS step succeeds do we drop the lock entry. A
+// failure mid-teardown returns an error WITHOUT mutating the lock so the
+// user has a recovery path (re-run with `--force`, fix the underlying FS
+// issue, then retry) rather than an orphan eject dir + missing lock entry.
+//
+// Mode:edit handling: the canonical install path is a real directory
+// holding the user's edits, not a symlink. RemoveSymlink would refuse it
+// (`not a symlink`). With req.Force, the eject dir is rm -rf'd; without
+// Force, the caller (cmd/remove.go) refuses upstream, so this code path
+// shouldn't run on an unforced mode:edit entry — defensive check kept
+// here too.
 func (in *Installer) Remove(name string, req InstallRequest) error {
 	lockPath := req.LockPath
 	if lockPath == "" {
@@ -331,42 +353,64 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 		return err
 	}
 
-	var firstErr error
 	entryGlobal := lock.IsGlobal(quiverHome())
+	canonicalEditAbs := ""
+	if entry.IsEdit() {
+		if !req.Force {
+			return fmt.Errorf("remove %s: skill is in edit mode — pass --force to delete the eject dir at %s", name, entry.EditPath)
+		}
+		canonicalEditAbs = entry.EditPath
+		if canonicalEditAbs != "" && !filepath.IsAbs(canonicalEditAbs) {
+			canonicalEditAbs = filepath.Join(req.ProjectRoot, canonicalEditAbs)
+		}
+	}
+
+	// Pass 1: drop target symlinks (and the canonical edit dir, when in
+	// edit mode). Bail without touching the lock if any step fails so the
+	// user can recover rather than be left with an orphan lock entry.
 	for _, t := range entry.Targets {
 		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, entryGlobal)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+			return fmt.Errorf("remove %s: resolve target %s: %w", name, t, err)
+		}
+		// For mode:edit canonical target: rm -rf the eject dir. Siblings
+		// are symlinks pointing at canonical and use RemoveSymlink.
+		if entry.IsEdit() && canonicalEditAbs != "" {
+			canonicalAbs, _ := filepath.Abs(canonicalEditAbs)
+			absLink, _ := filepath.Abs(linkPath)
+			if canonicalAbs == absLink {
+				if err := os.RemoveAll(linkPath); err != nil {
+					return fmt.Errorf("remove %s: rm eject dir %s: %w", name, linkPath, err)
+				}
+				continue
 			}
-			continue
 		}
 		if err := RemoveSymlink(linkPath); err != nil && !errors.Is(err, ErrSymlinkNotFound) {
-			if firstErr == nil {
-				firstErr = err
+			return fmt.Errorf("remove %s: %w", name, err)
+		}
+	}
+
+	// Pass 2: drop the shared worktree for non-edit, non-link entries.
+	// Mode:edit entries never had a shared worktree to clean; link
+	// installs point at user-owned dirs we don't touch.
+	if !entry.IsLink() && !entry.IsEdit() {
+		worktreePath := EntryWorktreePath(entry)
+		if worktreePath != "" {
+			if err := in.Worktree.Remove(worktreePath); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
+				return fmt.Errorf("remove %s: drop worktree: %w", name, err)
 			}
 		}
 	}
 
-	if !entry.IsLink() {
-		worktreePath := EntryWorktreePath(entry)
-		if worktreePath != "" {
-			if err := in.Worktree.Remove(worktreePath); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-		}
-	}
+	// Only now drop the lock entry. Symmetric with Install, which writes
+	// the lock last.
 	if err := lock.Remove(name); err != nil && !errors.Is(err, model.ErrLockSkillMissing) {
-		if firstErr == nil {
-			firstErr = err
-		}
+		return fmt.Errorf("remove %s: drop lock entry: %w", name, err)
 	}
-	if err := lock.Write(); err != nil && firstErr == nil {
-		firstErr = err
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("remove %s: write lock: %w", name, err)
 	}
-	return firstErr
+	return nil
 }
 
 // Link creates symlinks from a local skill directory into agent dirs. No
@@ -538,7 +582,7 @@ func mergeTargets(existing, add []string) []string {
 // user-global (`~/.claude/skills/`) symlink targets — derive from the
 // lock file's location via LockFile.IsGlobal.
 func ApplySwitch(entry *model.LockEntry, projectRoot string, global bool) error {
-	skillDir := EffectiveTarget(entry)
+	skillDir := EffectiveTarget(entry, projectRoot)
 	for _, target := range entry.Targets {
 		linkPath, err := ResolveTargetPath(target, entry.Name, projectRoot, global)
 		if err != nil {

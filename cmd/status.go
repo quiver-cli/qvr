@@ -68,7 +68,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			})
 			continue
 		}
-		s, err := syncer.Status(e)
+		s, err := syncer.Status(e, projectRoot)
 		if err != nil {
 			return fmt.Errorf("status %s: %w", e.Name, err)
 		}

@@ -217,6 +217,63 @@ func TestPublish_NoRegistryConfigured(t *testing.T) {
 	}
 }
 
+// TestPublish_RefusesOverwriteWithoutForce is the regression guard for issue
+// #72: greenfield publish used to silently overwrite an existing same-name
+// skill in the registry, opening a squat/clobber attack on shared registries.
+// Default behavior now refuses; --force opts into the overwrite.
+func TestPublish_RefusesOverwriteWithoutForce(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{
+		"shared-name": `---
+name: shared-name
+description: alice's version.
+---
+# alice
+`,
+	})
+	h.addRegistry(t, "acme", remote)
+
+	// Bob attempts to publish a DIFFERENT skill with the same name.
+	skillDir := filepath.Join(t.TempDir(), "shared-name")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: shared-name
+description: bob's totally different version.
+---
+# bob
+`), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	p := skill.NewPublisher(git.NewGoGitClient())
+	_, err := p.Publish(context.Background(), skill.PublishRequest{
+		LocalPath: skillDir,
+		Registry:  "acme",
+	})
+	if err == nil {
+		t.Fatal("expected refusal on same-name overwrite without --force, got nil")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error should mention --force, got %v", err)
+	}
+
+	// With --force, the publish should succeed.
+	res, err := p.Publish(context.Background(), skill.PublishRequest{
+		LocalPath: skillDir,
+		Registry:  "acme",
+		Message:   "bob takes over",
+		Force:     true,
+	})
+	if err != nil {
+		t.Fatalf("publish with --force: %v", err)
+	}
+	if res == nil || res.Commit == "" {
+		t.Errorf("expected successful publish with --force, got %+v", res)
+	}
+}
+
 func TestPublish_NothingToDo(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{

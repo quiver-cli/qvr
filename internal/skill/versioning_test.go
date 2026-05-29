@@ -507,6 +507,7 @@ func TestPublish_WithTag_CreatesAndPushesTag(t *testing.T) {
 		Tag:       "v2.0.0",
 		Message:   "release v2",
 		Author:    "Test",
+		Force:     true, // overwriting an existing same-name skill (issue #72)
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)

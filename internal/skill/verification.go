@@ -68,9 +68,16 @@ func RefreshSubtreeHash(entry *model.LockEntry) error {
 // RepairResult captures what RepairSubtreeHashFromDisk changed about an
 // entry. Empty OldSubtreeHash means the entry had no recorded hash before
 // repair. NewSubtreeHash is empty only on failure.
+//
+// OldCommit / NewCommit are populated when --repair healed entry.Commit
+// to the worktree HEAD (issue #73). Empty when no commit-field drift was
+// detected. This is the in-band fix for a tampered or stale commit field;
+// callers can render a before/after diff from the two values.
 type RepairResult struct {
 	OldSubtreeHash string
 	NewSubtreeHash string
+	OldCommit      string
+	NewCommit      string
 	Failed         bool
 	Error          string
 }
@@ -80,9 +87,16 @@ type RepairResult struct {
 // truth. This is the in-band recovery path for the `qvr edit` workflow
 // where the user knowingly intends their disk state to be what's recorded.
 //
+// Also re-seals entry.Commit to the worktree HEAD when the recorded value
+// has drifted (issue #73 — without this, a tampered `commit` field could
+// only be fixed by manual lockfile editing).
+//
 // Unlike RefreshSubtreeHash, which uses HashSubtree (git tree at HEAD) and
 // is therefore blind to uncommitted edits, this uses HashSubtreeFromDisk.
-func RepairSubtreeHashFromDisk(entry *model.LockEntry) RepairResult {
+//
+// projectRoot is consulted only for mode:edit entries with a relative
+// EditPath; callers without one in scope may pass "".
+func RepairSubtreeHashFromDisk(entry *model.LockEntry, projectRoot string) RepairResult {
 	res := RepairResult{}
 	if entry == nil || entry.IsLink() {
 		res.Failed = true
@@ -91,8 +105,14 @@ func RepairSubtreeHashFromDisk(entry *model.LockEntry) RepairResult {
 	}
 	res.OldSubtreeHash = entry.SubtreeHash
 
-	worktreePath := EntryWorktreePath(entry)
-	diskHash, err := canonical.HashSubtreeFromDisk(filepath.Join(worktreePath, entry.Path))
+	subtreeDir := ResolveSkillRepoPath(entry, projectRoot)
+	if entry.IsEdit() {
+		// mode:edit entries hash the edit dir directly — entry.Path doesn't
+		// apply because the edit dir IS the skill, not a subpath of one.
+	} else {
+		subtreeDir = filepath.Join(EntryWorktreePath(entry), entry.Path)
+	}
+	diskHash, err := canonical.HashSubtreeFromDisk(subtreeDir)
 	if err != nil {
 		res.Failed = true
 		res.Error = err.Error()
@@ -100,5 +120,14 @@ func RepairSubtreeHashFromDisk(entry *model.LockEntry) RepairResult {
 	}
 	entry.SubtreeHash = diskHash
 	res.NewSubtreeHash = diskHash
+
+	// Re-seal entry.Commit to the worktree HEAD when it has drifted. Failure
+	// to read HEAD is non-fatal — a degraded repo shouldn't block repair of
+	// the subtree hash, which is still load-bearing.
+	if head, hErr := ResolveEntryHeadCommit(entry, projectRoot); hErr == nil && head != "" && head != entry.Commit {
+		res.OldCommit = entry.Commit
+		res.NewCommit = head
+		entry.Commit = head
+	}
 	return res
 }

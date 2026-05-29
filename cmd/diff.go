@@ -54,7 +54,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("diff does not apply to link installs; edit %s directly", entry.Source)
 	}
 
-	diff, err := skillDiff(cmd.Context(), entry, diffStaged, diffStat)
+	diff, err := skillDiff(cmd.Context(), entry, projectRoot, diffStaged, diffStat)
 	if err != nil {
 		return fmt.Errorf("git diff: %w", err)
 	}
@@ -62,7 +62,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(map[string]any{
 			"skill":    name,
-			"worktree": skill.EntryWorktreePath(entry),
+			"worktree": skill.ResolveSkillRepoPath(entry, projectRoot),
 			"staged":   diffStaged,
 			"stat":     diffStat,
 			"diff":     string(diff),
@@ -76,10 +76,12 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-// skillDiff shells out to `git diff` inside the skill's worktree. We pass
-// `--no-color` so JSON consumers and pipelines never see ANSI escapes; humans
-// still get a clean unified diff in text mode.
-func skillDiff(ctx context.Context, entry *model.LockEntry, staged, stat bool) ([]byte, error) {
+// skillDiff shells out to `git diff` inside the skill's authoritative git
+// repo. For mode:edit entries that's the edit dir; for shared entries it's
+// the bare-clone worktree. Previously this only used EntryWorktreePath, so
+// edits in the ejected dir were invisible to `qvr diff` (issue #69). Passes
+// `--no-color` so JSON consumers and pipelines never see ANSI escapes.
+func skillDiff(ctx context.Context, entry *model.LockEntry, projectRoot string, staged, stat bool) ([]byte, error) {
 	args := []string{"diff", "--no-color"}
 	if staged {
 		args = append(args, "--cached")
@@ -87,7 +89,11 @@ func skillDiff(ctx context.Context, entry *model.LockEntry, staged, stat bool) (
 	if stat {
 		args = append(args, "--stat")
 	}
-	return git.RunInDir(ctx, skill.EntryWorktreePath(entry), args...)
+	repoPath := skill.ResolveSkillRepoPath(entry, projectRoot)
+	if repoPath == "" {
+		repoPath = skill.EntryWorktreePath(entry)
+	}
+	return git.RunInDir(ctx, repoPath, args...)
 }
 
 func changesNoun(staged bool) string {
