@@ -9,6 +9,7 @@ import (
 
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 	"github.com/raks097/quiver/internal/skill"
 )
 
@@ -38,7 +39,7 @@ func TestStatus_Dirty(t *testing.T) {
 	entry := installCodeReview(t, h, remote)
 
 	// Modify a file in the worktree.
-	skillFile := filepath.Join(entry.Worktree, entry.Path, "SKILL.md")
+	skillFile := filepath.Join(skill.EntryWorktreePath(entry), entry.Path, "SKILL.md")
 	data, _ := os.ReadFile(skillFile)
 	_ = os.WriteFile(skillFile, append(data, []byte("\n# edit\n")...), 0o644)
 
@@ -58,7 +59,7 @@ func TestStatus_BrokenWorktree(t *testing.T) {
 	h.addRegistry(t, "acme", remote)
 	entry := installCodeReview(t, h, remote)
 
-	_ = os.RemoveAll(entry.Worktree)
+	_ = os.RemoveAll(skill.EntryWorktreePath(entry))
 	s := newSyncer()
 	status, err := s.Status(entry)
 	if err != nil {
@@ -89,7 +90,7 @@ func TestPush_CommitsAndPushes(t *testing.T) {
 	entry := installCodeReview(t, h, remote)
 
 	// Modify a file in the worktree.
-	skillFile := filepath.Join(entry.Worktree, entry.Path, "SKILL.md")
+	skillFile := filepath.Join(skill.EntryWorktreePath(entry), entry.Path, "SKILL.md")
 	orig, _ := os.ReadFile(skillFile)
 	_ = os.WriteFile(skillFile, append(orig, []byte("\n# pushed edit\n")...), 0o644)
 
@@ -124,7 +125,10 @@ func TestPull_FastForward(t *testing.T) {
 	entry := installCodeReview(t, h, remote)
 
 	// Second worktree to push commits to origin — simulating another user.
-	other := filepath.Join(t.TempDir(), "other")
+	// Place it at a v5-derivable path so the synthetic entry's
+	// EntryWorktreePath resolves to it.
+	otherCommit := "ffffff7"
+	other := registry.WorktreePath("acme", "code-review-other", registry.ShortSHA(otherCommit))
 	w := git.NewGoGitWorktree()
 	if err := w.Add(remote, other, "main"); err != nil {
 		t.Fatalf("Add other worktree: %v", err)
@@ -135,9 +139,11 @@ func TestPull_FastForward(t *testing.T) {
 	_ = os.WriteFile(otherFile, append(orig, []byte("\n# from other\n")...), 0o644)
 
 	otherEntry := &model.LockEntry{
-		Name:     "code-review",
+		Name:     "code-review-other",
+		Registry: "acme",
+		Source:   remote,
 		Ref:      "main",
-		Worktree: other,
+		Commit:   otherCommit,
 		Path:     "skills/code-review",
 	}
 	s := newSyncer()
@@ -155,7 +161,7 @@ func TestPull_FastForward(t *testing.T) {
 		t.Errorf("pull head = %s, want %s", got, pushed)
 	}
 	// Worktree file must reflect the upstream change.
-	data, _ := os.ReadFile(filepath.Join(entry.Worktree, entry.Path, "SKILL.md"))
+	data, _ := os.ReadFile(filepath.Join(skill.EntryWorktreePath(entry), entry.Path, "SKILL.md"))
 	if want := "from other"; !containsBytes(data, want) {
 		t.Errorf("expected pulled content to contain %q, got: %s", want, string(data))
 	}
@@ -167,7 +173,7 @@ func TestPull_RefusesOnDirty(t *testing.T) {
 	h.addRegistry(t, "acme", remote)
 	entry := installCodeReview(t, h, remote)
 
-	_ = os.WriteFile(filepath.Join(entry.Worktree, "junk.txt"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(skill.EntryWorktreePath(entry), "junk.txt"), []byte("x"), 0o644)
 
 	s := newSyncer()
 	_, err := s.Pull(context.Background(), entry)
@@ -182,22 +188,31 @@ func TestPull_Divergence(t *testing.T) {
 	h.addRegistry(t, "acme", remote)
 	entry := installCodeReview(t, h, remote)
 
-	// Other user pushes upstream.
-	other := filepath.Join(t.TempDir(), "other")
+	// Other user pushes upstream. Worktree placed at a v5-derivable path
+	// so the synthetic entry's EntryWorktreePath resolves to it.
+	otherCommit := "ddddddd"
+	other := registry.WorktreePath("acme", "cr-other", registry.ShortSHA(otherCommit))
 	w := git.NewGoGitWorktree()
 	if err := w.Add(remote, other, "main"); err != nil {
 		t.Fatalf("add other: %v", err)
 	}
 	otherFile := filepath.Join(other, "skills", "code-review", "SKILL.md")
 	_ = os.WriteFile(otherFile, []byte("from-other"), 0o644)
-	otherEntry := &model.LockEntry{Name: "cr", Ref: "main", Worktree: other, Path: "skills/code-review"}
+	otherEntry := &model.LockEntry{
+		Name:     "cr-other",
+		Registry: "acme",
+		Source:   remote,
+		Ref:      "main",
+		Commit:   otherCommit,
+		Path:     "skills/code-review",
+	}
 	s := newSyncer()
 	if _, err := s.Push(context.Background(), otherEntry, skill.PushOptions{Message: "other"}); err != nil {
 		t.Fatalf("push other: %v", err)
 	}
 
 	// Local commits in the original worktree WITHOUT pulling first → diverge.
-	localFile := filepath.Join(entry.Worktree, entry.Path, "SKILL.md")
+	localFile := filepath.Join(skill.EntryWorktreePath(entry), entry.Path, "SKILL.md")
 	_ = os.WriteFile(localFile, []byte("local-only"), 0o644)
 	// Push may fail due to non-FF; that's fine — either outcome still leaves
 	// the worktree with a local commit that diverges from origin, which is
@@ -253,8 +268,8 @@ func TestSwitch(t *testing.T) {
 	if updated.Ref != "v2" {
 		t.Errorf("branch = %s, want v2", updated.Ref)
 	}
-	if len(updated.ResolvedSHA) != 40 {
-		t.Errorf("commit = %s", updated.ResolvedSHA)
+	if len(updated.Commit) != 40 {
+		t.Errorf("commit = %s", updated.Commit)
 	}
 }
 

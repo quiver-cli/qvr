@@ -158,21 +158,24 @@ func fetchRemotes(ctx context.Context, gc git.GitClient, cfg *config.Config, ent
 	return out
 }
 
-// remoteURLFor picks the upstream URL for a lock entry. Subdir installs
-// (`qvr add`) record the canonical clone URL on the entry; registry installs
-// resolve through cfg.Registries.
+// remoteURLFor picks the upstream URL for a lock entry. v5 carries the
+// fetch URL on every non-link entry via entry.Source, so this is just a
+// nil/empty guard plus a fallback to the registry config for entries
+// (legacy or hand-edited) that ended up without a Source.
 func remoteURLFor(e *model.LockEntry, cfg *config.Config) (string, error) {
-	if e.Source == "subdir" {
-		if e.RepoURL == "" {
-			return "", fmt.Errorf("subdir install %q has no recorded RepoURL — re-run `qvr add` to refresh the lock entry", e.Name)
-		}
-		return e.RepoURL, nil
+	if e.IsLink() {
+		return "", fmt.Errorf("link install %q has no upstream URL", e.Name)
 	}
-	regCfg, exists := cfg.Registries[e.Registry]
-	if !exists {
+	if e.Source != "" {
+		return e.Source, nil
+	}
+	if e.Registry != "" {
+		if regCfg, ok := cfg.Registries[e.Registry]; ok {
+			return regCfg.URL, nil
+		}
 		return "", fmt.Errorf("registry %q not configured", e.Registry)
 	}
-	return regCfg.URL, nil
+	return "", fmt.Errorf("entry %q has no source URL", e.Name)
 }
 
 // computeOutdated is the pure comparator: given a lock entry and the remote
@@ -184,9 +187,9 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 		Name:     entry.Name,
 		Registry: entry.Registry,
 		Branch:   entry.Ref,
-		Local:    entry.ResolvedSHA,
+		Local:    entry.Commit,
 	}
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		row.State = outStateLink
 		return row
 	}
@@ -221,7 +224,7 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 		return row
 	}
 
-	if remoteHash == entry.ResolvedSHA {
+	if remoteHash == entry.Commit {
 		row.State = outStateUpToDate
 	} else {
 		row.State = outStateBehind

@@ -64,7 +64,7 @@ func TestEndToEnd(t *testing.T) {
 	if len(hash) != 40 {
 		t.Fatalf("push hash: %q", hash)
 	}
-	entry.ResolvedSHA = hash
+	entry.Commit = hash
 	lock.Put(entry)
 	if err := lock.Write(); err != nil {
 		t.Fatalf("write lock: %v", err)
@@ -144,7 +144,7 @@ func TestReconcile_RematerializesFromCache(t *testing.T) {
 
 	// Nuke the worktree behind the lock's back — the symlink is now
 	// dangling. This simulates "user blew away ~/.quiver/worktrees/".
-	if err := os.RemoveAll(entry.Worktree); err != nil {
+	if err := os.RemoveAll(skill.EntryWorktreePath(entry)); err != nil {
 		t.Fatalf("remove worktree: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(linkPath, "SKILL.md")); err == nil {

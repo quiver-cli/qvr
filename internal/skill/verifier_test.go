@@ -11,15 +11,22 @@ import (
 
 	"github.com/raks097/quiver/internal/canonical"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 	"github.com/raks097/quiver/internal/skill"
 )
 
-// makeVerifierTestRepo seeds a non-bare git repo at t.TempDir() containing
-// a skill at skills/foo/SKILL.md and returns the repo path.
-func makeVerifierTestRepo(t *testing.T, body string) string {
+// seedVerifierWorktree creates a git worktree on disk at
+// registry.WorktreePath(reg, name, sha) so VerifySingleEntry can find it
+// via EntryWorktreePath. Returns the absolute worktree path.
+//
+// QUIVER_HOME must already be set via t.Setenv before calling.
+func seedVerifierWorktree(t *testing.T, reg, name, sha, body string) string {
 	t.Helper()
-	dir := t.TempDir()
-	repo, err := gogit.PlainInit(dir, false)
+	wtPath := registry.WorktreePath(reg, name, sha)
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	repo, err := gogit.PlainInit(wtPath, false)
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -27,12 +34,12 @@ func makeVerifierTestRepo(t *testing.T, body string) string {
 	if err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
-	skillDir := filepath.Join(dir, "skills/foo")
+	skillDir := filepath.Join(wtPath, "skills/foo")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+		t.Fatalf("mkdir skill: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatalf("write SKILL.md: %v", err)
 	}
 	if _, err := wt.Add("skills/foo/SKILL.md"); err != nil {
 		t.Fatalf("add: %v", err)
@@ -42,27 +49,33 @@ func makeVerifierTestRepo(t *testing.T, body string) string {
 	}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	return dir
+	return wtPath
 }
 
-func TestVerifySingleEntry_ok(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
-	id, err := canonical.HashSubtree(repo, "skills/foo")
+// makeV5Entry builds a v5 LockEntry that resolves to wtPath via
+// EntryWorktreePath, with SubtreeHash pre-sealed from the disk state.
+func makeV5Entry(t *testing.T, reg, name, sha, wtPath string) *model.LockEntry {
+	t.Helper()
+	id, err := canonical.HashSubtree(wtPath, "skills/foo")
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	entry := &model.LockEntry{
-		Name:     "foo",
-		Worktree: repo,
-		Path:     "skills/foo",
-		Source:   "registry",
-		Verification: &model.VerificationRecord{
-			SubtreeHash: id.SubtreeHash,
-			TreeSHA:     id.TreeSHA,
-			CommitSHA:   id.CommitSHA,
-			Status:      model.StatusUnverified,
-		},
+	return &model.LockEntry{
+		Name:        name,
+		Registry:    reg,
+		Source:      "git@example.test:" + reg + ".git",
+		Path:        "skills/foo",
+		Ref:         "main",
+		Commit:      sha,
+		SubtreeHash: id.SubtreeHash,
 	}
+}
+
+func TestVerifySingleEntry_ok(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	wt := seedVerifierWorktree(t, "ar", "foo", "abc1234", "---\nname: foo\n---\nbody\n")
+	entry := makeV5Entry(t, "ar", "foo", "abc1234", wt)
+
 	got := skill.VerifySingleEntry(entry)
 	if got.Status != skill.VerifyStatusOK {
 		t.Errorf("Status = %q, want %q (drift=%+v message=%q)", got.Status, skill.VerifyStatusOK, got.Drift, got.Message)
@@ -72,99 +85,14 @@ func TestVerifySingleEntry_ok(t *testing.T) {
 	}
 }
 
-func TestVerifySingleEntry_driftOnTamper(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\noriginal\n")
-	entry := &model.LockEntry{
-		Name:     "foo",
-		Worktree: repo,
-		Path:     "skills/foo",
-		Source:   "registry",
-	}
-	entry.Verification = skill.PopulateVerification(entry, model.ProvenanceRef{})
+func TestVerifySingleEntry_driftOnDiskTamper(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	wt := seedVerifierWorktree(t, "ar", "foo", "abc1234", "---\nname: foo\n---\noriginal\n")
+	entry := makeV5Entry(t, "ar", "foo", "abc1234", wt)
 
-	// Tamper: commit a new version on top, simulating an upstream change
-	// that the lockfile hasn't been refreshed against.
-	if err := os.WriteFile(
-		filepath.Join(repo, "skills/foo/SKILL.md"),
-		[]byte("---\nname: foo\n---\nMUTATED\n"),
-		0o644,
-	); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	r, _ := gogit.PlainOpen(repo)
-	wt, _ := r.Worktree()
-	if _, err := wt.Add("skills/foo/SKILL.md"); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-	if _, err := wt.Commit("tamper", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "t", Email: "t@t", When: time.Unix(1, 0).UTC()},
-	}); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	got := skill.VerifySingleEntry(entry)
-	if got.Status != skill.VerifyStatusDrift {
-		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusDrift)
-	}
-	foundSubtreeDrift := false
-	for _, d := range got.Drift {
-		if d.Field == "subtreeHash" {
-			foundSubtreeDrift = true
-		}
-	}
-	if !foundSubtreeDrift {
-		t.Errorf("expected subtreeHash in drift list, got %+v", got.Drift)
-	}
-}
-
-func TestVerifySingleEntry_unverifiedWhenNoBlock(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
-	entry := &model.LockEntry{
-		Name:     "foo",
-		Worktree: repo,
-		Path:     "skills/foo",
-		Source:   "registry",
-		// No Verification — represents a v2-loaded entry.
-	}
-	got := skill.VerifySingleEntry(entry)
-	if got.Status != skill.VerifyStatusUnverified {
-		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusUnverified)
-	}
-}
-
-func TestVerifySingleEntry_missingWorktree(t *testing.T) {
-	entry := &model.LockEntry{
-		Name:     "foo",
-		Worktree: filepath.Join(t.TempDir(), "does-not-exist"),
-		Path:     "skills/foo",
-		Source:   "registry",
-	}
-	got := skill.VerifySingleEntry(entry)
-	if got.Status != skill.VerifyStatusMissing {
-		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusMissing)
-	}
-}
-
-// Regression for #18: a worktree whose checked-out bytes are modified
-// post-install must report drift, even though the underlying git tree
-// at HEAD is unchanged. Pre-fix the verifier compared the recorded hash
-// against a re-derivation from the same static git tree — so any disk
-// edit (or even rm) would silently report "ok".
-func TestVerifySingleEntry_driftOnDiskTamperWithStaticGitTree(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
-	entry := &model.LockEntry{
-		Name:     "foo",
-		Worktree: repo,
-		Path:     "skills/foo",
-		Source:   "registry",
-	}
-	entry.Verification = skill.PopulateVerification(entry, model.ProvenanceRef{})
-	if entry.Verification == nil || entry.Verification.SubtreeHash == "" {
-		t.Fatalf("PopulateVerification did not record a hash: %+v", entry.Verification)
-	}
-
-	// Mutate on disk without committing — git tree at HEAD is unchanged.
-	skillFile := filepath.Join(repo, "skills/foo/SKILL.md")
+	// Mutate on disk without committing — the working copy diverges from
+	// the SubtreeHash recorded at install time.
+	skillFile := filepath.Join(wt, "skills/foo/SKILL.md")
 	f, err := os.OpenFile(skillFile, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("open append: %v", err)
@@ -178,71 +106,82 @@ func TestVerifySingleEntry_driftOnDiskTamperWithStaticGitTree(t *testing.T) {
 	if got.Status != skill.VerifyStatusDrift {
 		t.Errorf("Status = %q, want %q (drift list = %+v)", got.Status, skill.VerifyStatusDrift, got.Drift)
 	}
-	foundSubtreeDrift := false
-	for _, d := range got.Drift {
-		if d.Field == "subtreeHash" {
-			foundSubtreeDrift = true
-		}
-	}
-	if !foundSubtreeDrift {
+	if len(got.Drift) == 0 || got.Drift[0].Field != "subtreeHash" {
 		t.Errorf("expected subtreeHash drift after on-disk append, got %+v", got.Drift)
 	}
 }
 
-// Regression for #18: deleting the sole file in a skill's subtree must
-// produce a non-"ok" status. Pre-fix this silently passed because the
-// verifier hashed the git tree, not the disk.
-func TestVerifySingleEntry_failedWhenAllContentDeleted(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "x\n")
+func TestVerifySingleEntry_unverifiedWhenNoHash(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	_ = seedVerifierWorktree(t, "ar", "foo", "abc1234", "---\nname: foo\n---\nbody\n")
+	// Entry exists, worktree exists, but SubtreeHash was never recorded
+	// (e.g. an install that hit a hashing failure).
 	entry := &model.LockEntry{
 		Name:     "foo",
-		Worktree: repo,
+		Registry: "ar",
+		Source:   "git@example.test:ar.git",
 		Path:     "skills/foo",
-		Source:   "registry",
+		Ref:      "main",
+		Commit:   "abc1234",
 	}
-	entry.Verification = skill.PopulateVerification(entry, model.ProvenanceRef{})
-
-	if err := os.Remove(filepath.Join(repo, "skills/foo/SKILL.md")); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-
 	got := skill.VerifySingleEntry(entry)
-	if got.Status == skill.VerifyStatusOK {
-		t.Errorf("Status reported ok after sole file deletion — drift invisible")
+	if got.Status != skill.VerifyStatusUnverified {
+		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusUnverified)
 	}
 }
 
-// Regression for #30: --repair must rewrite the recorded SubtreeHash to
-// match the on-disk worktree. Pre-fix RepairVerificationFromDisk's
-// predecessor used HashSubtree (git-tree-at-HEAD), so when the user edited
-// disk files without committing, the "repair" wrote the unchanged git tree
-// hash back — a no-op. Subsequent verify runs still reported drift.
-func TestRepairVerificationFromDisk_rewritesToDiskHash(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
+func TestVerifySingleEntry_missingWorktree(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	// No worktree seeded — EntryWorktreePath resolves to a non-existent path.
 	entry := &model.LockEntry{
 		Name:     "foo",
-		Worktree: repo,
+		Registry: "ar",
+		Source:   "git@example.test:ar.git",
 		Path:     "skills/foo",
-		Source:   "registry",
+		Ref:      "main",
+		Commit:   "deadbeef",
 	}
-	entry.Verification = skill.PopulateVerification(entry, model.ProvenanceRef{})
-	originalHash := entry.Verification.SubtreeHash
+	got := skill.VerifySingleEntry(entry)
+	if got.Status != skill.VerifyStatusMissing {
+		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusMissing)
+	}
+}
+
+func TestVerifySingleEntry_linkSkipped(t *testing.T) {
+	entry := &model.LockEntry{
+		Name:   "foo",
+		Source: "/some/local/path",
+		Ref:    "local",
+	}
+	got := skill.VerifySingleEntry(entry)
+	if got.Status != skill.VerifyStatusLink {
+		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusLink)
+	}
+}
+
+// Regression for #30: --repair rewrites SubtreeHash to match the on-disk
+// worktree even when there are uncommitted edits. Pre-v5 the predecessor
+// helper hashed git-tree-at-HEAD, which silently no-op'd this case.
+func TestRepairSubtreeHashFromDisk_rewritesToDiskHash(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	wt := seedVerifierWorktree(t, "ar", "foo", "abc1234", "---\nname: foo\n---\nbody\n")
+	entry := makeV5Entry(t, "ar", "foo", "abc1234", wt)
+	originalHash := entry.SubtreeHash
 	if originalHash == "" {
-		t.Fatal("PopulateVerification did not record an initial hash")
+		t.Fatal("seed did not record an initial hash")
 	}
 
 	// Tamper on-disk only — git tree at HEAD unchanged.
-	skillFile := filepath.Join(repo, "skills/foo/SKILL.md")
+	skillFile := filepath.Join(wt, "skills/foo/SKILL.md")
 	if err := os.WriteFile(skillFile, []byte("---\nname: foo\n---\nrewritten by user\n"), 0o644); err != nil {
 		t.Fatalf("rewrite on disk: %v", err)
 	}
 
-	// Sanity: pre-repair, the entry shows drift.
 	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusDrift {
 		t.Fatalf("expected drift before repair, got %q", got.Status)
 	}
 
-	res := skill.RepairVerificationFromDisk(entry)
+	res := skill.RepairSubtreeHashFromDisk(entry)
 	if res.Failed {
 		t.Fatalf("repair failed: %s", res.Error)
 	}
@@ -255,35 +194,35 @@ func TestRepairVerificationFromDisk_rewritesToDiskHash(t *testing.T) {
 	if res.NewSubtreeHash == originalHash {
 		t.Error("repair produced the same hash — would be a no-op")
 	}
-	if entry.Verification.SubtreeHash != res.NewSubtreeHash {
-		t.Errorf("entry not updated in place: got %q, want %q",
-			entry.Verification.SubtreeHash, res.NewSubtreeHash)
+	if entry.SubtreeHash != res.NewSubtreeHash {
+		t.Errorf("entry.SubtreeHash not updated in place: got %q, want %q",
+			entry.SubtreeHash, res.NewSubtreeHash)
 	}
 
-	// Post-repair, a follow-up verify must succeed — the in-band recovery
-	// contract is that a single --repair pass seals the drift.
 	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusOK {
 		t.Errorf("post-repair verify Status = %q, want %q (drift=%+v)",
 			got.Status, skill.VerifyStatusOK, got.Drift)
 	}
 }
 
-// Repairing an unverified entry (no prior Verification block) seals the
-// current disk state for the first time — useful when migrating a v2 entry
-// that lacked provenance and the user trusts the current worktree.
-func TestRepairVerificationFromDisk_sealsUnverified(t *testing.T) {
-	repo := makeVerifierTestRepo(t, "---\nname: foo\n---\nbody\n")
+// Repairing an unverified entry (no prior SubtreeHash) seals the current
+// disk state for the first time.
+func TestRepairSubtreeHashFromDisk_sealsUnverified(t *testing.T) {
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	_ = seedVerifierWorktree(t, "ar", "foo", "abc1234", "---\nname: foo\n---\nbody\n")
 	entry := &model.LockEntry{
 		Name:     "foo",
-		Worktree: repo,
+		Registry: "ar",
+		Source:   "git@example.test:ar.git",
 		Path:     "skills/foo",
-		Source:   "registry",
+		Ref:      "main",
+		Commit:   "abc1234",
 	}
 	if got := skill.VerifySingleEntry(entry); got.Status != skill.VerifyStatusUnverified {
 		t.Fatalf("expected unverified pre-repair, got %q", got.Status)
 	}
 
-	res := skill.RepairVerificationFromDisk(entry)
+	res := skill.RepairSubtreeHashFromDisk(entry)
 	if res.Failed {
 		t.Fatalf("repair failed: %s", res.Error)
 	}
@@ -293,36 +232,19 @@ func TestRepairVerificationFromDisk_sealsUnverified(t *testing.T) {
 	if res.NewSubtreeHash == "" {
 		t.Error("NewSubtreeHash empty after sealing an unverified entry")
 	}
-	if entry.Verification == nil || entry.Verification.SubtreeHash != res.NewSubtreeHash {
-		t.Errorf("entry not sealed: %+v", entry.Verification)
+	if entry.SubtreeHash != res.NewSubtreeHash {
+		t.Errorf("entry not sealed: SubtreeHash=%q want %q", entry.SubtreeHash, res.NewSubtreeHash)
 	}
 }
 
-// Link installs have no upstream to hash. RepairVerificationFromDisk should
-// reject them cleanly rather than producing a partial Verification block.
-func TestRepairVerificationFromDisk_rejectsLink(t *testing.T) {
+func TestRepairSubtreeHashFromDisk_rejectsLink(t *testing.T) {
 	entry := &model.LockEntry{
-		Name:       "foo",
-		Source:     "link",
-		LinkTarget: "/some/path",
+		Name:   "foo",
+		Source: "/some/path",
+		Ref:    "local",
 	}
-	res := skill.RepairVerificationFromDisk(entry)
+	res := skill.RepairSubtreeHashFromDisk(entry)
 	if !res.Failed {
 		t.Error("expected Failed=true for link-source entry")
-	}
-	if entry.Verification != nil {
-		t.Errorf("link entry mutated: %+v", entry.Verification)
-	}
-}
-
-func TestVerifySingleEntry_linkSkipped(t *testing.T) {
-	entry := &model.LockEntry{
-		Name:       "foo",
-		LinkTarget: "/some/local/path",
-		Source:     "link",
-	}
-	got := skill.VerifySingleEntry(entry)
-	if got.Status != skill.VerifyStatusLink {
-		t.Errorf("Status = %q, want %q", got.Status, skill.VerifyStatusLink)
 	}
 }

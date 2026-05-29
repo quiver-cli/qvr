@@ -186,7 +186,7 @@ func lockVerifyInternal(lock *model.LockFile) (*VerifyOutput, string, error) {
 			out.Summary.OK++
 		case skill.VerifyStatusDrift:
 			if lockVerifyRepair {
-				repair := skill.RepairVerificationFromDisk(entry)
+				repair := skill.RepairSubtreeHashFromDisk(entry)
 				if repair.Failed {
 					// Couldn't compute a fresh hash — leave the drift
 					// report intact so the user still sees what diverged.
@@ -205,7 +205,7 @@ func lockVerifyInternal(lock *model.LockFile) (*VerifyOutput, string, error) {
 			}
 		case skill.VerifyStatusUnverified:
 			if lockVerifyRepair {
-				repair := skill.RepairVerificationFromDisk(entry)
+				repair := skill.RepairSubtreeHashFromDisk(entry)
 				if repair.Failed {
 					result.Message = "repair failed: " + repair.Error
 					out.Summary.Unverified++
@@ -392,18 +392,11 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read lock: %w", err)
 	}
-	// Config feeds the v2→v3 provenance backfill — the v2 entry knows its
-	// registry name, but the canonical clone URL only lives in config. When
-	// loading fails (orphan-config edge), we still upgrade with whatever we
-	// can derive from the entry fields alone.
-	cfg, cfgErr := config.Load()
-	if cfgErr != nil {
-		cfg = &config.Config{}
-	}
-
-	// LockVersion reports the version of the file *on disk*, not the
-	// migration target — matches `qvr lock verify`, and lets tooling
-	// decide "does this repo need a migration?" by reading the field.
+	// LockVersion reports the version of the file *on disk*. v5 reaches this
+	// path having already passed ReadLockFile's version gate, so the only
+	// remaining job is to fill in any entry with a missing SubtreeHash (e.g.
+	// installs where the initial hash computation failed). v4-and-older
+	// locks were rejected upstream.
 	out := &UpgradeOutput{
 		LockVersion: lock.Version,
 		Entries:     []UpgradeEntryResult{}, // always [], never null
@@ -413,48 +406,29 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 	for _, entry := range lock.Entries() {
 		row := UpgradeEntryResult{Name: entry.Name}
 		switch {
-		case entry.Source == "link":
+		case entry.IsLink():
 			row.Status = "skipped"
-			row.Message = "link install — no provenance to record"
-		case entry.Verification != nil && entry.Verification.SubtreeHash != "":
-			// Entry already has a subtree hash. Still backfill provenance
-			// when it's empty and we can derive it — covers users who ran
-			// the previous (broken) `qvr lock upgrade` on a v2 file and
-			// ended up with an entry that has SubtreeHash but blank
-			// RegistryURL / Ref / Subpath.
-			derived := provenanceFromLegacyEntry(entry, cfg)
-			if mergeMissingProvenance(&entry.Verification.Provenance, derived) {
-				if lockUpgradeDryRun {
-					row.Status = "upgraded"
-					row.Message = "would backfill provenance"
-				} else {
-					row.Status = "upgraded"
-					row.Message = "backfilled provenance"
-					changed = true
-				}
-			} else {
-				row.Status = "unchanged"
-			}
+			row.Message = "link install — no upstream subtree to hash"
+		case entry.SubtreeHash != "":
+			row.Status = "unchanged"
 		default:
-			derived := provenanceFromLegacyEntry(entry, cfg)
 			if lockUpgradeDryRun {
-				// "would-upgrade" is the dry-run sentinel — distinct from
-				// "upgraded" so CI gates like `.entries[] | select(.status == "upgraded")`
-				// don't fire on a dry-run pass.
 				row.Status = "would-upgrade"
 				row.Message = "would compute subtree hash"
 			} else {
-				entry.Verification = skill.PopulateVerification(entry, derived)
-				if entry.Verification != nil && entry.Verification.SubtreeHash != "" {
-					row.Status = "upgraded"
-					changed = true
-				} else {
+				worktreePath := skill.EntryWorktreePath(entry)
+				hash, err := skill.ComputeSubtreeHash(worktreePath, entry.Path)
+				if err != nil || hash == "" {
 					row.Status = "skipped"
-					if entry.Verification != nil && len(entry.Verification.Warnings) > 0 {
-						row.Message = entry.Verification.Warnings[0]
+					if err != nil {
+						row.Message = err.Error()
 					} else {
 						row.Message = "could not compute subtree hash"
 					}
+				} else {
+					entry.SubtreeHash = hash
+					row.Status = "upgraded"
+					changed = true
 				}
 			}
 		}
@@ -465,70 +439,7 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 		if err := lock.Write(); err != nil {
 			return nil, fmt.Errorf("write lock: %w", err)
 		}
-		// After a successful write the on-disk version is now LockFileVersion.
-		// Reflect that in the output so JSON consumers don't see a stale
-		// pre-migration value next to "upgraded" rows.
 		out.LockVersion = model.LockFileVersion
 	}
 	return out, nil
-}
-
-// provenanceFromLegacyEntry reconstructs a ProvenanceRef from a v2-era
-// LockEntry's fields. The v2 entry already carries everything an installer
-// would have recorded — Registry name, Branch (=ref), Path (=subpath) — and
-// the canonical clone URL is either pinned on the entry (`Source == "subdir"`,
-// from `qvr add`) or looked up in the registry config by name.
-//
-// Returns an empty ProvenanceRef when the entry has no recoverable fields,
-// so PopulateVerification still records the SubtreeHash (we never block an
-// upgrade on missing provenance — the hash is the load-bearing identity).
-func provenanceFromLegacyEntry(entry *model.LockEntry, cfg *config.Config) model.ProvenanceRef {
-	if entry == nil {
-		return model.ProvenanceRef{}
-	}
-	prov := model.ProvenanceRef{
-		RegistryName: entry.Registry,
-		Ref:          entry.Ref,
-		Subpath:      entry.Path,
-	}
-	switch {
-	case entry.RepoURL != "":
-		// Subdir installs (`qvr add <url>`) pin the URL on the entry — it's
-		// not in config.Registries by design.
-		prov.RegistryURL = entry.RepoURL
-	case cfg != nil && entry.Registry != "":
-		if rc, ok := cfg.Registries[entry.Registry]; ok {
-			prov.RegistryURL = rc.URL
-		}
-	}
-	return prov
-}
-
-// mergeMissingProvenance fills empty fields on dst from src and reports
-// whether anything actually changed. Non-empty fields on dst are preserved
-// (a partial v3 install where one field happened to be empty isn't a free
-// pass to overwrite intentional values). Returns false when src would add
-// nothing new — the caller treats that as "unchanged".
-func mergeMissingProvenance(dst *model.ProvenanceRef, src model.ProvenanceRef) bool {
-	if dst == nil {
-		return false
-	}
-	changed := false
-	if dst.RegistryName == "" && src.RegistryName != "" {
-		dst.RegistryName = src.RegistryName
-		changed = true
-	}
-	if dst.RegistryURL == "" && src.RegistryURL != "" {
-		dst.RegistryURL = src.RegistryURL
-		changed = true
-	}
-	if dst.Ref == "" && src.Ref != "" {
-		dst.Ref = src.Ref
-		changed = true
-	}
-	if dst.Subpath == "" && src.Subpath != "" {
-		dst.Subpath = src.Subpath
-		changed = true
-	}
-	return changed
 }

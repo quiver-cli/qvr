@@ -16,6 +16,7 @@ import (
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/ops"
 	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/raks097/quiver/internal/registry"
 )
 
 // isolatedHome returns a fresh $QUIVER_HOME for a test. Sets up:
@@ -30,20 +31,26 @@ func isolatedHome(t *testing.T, opsEnabled bool) (worktree string, readEvents fu
 	home := t.TempDir()
 	t.Setenv("QUIVER_HOME", home)
 
-	worktree = filepath.Join(home, "worktrees", "foo")
+	reg, name, commit := "team", "foo", "abc1234"
+	worktree = registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Write lockfile with one entry pointing at the worktree.
+	// Write lockfile with one entry whose derived worktree (v5: via
+	// EntryWorktreePath, keyed by registry/name/ShortSHA(commit)) lines up
+	// with the dir we just created. The hook resolver uses the same
+	// derivation, so events under this path attribute to "foo".
 	lf := &model.LockFile{
 		Version: model.LockFileVersion,
 		Skills: map[string]*model.LockEntry{
 			"foo": {
-				Name: "foo", Registry: "team", ResolvedSHA: "abc123",
-				Worktree:    worktree,
+				Name:        name,
+				Registry:    reg,
+				Source:      "git@example.test:" + reg + ".git",
+				Ref:         "main",
+				Commit:      commit,
 				InstalledAt: time.Now(),
-				UpdatedAt:   time.Now(),
 			},
 		},
 	}

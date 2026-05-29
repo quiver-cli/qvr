@@ -7,6 +7,7 @@ import (
 
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
+	"github.com/raks097/quiver/internal/skill"
 	"github.com/spf13/cobra"
 )
 
@@ -35,8 +36,12 @@ func init() {
 
 // scopedListEntry pairs a lock entry with the scope it came from. The Scope
 // field is empty for single-lock invocations (project- or global-only) so the
-// JSON output stays backward-compatible; --all populates it.
+// JSON output stays backward-compatible; --all populates it. Name and
+// Worktree are surfaced explicitly because v5 keeps them off disk (Name is
+// the map key; Worktree is derived from registry.WorktreePath).
 type scopedListEntry struct {
+	Name     string `json:"name"`
+	Worktree string `json:"worktree,omitempty"`
 	*model.LockEntry
 	Scope string `json:"scope,omitempty"`
 }
@@ -54,7 +59,11 @@ func runList(cmd *cobra.Command, args []string) error {
 	var rows []scopedListEntry
 	for _, s := range locks {
 		for _, e := range s.Lock.Entries() {
-			row := scopedListEntry{LockEntry: e}
+			row := scopedListEntry{
+				Name:      e.Name,
+				Worktree:  skill.EntryWorktreePath(e),
+				LockEntry: e,
+			}
 			if listAll {
 				row.Scope = s.Scope
 			}

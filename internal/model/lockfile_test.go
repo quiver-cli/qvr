@@ -21,11 +21,11 @@ func TestLockFile_WriteRead(t *testing.T) {
 	l.Put(&model.LockEntry{
 		Name:        "code-review",
 		Registry:    "acme",
+		Source:      "git@github.com:acme/skills.git",
 		Path:        "skills/code-review",
 		Ref:         "v2",
-		ResolvedSHA: "abc123",
-		Worktree:    "/tmp/wt",
-		InstallPath: "/proj/.claude/skills/code-review",
+		Commit:      "abc123",
+		SubtreeHash: "sha256:deadbeef",
 		Targets:     []string{"claude", "cursor"},
 	})
 
@@ -41,17 +41,58 @@ func TestLockFile_WriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if entry.Ref != "v2" || entry.ResolvedSHA != "abc123" {
+	if entry.Ref != "v2" || entry.Commit != "abc123" {
 		t.Errorf("fields not preserved: %+v", entry)
 	}
-	if entry.InstallPath != "/proj/.claude/skills/code-review" {
-		t.Errorf("InstallPath not preserved: %q", entry.InstallPath)
+	if entry.SubtreeHash != "sha256:deadbeef" {
+		t.Errorf("SubtreeHash not preserved: %q", entry.SubtreeHash)
 	}
-	if entry.InstalledAt.IsZero() || entry.UpdatedAt.IsZero() {
-		t.Error("timestamps should be set by Put")
+	if entry.Source != "git@github.com:acme/skills.git" {
+		t.Errorf("Source not preserved: %q", entry.Source)
 	}
-	if entry.Source != "registry" {
-		t.Errorf("expected default Source=registry, got %q", entry.Source)
+	if entry.Name != "code-review" {
+		t.Errorf("Name should be re-populated from map key: got %q", entry.Name)
+	}
+	if entry.InstalledAt.IsZero() {
+		t.Error("InstalledAt should be set by Put")
+	}
+}
+
+// TestLockFile_NameNotSerialized confirms the in-memory Name field
+// (json:"-") never leaks onto disk. The map key on disk is authoritative.
+func TestLockFile_NameNotSerialized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, model.LockFileName)
+	l := model.NewLockFile(path)
+	l.Put(&model.LockEntry{Name: "foo", Source: "git@x:y.git", Ref: "main"})
+	if err := l.Write(); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if strings.Contains(string(data), `"name"`) {
+		t.Errorf("v5 lock leaked `name` field on disk: %s", string(data))
+	}
+}
+
+// TestLockFile_NoWorktreeOnDisk confirms the portability bug that v4 had
+// (worktree as $HOME-rooted absolute path) cannot recur in v5.
+func TestLockFile_NoWorktreeOnDisk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, model.LockFileName)
+	l := model.NewLockFile(path)
+	l.Put(&model.LockEntry{Name: "foo", Source: "git@x:y.git", Ref: "main"})
+	if err := l.Write(); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if strings.Contains(string(data), `"worktree"`) {
+		t.Errorf("v5 lock leaked `worktree` field on disk: %s", string(data))
 	}
 }
 
@@ -208,9 +249,6 @@ func TestLockFile_PutPreservesInstalledAt(t *testing.T) {
 	if !entry.InstalledAt.Equal(installed) {
 		t.Errorf("InstalledAt overwritten: got %v want %v", entry.InstalledAt, installed)
 	}
-	if entry.UpdatedAt.Before(installed) {
-		t.Error("UpdatedAt should advance on Put")
-	}
 }
 
 func TestLockFile_DisabledRoundTrip(t *testing.T) {
@@ -219,7 +257,8 @@ func TestLockFile_DisabledRoundTrip(t *testing.T) {
 	l := model.NewLockFile(path)
 	l.Put(&model.LockEntry{
 		Name:     "shelved",
-		Worktree: "/tmp/wt",
+		Source:   "git@x:y.git",
+		Ref:      "main",
 		Targets:  []string{"claude"},
 		Disabled: true,
 	})
@@ -251,8 +290,9 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 	}{
 		{"missing version", `{"skills": {}}`, "missing"},
 		{"version=0", `{"version": 0, "skills": {}}`, "missing"},
-		{"version=2 legacy", `{"version": 2, "skills": {}}`, "delete the lock"},
-		{"version=3 legacy", `{"version": 3, "skills": {}}`, "delete the lock"},
+		{"version=2 legacy", `{"version": 2, "skills": {}}`, "delete qvr.lock"},
+		{"version=3 legacy", `{"version": 3, "skills": {}}`, "delete qvr.lock"},
+		{"version=4 legacy", `{"version": 4, "skills": {}}`, "delete qvr.lock"},
 		{"version=999 future", `{"version": 999, "skills": {}}`, "upgrade qvr"},
 	}
 	for _, tc := range cases {

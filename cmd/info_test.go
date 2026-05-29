@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 )
 
 func writeFullSkill(t *testing.T, name string) string {
@@ -44,13 +44,13 @@ func TestBuildSkillInfo_FullSkill(t *testing.T) {
 	project := t.TempDir()
 	linkSkillInto(t, project, ".claude/skills", "demo", wt)
 
+	// v5 link install: Source carries the absolute skill dir, Ref="local"
+	// is the link marker so EffectiveTarget returns Source directly.
 	entry := &model.LockEntry{
-		Name:        "demo",
-		Registry:    "acme",
-		Ref:         "main",
-		ResolvedSHA: "deadbeef",
-		Worktree:    wt,
-		Targets:     []string{"claude"},
+		Name:    "demo",
+		Source:  wt,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 
 	info, err := buildSkillInfo(entry, project, false)
@@ -79,16 +79,19 @@ func TestBuildSkillInfo_FullSkill(t *testing.T) {
 }
 
 func TestBuildSkillInfo_BrokenSymlinkReportsError(t *testing.T) {
-	wt := writeFullSkill(t, "demo")
+	intendedSrc := writeFullSkill(t, "demo")
 	project := t.TempDir()
 
+	// Symlink points at a *different* dir than the lock entry expects, so
+	// the target-status check should flag a mismatch.
 	otherSrc := writeFullSkill(t, "demo")
 	linkSkillInto(t, project, ".claude/skills", "demo", otherSrc)
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: wt,
-		Targets:  []string{"claude"},
+		Name:    "demo",
+		Source:  intendedSrc,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
@@ -110,7 +113,9 @@ func TestBuildSkillInfo_BrokenSymlinkReportsError(t *testing.T) {
 // calling LoadFromPath(worktree) instead of joining entry.Path, so frontmatter
 // came back empty for every multi-skill registry.
 func TestBuildSkillInfo_LoadsFrontmatterFromSkillPath(t *testing.T) {
-	worktree := t.TempDir()
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	reg, name, commit := "vercel", "deploy-to-vercel", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	skillRel := filepath.Join("skills", "deploy-to-vercel")
 	skillDir := filepath.Join(worktree, skillRel)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -122,10 +127,11 @@ func TestBuildSkillInfo_LoadsFrontmatterFromSkillPath(t *testing.T) {
 	}
 
 	entry := &model.LockEntry{
-		Name:     "deploy-to-vercel",
-		Registry: "vercel",
+		Name:     name,
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
 		Ref:      "main",
-		Worktree: worktree,
+		Commit:   commit,
 		Path:     skillRel,
 		Targets:  []string{"claude"},
 	}
@@ -147,18 +153,17 @@ func TestBuildSkillInfo_LinkedSkill(t *testing.T) {
 	linkSkillInto(t, project, ".claude/skills", "demo", src)
 
 	entry := &model.LockEntry{
-		Name:       "demo",
-		Source:     "link",
-		LinkTarget: src,
-		Path:       src,
-		Targets:    []string{"claude"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
-	if info.LinkTarget != src {
-		t.Errorf("LinkTarget = %q, want %q", info.LinkTarget, src)
+	if info.Source != src {
+		t.Errorf("LinkTarget = %q, want %q", info.Source, src)
 	}
 	if info.Branch != "" || info.Commit != "" || info.Worktree != "" {
 		t.Errorf("link entry should have empty git state, got %+v", info)
@@ -168,79 +173,52 @@ func TestBuildSkillInfo_LinkedSkill(t *testing.T) {
 	}
 }
 
-// Regression for #22: VerificationRecord must round-trip from lockfile to
-// `qvr info` output. Pre-fix, `qvr info` dropped the block entirely while
-// `qvr switch --output json` carried it through — the JSON contract
-// diverged between the two read-only views of the same data.
-func TestBuildSkillInfo_PropagatesVerificationRecord(t *testing.T) {
-	wt := writeFullSkill(t, "demo")
+// v5: SubtreeHash lives at the top level of LockEntry; the Verification
+// block carries optional signals (scan/signature/eval/attestation).
+// Confirm both surface through buildSkillInfo's JSON output.
+func TestBuildSkillInfo_PropagatesSubtreeHashAndScan(t *testing.T) {
+	_ = writeFullSkill(t, "demo")
 	project := t.TempDir()
-	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Registry: "raks",
-		Ref:      "v0.2.0",
-		Worktree: wt,
-		Targets:  []string{"claude"},
+		Name:        "demo",
+		Registry:    "raks",
+		Source:      "https://example.invalid/raks.git",
+		Ref:         "v0.2.0",
+		Targets:     []string{"claude"},
+		SubtreeHash: "sha256:abc123",
 		Verification: &model.VerificationRecord{
-			SubtreeHash: "sha256:abc123",
-			TreeSHA:     "tree",
-			CommitSHA:   "commit",
-			Provenance: model.ProvenanceRef{
-				RegistryName: "raks",
-				RegistryURL:  "https://example.invalid/raks.git",
-				Ref:          "v0.2.0",
-				Subpath:      "skills/demo",
-				FetchedAt:    now,
+			Scan: &model.ScanRef{
+				ReportSHA:      "sha256:scan",
+				ScannerVersion: "0.5.2",
+				Decision:       "allowed",
+				Counts:         model.SeverityCounts{High: 1},
 			},
-			Status:     model.StatusUnverified,
-			Warnings:   []string{"no signature present"},
-			VerifiedAt: now,
 		},
 	}
 	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {
 		t.Fatalf("buildSkillInfo: %v", err)
 	}
-	if info.Verification == nil {
-		t.Fatal("Verification field dropped — info.Verification is nil")
+	if info.SubtreeHash != "sha256:abc123" {
+		t.Errorf("SubtreeHash lost: %q", info.SubtreeHash)
 	}
-	if info.Verification.SubtreeHash != "sha256:abc123" {
-		t.Errorf("SubtreeHash lost: %q", info.Verification.SubtreeHash)
+	if info.Verification == nil || info.Verification.Scan == nil {
+		t.Fatal("Verification.Scan dropped")
 	}
-	if info.Verification.Provenance.RegistryURL != "https://example.invalid/raks.git" {
-		t.Errorf("Provenance.RegistryURL lost: %q", info.Verification.Provenance.RegistryURL)
-	}
-}
-
-func TestProvenanceSummary_emptyReturnsEmpty(t *testing.T) {
-	if got := provenanceSummary(model.ProvenanceRef{}); got != "" {
-		t.Errorf("empty provenance should render empty, got %q", got)
-	}
-}
-
-func TestProvenanceSummary_full(t *testing.T) {
-	p := model.ProvenanceRef{
-		RegistryName: "raks",
-		RegistryURL:  "https://example.invalid/raks.git",
-		Ref:          "v0.2.0",
-		Subpath:      "skills/demo",
-	}
-	got := provenanceSummary(p)
-	for _, want := range []string{"raks", "https://example.invalid/raks.git", "v0.2.0", "skills/demo"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in provenance summary: %q", want, got)
-		}
+	if info.Verification.Scan.Decision != "allowed" {
+		t.Errorf("Scan.Decision lost: %q", info.Verification.Scan.Decision)
 	}
 }
 
 func TestBuildSkillInfo_TargetWithNoSymlinkReportsError(t *testing.T) {
-	wt := writeFullSkill(t, "demo")
+	src := writeFullSkill(t, "demo")
 	project := t.TempDir()
+	// No linkSkillInto — symlinks intentionally missing so the check fails.
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: wt,
-		Targets:  []string{"claude", "cursor"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude", "cursor"},
 	}
 	info, err := buildSkillInfo(entry, project, false)
 	if err != nil {

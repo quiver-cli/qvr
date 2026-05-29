@@ -210,7 +210,7 @@ func TestRemove(t *testing.T) {
 	lock, _ := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
 	preWt := ""
 	if e, err := lock.Get("code-review"); err == nil {
-		preWt = e.Worktree
+		preWt = skill.EntryWorktreePath(e)
 	}
 
 	err := h.installer.Remove("code-review", skill.InstallRequest{ProjectRoot: h.project})
@@ -302,8 +302,8 @@ description: local dev skill
 	}
 	var lf struct {
 		Skills map[string]struct {
-			Source     string `json:"source"`
-			LinkTarget string `json:"linkTarget"`
+			Source string `json:"source"`
+			Ref    string `json:"ref"`
 		} `json:"skills"`
 	}
 	if err := json.Unmarshal(data, &lf); err != nil {
@@ -313,8 +313,12 @@ description: local dev skill
 	if !ok {
 		t.Fatal("my-skill missing from lock")
 	}
-	if entry.Source != "link" || entry.LinkTarget != absLocal {
-		t.Errorf("lock entry = %+v, want source=link, target=%s", entry, absLocal)
+	// v5: link installs carry the absolute path in Source and Ref="local".
+	if entry.Source != absLocal {
+		t.Errorf("lock entry source = %q, want %s", entry.Source, absLocal)
+	}
+	if entry.Ref != "local" {
+		t.Errorf("lock entry ref = %q, want local", entry.Ref)
 	}
 }
 

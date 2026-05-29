@@ -332,13 +332,12 @@ func TestReconcile_KeepsTrackedSymlink(t *testing.T) {
 	lockPath := filepath.Join(h.project, model.LockFileName)
 	lock := model.NewLockFile(lockPath)
 	lock.Put(&model.LockEntry{
-		Name:        "tdd",
-		Registry:    "acme",
-		Ref:         "main",
-		ResolvedSHA: "abc1234",
-		Worktree:    trackedWT,
-		Targets:     []string{"claude"},
-		Source:      "registry",
+		Name:     "tdd",
+		Registry: "acme",
+		Ref:      "main",
+		Commit:   "abc1234",
+		Targets:  []string{"claude"},
+		Source:   "registry",
 	})
 	if err := lock.Write(); err != nil {
 		t.Fatalf("write lock: %v", err)

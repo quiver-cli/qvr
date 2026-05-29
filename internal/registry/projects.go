@@ -195,18 +195,22 @@ func Reachable() (*ReachabilityResult, error) {
 	return res, nil
 }
 
-// addLockWorktrees opens lockPath, decodes the entries, and adds each non-empty
-// Worktree to set. Errors are swallowed — best-effort; a malformed lock just
-// contributes nothing rather than blocking the whole reachability pass.
+// addLockWorktrees opens lockPath, decodes the entries, and adds the derived
+// worktree path (via WorktreePath) for each non-link entry to set. Errors are
+// swallowed — best-effort; a malformed lock just contributes nothing rather
+// than blocking the whole reachability pass.
 func addLockWorktrees(lockPath string, set map[string]struct{}) {
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		return
 	}
 	for _, e := range lock.Entries() {
-		if e.Worktree == "" || e.Source == "link" {
+		if e.IsLink() || e.Registry == "" || e.Commit == "" {
 			continue
 		}
-		set[e.Worktree] = struct{}{}
+		path := WorktreePath(e.Registry, e.Name, ShortSHA(e.Commit))
+		if path != "" {
+			set[path] = struct{}{}
+		}
 	}
 }

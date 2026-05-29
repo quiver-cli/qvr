@@ -74,19 +74,21 @@ func TestReachable_CollectsAllProjectWorktrees(t *testing.T) {
 
 	projA := filepath.Join(t.TempDir(), "projA")
 	projB := filepath.Join(t.TempDir(), "projB")
-	wtA := filepath.Join(home, "worktrees", "acme", "tdd", "abc1234")
-	wtB := filepath.Join(home, "worktrees", "acme", "tdd", "def5678")
-	wtBOther := filepath.Join(home, "worktrees", "acme", "other", "111aaa")
+	_ = home // worktree paths derived via WorktreePath which honours QUIVER_HOME
+	wtA := registry.WorktreePath("acme", "tdd", registry.ShortSHA("abc1234abcdef"))
+	wtB := registry.WorktreePath("acme", "tdd", registry.ShortSHA("def5678abcdef"))
+	wtBOther := registry.WorktreePath("acme", "other", registry.ShortSHA("111aaa999abc"))
 
 	writeLock(t, filepath.Join(projA, "qvr.lock"), &model.LockEntry{
 		Name:     "tdd",
 		Registry: "acme",
+		Source:   "git@example:acme.git",
 		Ref:      "main",
-		Worktree: wtA,
+		Commit:   "abc1234abcdef",
 	})
 	writeLock(t, filepath.Join(projB, "qvr.lock"),
-		&model.LockEntry{Name: "tdd", Registry: "acme", Ref: "main", Worktree: wtB},
-		&model.LockEntry{Name: "other", Registry: "acme", Ref: "main", Worktree: wtBOther},
+		&model.LockEntry{Name: "tdd", Registry: "acme", Source: "git@example:acme.git", Ref: "main", Commit: "def5678abcdef"},
+		&model.LockEntry{Name: "other", Registry: "acme", Source: "git@example:acme.git", Ref: "main", Commit: "111aaa999abc"},
 	)
 
 	registry.TouchProject(filepath.Join(projA, "qvr.lock"))
@@ -114,7 +116,8 @@ func TestReachable_FlagsMissingProjectLock(t *testing.T) {
 	setHome(t)
 
 	live := filepath.Join(t.TempDir(), "qvr.lock")
-	writeLock(t, live, &model.LockEntry{Name: "x", Registry: "r", Ref: "main", Worktree: "/some/wt"})
+	writeLock(t, live, &model.LockEntry{Name: "x", Registry: "r", Source: "git@example:r.git", Ref: "main", Commit: "abc1234"})
+	expectedWt := registry.WorktreePath("r", "x", registry.ShortSHA("abc1234"))
 
 	dead := filepath.Join(t.TempDir(), "vanished", "qvr.lock")
 	// Don't write — file does not exist on disk.
@@ -126,8 +129,8 @@ func TestReachable_FlagsMissingProjectLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reachable: %v", err)
 	}
-	if _, ok := res.Worktrees["/some/wt"]; !ok {
-		t.Errorf("live project's worktree missing from reachability")
+	if _, ok := res.Worktrees[expectedWt]; !ok {
+		t.Errorf("live project's worktree missing from reachability (want %s, got %v)", expectedWt, res.Worktrees)
 	}
 	if len(res.MissingProjects) != 1 || res.MissingProjects[0] != dead {
 		t.Errorf("expected MissingProjects=[%s], got %v", dead, res.MissingProjects)
@@ -139,15 +142,16 @@ func TestReachable_AlwaysIncludesGlobalLock(t *testing.T) {
 
 	globalLock := filepath.Join(home, model.LockFileName)
 	writeLock(t, globalLock, &model.LockEntry{
-		Name: "ambient", Registry: "r", Ref: "main", Worktree: "/some/ambient",
+		Name: "ambient", Registry: "r", Source: "git@example:r.git", Ref: "main", Commit: "abc1234",
 	})
+	expectedWt := registry.WorktreePath("r", "ambient", registry.ShortSHA("abc1234"))
 
 	res, err := registry.Reachable()
 	if err != nil {
 		t.Fatalf("reachable: %v", err)
 	}
-	if _, ok := res.Worktrees["/some/ambient"]; !ok {
-		t.Errorf("global lock's worktree missing from reachability set")
+	if _, ok := res.Worktrees[expectedWt]; !ok {
+		t.Errorf("global lock's worktree missing from reachability set (want %s, got %v)", expectedWt, res.Worktrees)
 	}
 }
 

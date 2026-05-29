@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 )
 
 // fixture builds a fake lockfile at $tmp/qvr.lock.json with entries
@@ -26,18 +28,40 @@ type fixture struct {
 func newFixture(t *testing.T, entries ...*model.LockEntry) *fixture {
 	t.Helper()
 	root := t.TempDir()
+	// Pin QUIVER_HOME so registry.WorktreePath resolves inside root and
+	// each test entry's derived worktree lives in the fixture's tempdir.
+	t.Setenv("QUIVER_HOME", root)
 	wt := map[string]string{}
 
 	for _, e := range entries {
-		dir := filepath.Join(root, "worktrees", e.Name)
+		var dir string
+		switch {
+		case e.IsLink():
+			dir = e.Source
+		case strings.HasPrefix(e.Source, "/"):
+			// Caller already wired Source as a local-link path.
+			dir = e.Source
+		default:
+			// Fill in v5 fields so EntryWorktreePath resolves under
+			// QUIVER_HOME. Tests don't generally care about specific
+			// registry/commit values, just that the worktree path is
+			// stable and on disk.
+			if e.Registry == "" {
+				e.Registry = "test"
+			}
+			if e.Commit == "" {
+				e.Commit = "abc1234"
+			}
+			if e.Ref == "" {
+				e.Ref = "main"
+			}
+			if e.Source == "" {
+				e.Source = "git@example.test:" + e.Registry + ".git"
+			}
+			dir = registry.WorktreePath(e.Registry, e.Name, registry.ShortSHA(e.Commit))
+		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
-		}
-		if e.Worktree == "" {
-			e.Worktree = dir
-		}
-		if e.Source == "link" && e.LinkTarget == "" {
-			e.LinkTarget = dir
 		}
 		wt[e.Name] = dir
 		if e.InstalledAt.IsZero() {
@@ -99,7 +123,7 @@ func TestResolver_EmptyLockfileNoAttribution(t *testing.T) {
 
 func TestResolver_AttributesRegistryInstall(t *testing.T) {
 	f := newFixture(t, &model.LockEntry{
-		Name: "foo", Registry: "team", ResolvedSHA: "abc123",
+		Name: "foo", Registry: "team", Commit: "abc123",
 	})
 	r, _ := NewResolver(f.lockPath)
 
@@ -123,10 +147,16 @@ func TestResolver_AttributesRegistryInstall(t *testing.T) {
 }
 
 func TestResolver_AttributesLinkedSkill(t *testing.T) {
+	// Link installs in v5: Source holds an absolute local path.
+	tmp := t.TempDir()
+	linkedDir := filepath.Join(tmp, "my-linked-skill")
+	if err := os.MkdirAll(linkedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	f := newFixture(t, &model.LockEntry{
-		Name:       "linked",
-		Source:     "link",
-		LinkTarget: "", // will be filled to dir
+		Name:   "linked",
+		Source: linkedDir,
+		Ref:    "local",
 	})
 	r, _ := NewResolver(f.lockPath)
 	e := f.event(filepath.Join(f.worktrees["linked"], "subdir", "file.md"), ActionFileRead)
@@ -185,6 +215,9 @@ func TestResolver_HandlesRelativePath(t *testing.T) {
 func TestResolver_NestedSkillsMostSpecificWins(t *testing.T) {
 	// Outer skill has a worktree that contains the inner skill's
 	// worktree. The inner (more-specific) attribution should win.
+	// v5: entries must be link installs (Ref=local) so the resolver's
+	// EntryWorktreePath honours the Source override rather than computing
+	// from registry+commit.
 	root := t.TempDir()
 	outerDir := filepath.Join(root, "worktrees", "outer")
 	innerDir := filepath.Join(outerDir, "nested", "inner")
@@ -192,8 +225,8 @@ func TestResolver_NestedSkillsMostSpecificWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	lf := &model.LockFile{Version: model.LockFileVersion, Skills: map[string]*model.LockEntry{
-		"outer": {Name: "outer", Worktree: outerDir},
-		"inner": {Name: "inner", Worktree: innerDir},
+		"outer": {Name: "outer", Source: outerDir, Ref: "local"},
+		"inner": {Name: "inner", Source: innerDir, Ref: "local"},
 	}}
 	buf, _ := json.Marshal(lf)
 	lockPath := filepath.Join(root, model.LockFileName)
@@ -220,14 +253,17 @@ func TestResolver_FollowsSymlinkedPath(t *testing.T) {
 		t.Skip("symlinks require admin on Windows")
 	}
 	root := t.TempDir()
-	real := filepath.Join(root, "real-worktree")
+	realDir := filepath.Join(root, "real-worktree")
 	link := filepath.Join(root, "link-to-worktree")
-	_ = os.MkdirAll(real, 0o755)
-	if err := os.Symlink(real, link); err != nil {
+	_ = os.MkdirAll(realDir, 0o755)
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	// Link install: Source carries the symlink target so the resolver's
+	// EntryWorktreePath returns realDir (after the resolver's own
+	// EvalSymlinks pass).
 	lf := &model.LockFile{Version: model.LockFileVersion, Skills: map[string]*model.LockEntry{
-		"foo": {Name: "foo", Worktree: real},
+		"foo": {Name: "foo", Source: realDir, Ref: "local"},
 	}}
 	buf, _ := json.Marshal(lf)
 	lockPath := filepath.Join(root, model.LockFileName)

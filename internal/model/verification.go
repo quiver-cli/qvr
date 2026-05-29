@@ -1,58 +1,31 @@
 package model
 
-import "time"
-
-// Verification status constants. These map to the agnostic trust model: a
-// skill is "verified" when it carries a valid signature from a signer listed
-// in trust.yaml, "untrusted" when signed by an unknown signer, "unverified"
-// when no signature exists, "failed" when verification was attempted and
-// rejected (tampered subtree, broken envelope, etc.).
-const (
-	StatusVerified   = "verified"
-	StatusUntrusted  = "untrusted"
-	StatusUnverified = "unverified"
-	StatusFailed     = "failed"
-)
-
-// VerificationRecord captures the supply-chain provenance for a single
-// installed skill. Every field beyond the subtree/provenance identity is a
-// nullable slot populated by a later pipeline stage (scan, eval, card,
-// sign). Phase 1 only fills SubtreeHash, TreeSHA, CommitSHA, Provenance and
-// Status — later phases write into the optional pointers without needing a
-// further lockfile version bump.
+// VerificationRecord carries supply-chain signals for an installed skill.
+// In v5 it's a thin omitempty carrier — present on a LockEntry only when at
+// least one real signal has been recorded. Identity (SubtreeHash, Commit)
+// lives at the top level of LockEntry; this struct holds only the optional
+// per-pipeline-stage artifacts.
+//
+// A scan run populates Scan. A future signing pipeline populates Signature.
+// Eval, Attestation, and SkillCard are reserved for the corresponding
+// pipeline stages; their writers don't exist yet but the slots are stable
+// so adding them won't require another schema bump.
 type VerificationRecord struct {
-	// Identity of what was verified — the canonical subtree hash is the
-	// subject every signature, attestation, and tamper check resolves to.
-	SubtreeHash string `json:"subtreeHash"`
-	TreeSHA     string `json:"treeSHA"`
-	CommitSHA   string `json:"commitSHA"`
-
-	// Provenance — where this skill was sourced from at verification time.
-	Provenance ProvenanceRef `json:"provenance"`
-
-	// Future-phase slots. nil until the owning phase ships.
-	SkillCard   *ArtifactRef    `json:"skillCard,omitempty"`
 	Scan        *ScanRef        `json:"scan,omitempty"`
 	Eval        *EvalRef        `json:"eval,omitempty"`
 	Signature   *SignatureBlock `json:"signature,omitempty"`
 	Attestation *ArtifactRef    `json:"attestation,omitempty"`
-
-	// Outcome of the most recent verification pass.
-	Status     string    `json:"status"`
-	Warnings   []string  `json:"warnings,omitempty"`
-	PolicyRule string    `json:"policyRule,omitempty"`
-	VerifiedAt time.Time `json:"verifiedAt"`
+	SkillCard   *ArtifactRef    `json:"skillCard,omitempty"`
 }
 
-// ProvenanceRef records the upstream the skill came from. Empty registry
-// fields are valid for Source == "subdir" (ad-hoc URL install) or
-// Source == "link" (local symlink, no upstream).
-type ProvenanceRef struct {
-	RegistryName string    `json:"registryName,omitempty"`
-	RegistryURL  string    `json:"registryURL,omitempty"`
-	Ref          string    `json:"ref,omitempty"`
-	Subpath      string    `json:"subpath,omitempty"`
-	FetchedAt    time.Time `json:"fetchedAt"`
+// IsEmpty reports whether the record carries any signal. Callers can use
+// this before assignment to decide whether to set entry.Verification or
+// leave it nil (so it stays omitted from disk).
+func (v *VerificationRecord) IsEmpty() bool {
+	if v == nil {
+		return true
+	}
+	return v.Scan == nil && v.Eval == nil && v.Signature == nil && v.Attestation == nil && v.SkillCard == nil
 }
 
 // ArtifactRef points at a JSON or YAML artifact alongside the skill,

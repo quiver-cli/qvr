@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/raks097/quiver/internal/canonical"
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/registry"
@@ -230,35 +231,35 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	if existing, err := lock.Get(name); err == nil {
 		targets = mergeTargets(existing.Targets, req.Targets)
 	}
-	entry := &model.LockEntry{
-		Name:        name,
-		Registry:    loc.RegistryName,
-		Path:        loc.Entry.Path,
-		Ref:         version,
-		ResolvedSHA: commit,
-		Worktree:    finalPath,
-		Targets:     targets,
+	subtreeHash, hashErr := ComputeSubtreeHash(finalPath, loc.Entry.Path)
+	if hashErr != nil {
+		// Hashing failure shouldn't block the install — we still want the
+		// worktree and symlinks on disk so the user can use the skill. Leave
+		// SubtreeHash empty; doctor/verify will flag the missing seal.
+		subtreeHash = ""
 	}
-	entry.Verification = PopulateVerification(entry, model.ProvenanceRef{
-		RegistryName: loc.RegistryName,
-		RegistryURL:  loc.RegistryURL,
-		Ref:          version,
-		Subpath:      loc.Entry.Path,
-	})
+
+	entry := &model.LockEntry{
+		Name:          name,
+		Registry:      loc.RegistryName,
+		Source:        loc.RegistryURL,
+		Path:          loc.Entry.Path,
+		Ref:           version,
+		Commit:        commit,
+		InstallCommit: commit,
+		SubtreeHash:   subtreeHash,
+		Targets:       targets,
+	}
 
 	// --frozen drift check: the just-installed worktree must hash to the
 	// same SubtreeHash recorded in the prior lockfile entry. Mismatch
 	// usually means the registry was force-pushed or the recorded entry
 	// itself was tampered with — refuse the install rather than silently
 	// rewriting history.
-	if req.Frozen && frozenRef != nil && frozenRef.Verification != nil && frozenRef.Verification.SubtreeHash != "" {
-		got := ""
-		if entry.Verification != nil {
-			got = entry.Verification.SubtreeHash
-		}
-		if got != frozenRef.Verification.SubtreeHash {
+	if req.Frozen && frozenRef != nil && frozenRef.SubtreeHash != "" {
+		if entry.SubtreeHash != frozenRef.SubtreeHash {
 			return nil, fmt.Errorf("--frozen: subtree hash drift for %s (expected %s, got %s)",
-				name, frozenRef.Verification.SubtreeHash, got)
+				name, frozenRef.SubtreeHash, entry.SubtreeHash)
 		}
 	}
 
@@ -347,10 +348,13 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 		}
 	}
 
-	if entry.Worktree != "" {
-		if err := in.Worktree.Remove(entry.Worktree); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
-			if firstErr == nil {
-				firstErr = err
+	if !entry.IsLink() {
+		worktreePath := EntryWorktreePath(entry)
+		if worktreePath != "" {
+			if err := in.Worktree.Remove(worktreePath); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
+				if firstErr == nil {
+					firstErr = err
+				}
 			}
 		}
 	}
@@ -410,17 +414,18 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		return nil, fmt.Errorf("read lock file: %w", err)
 	}
 	if existing, err := lock.Get(name); err == nil && !req.Force {
-		existingPath := existing.LinkTarget
-		if existingPath == "" {
-			existingPath = existing.Path
-		}
-		if existing.Source != "link" || existingPath != abs {
+		// In v5, `source` carries the absolute path for link installs (and a
+		// git URL for remote installs). A link install collides with an
+		// existing entry only when the existing entry is *also* a link
+		// pointing at the same path; otherwise refuse so we don't silently
+		// shadow a remote-installed skill with a local symlink.
+		if !existing.IsLink() || existing.Source != abs {
 			sourceLabel := existing.Source
 			if sourceLabel == "" {
 				sourceLabel = "registry"
 			}
-			return nil, fmt.Errorf("skill %q already installed from %s (%s); pass --force to relink",
-				name, sourceLabel, existingPath)
+			return nil, fmt.Errorf("skill %q already installed from %s; pass --force to relink",
+				name, sourceLabel)
 		}
 	}
 
@@ -437,14 +442,16 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		}
 		created = append(created, linkPath)
 	}
+	// Compute a subtree hash for the linked dir so drift detection still
+	// works against the live source. Best-effort: a hashing failure leaves
+	// the field empty and doctor/verify will flag it.
+	linkSubtreeHash, _ := canonical.HashSubtreeFromDisk(abs)
 	lock.Put(&model.LockEntry{
 		Name:        name,
-		Registry:    "",
-		Path:        abs,
-		Worktree:    "",
+		Source:      abs,
+		Ref:         "local",
+		SubtreeHash: linkSubtreeHash,
 		Targets:     req.Targets,
-		Source:      "link",
-		LinkTarget:  abs,
 		InstalledAt: time.Now().UTC(),
 	})
 	if err := lock.Write(); err != nil {
@@ -541,10 +548,11 @@ func ApplySwitch(entry *model.LockEntry, projectRoot string, global bool) error 
 			return fmt.Errorf("refresh symlink %s: %w", target, err)
 		}
 	}
-	// Ref label or branch tip changed; the recorded subtree hash and git
-	// refs may no longer match reality. Refresh them so the lockfile
-	// reflects the new state.
-	RefreshVerification(entry)
+	// Ref label or branch tip changed; the recorded subtree hash may no
+	// longer match reality. Refresh it so the lockfile reflects the new
+	// state. Failure is non-fatal — the post-switch symlinks are usable,
+	// only the seal is stale until the next install/repair.
+	_ = RefreshSubtreeHash(entry)
 	return nil
 }
 

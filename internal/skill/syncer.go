@@ -54,13 +54,13 @@ func NewSyncer(wt git.WorktreeManager, gc git.GitClient) *Syncer {
 // Status reports the git state for the given entry. Purely local — no network,
 // no fetches — so `qvr status` stays fast.
 func (s *Syncer) Status(entry *model.LockEntry) (*SyncStatus, error) {
-	st := &SyncStatus{Name: entry.Name, Branch: entry.Ref, Commit: entry.ResolvedSHA}
-	if entry.Source == "link" {
+	st := &SyncStatus{Name: entry.Name, Branch: entry.Ref, Commit: entry.Commit}
+	if entry.IsLink() {
 		// Link-installed skills aren't tracked via git.
 		st.Message = "link"
 		return st, nil
 	}
-	repo, err := gogit.PlainOpen(entry.Worktree)
+	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
 	if err != nil {
 		st.Broken = true
 		st.Message = fmt.Sprintf("worktree unreadable: %v", err)
@@ -97,7 +97,7 @@ func (s *Syncer) Status(entry *model.LockEntry) (*SyncStatus, error) {
 // A push on a clean tree without AllowEmpty returns ErrPushNoChanges — we
 // treat "nothing to do" as a distinct, non-fatal state callers can report.
 func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOptions) (string, error) {
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		return "", errors.New("cannot push a link install — edit the source directly")
 	}
 	if opts.Message == "" {
@@ -110,7 +110,7 @@ func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOpti
 		opts.AuthorEmail = "quiver@localhost"
 	}
 
-	repo, err := gogit.PlainOpen(entry.Worktree)
+	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
 	if err != nil {
 		return "", fmt.Errorf("open worktree: %w", err)
 	}
@@ -153,7 +153,7 @@ func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOpti
 		return "", fmt.Errorf("cannot push: branch is empty and HEAD is detached")
 	}
 	refspec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", branch, branch)
-	if err := s.Git.Push(ctx, entry.Worktree, "origin", []string{refspec}); err != nil {
+	if err := s.Git.Push(ctx, EntryWorktreePath(entry), "origin", []string{refspec}); err != nil {
 		return "", fmt.Errorf("push: %w", err)
 	}
 	return commit.String(), nil
@@ -165,10 +165,10 @@ func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOpti
 // Any working-tree dirtiness is similarly treated as non-fast-forward — we do
 // not clobber uncommitted edits.
 func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, error) {
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		return "", errors.New("cannot pull a link install — it has no upstream")
 	}
-	repo, err := gogit.PlainOpen(entry.Worktree)
+	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
 	if err != nil {
 		return "", fmt.Errorf("open worktree: %w", err)
 	}
@@ -205,7 +205,7 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 			return "", fmt.Errorf("%w: %s", ErrPinnedToTag, branch)
 		}
 	}
-	if err := s.Git.FetchWorktree(ctx, entry.Worktree); err != nil {
+	if err := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); err != nil {
 		return "", fmt.Errorf("fetch: %w", err)
 	}
 	// go-git's storer caches pack-file indexes at PlainOpen time, so a repo
@@ -213,7 +213,7 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	// just wrote. Re-open after fetch so ref resolution + commit walks find
 	// the freshly-arrived remote tip. Manifests as "ancestor check: object
 	// not found" in batch `qvr pull` runs only (issue #8).
-	repo, err = gogit.PlainOpen(entry.Worktree)
+	repo, err = gogit.PlainOpen(EntryWorktreePath(entry))
 	if err != nil {
 		return "", fmt.Errorf("reopen worktree after fetch: %w", err)
 	}
@@ -254,7 +254,7 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	// Re-apply sparse if configured — go-git's Checkout populates files
 	// outside the configured sparse paths, so leaning on git to retrim
 	// keeps the worktree consistent after a fast-forward pull.
-	_ = s.Worktree.ReapplySparseCheckout(entry.Worktree)
+	_ = s.Worktree.ReapplySparseCheckout(EntryWorktreePath(entry))
 	return remoteRef.Hash().String(), nil
 }
 
@@ -269,22 +269,22 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 // (empty when the happy path applies). Callers own ApplySwitch +
 // lock.Put + lock.Write.
 func (s *Syncer) CreateEditBranch(ctx context.Context, entry *model.LockEntry, newBranch string) (*model.LockEntry, string, error) {
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		return nil, "", errors.New("cannot edit a link install — modify the source directly")
 	}
 
 	var warning string
 	fromOriginTip := false
-	localExists := branchExistsLocally(entry.Worktree, newBranch)
+	localExists := branchExistsLocally(EntryWorktreePath(entry), newBranch)
 
 	// Fetch origin so we can tell whether the edit branch already exists
 	// upstream. Best-effort: an offline or credential-less run falls through
 	// to branching from local HEAD, with a soft warning so the user knows
 	// the upstream check was skipped.
 	if s.Git != nil {
-		if err := s.Git.FetchWorktree(ctx, entry.Worktree); err != nil {
+		if err := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); err != nil {
 			warning = fmt.Sprintf("could not fetch origin before edit (%s); branching from local HEAD", err)
-		} else if repo, err := gogit.PlainOpen(entry.Worktree); err == nil {
+		} else if repo, err := gogit.PlainOpen(EntryWorktreePath(entry)); err == nil {
 			remoteRef := plumbing.NewRemoteReferenceName("origin", newBranch)
 			if rr, rerr := repo.Reference(remoteRef, true); rerr == nil {
 				fromOriginTip = true
@@ -300,29 +300,28 @@ func (s *Syncer) CreateEditBranch(ctx context.Context, entry *model.LockEntry, n
 		// back onto it rather than hard-erroring from CreateBranch* with
 		// "branch already exists" (bug #21, regression of #15). Preserves
 		// any local-only commits; the user can `qvr pull` to fast-forward.
-		if err := s.Worktree.Checkout(entry.Worktree, newBranch); err != nil {
+		if err := s.Worktree.Checkout(EntryWorktreePath(entry), newBranch); err != nil {
 			return nil, warning, fmt.Errorf("checkout existing edit branch %s: %w", newBranch, err)
 		}
 		if !fromOriginTip {
 			warning = fmt.Sprintf("local branch %q already exists; switched onto it (pass --branch for a fresh branch)", newBranch)
 		}
 	case fromOriginTip:
-		if err := s.Worktree.CreateBranchFromRef(entry.Worktree, newBranch, newBranch); err != nil {
+		if err := s.Worktree.CreateBranchFromRef(EntryWorktreePath(entry), newBranch, newBranch); err != nil {
 			return nil, warning, fmt.Errorf("create edit branch from origin/%s: %w", newBranch, err)
 		}
 	default:
-		if err := s.Worktree.CreateBranchFromHEAD(entry.Worktree, newBranch); err != nil {
+		if err := s.Worktree.CreateBranchFromHEAD(EntryWorktreePath(entry), newBranch); err != nil {
 			return nil, warning, fmt.Errorf("create edit branch: %w", err)
 		}
 	}
-	commit, err := s.Git.HeadCommit(entry.Worktree)
+	commit, err := s.Git.HeadCommit(EntryWorktreePath(entry))
 	if err != nil {
 		return nil, warning, fmt.Errorf("head commit: %w", err)
 	}
 	updated := *entry
 	updated.Ref = newBranch
-	updated.ResolvedSHA = commit
-	updated.UpdatedAt = time.Now().UTC()
+	updated.Commit = commit
 	return &updated, warning, nil
 }
 
@@ -335,26 +334,25 @@ func (s *Syncer) CreateEditBranch(ctx context.Context, entry *model.LockEntry, n
 // refs and retries — lets `qvr upgrade` pick up tags published since the
 // worktree was first cloned without forcing the user to run a separate fetch.
 func (s *Syncer) Switch(ctx context.Context, entry *model.LockEntry, newRef string) (*model.LockEntry, error) {
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		return nil, errors.New("cannot switch a link install")
 	}
-	err := s.Worktree.Checkout(entry.Worktree, newRef)
+	err := s.Worktree.Checkout(EntryWorktreePath(entry), newRef)
 	if err != nil && errors.Is(err, git.ErrRefNotFound) {
-		if fetchErr := s.Git.FetchWorktree(ctx, entry.Worktree); fetchErr == nil {
-			err = s.Worktree.Checkout(entry.Worktree, newRef)
+		if fetchErr := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); fetchErr == nil {
+			err = s.Worktree.Checkout(EntryWorktreePath(entry), newRef)
 		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("checkout %s: %w", newRef, err)
 	}
-	commit, err := s.Git.HeadCommit(entry.Worktree)
+	commit, err := s.Git.HeadCommit(EntryWorktreePath(entry))
 	if err != nil {
 		return nil, fmt.Errorf("head commit: %w", err)
 	}
 	updated := *entry
 	updated.Ref = newRef
-	updated.ResolvedSHA = commit
-	updated.UpdatedAt = time.Now().UTC()
+	updated.Commit = commit
 	return &updated, nil
 }
 

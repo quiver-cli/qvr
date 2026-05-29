@@ -9,6 +9,7 @@ import (
 
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 	"github.com/raks097/quiver/internal/skill"
 )
 
@@ -19,9 +20,10 @@ func TestDisableSkill_RemovesSymlinks(t *testing.T) {
 	linkSkillInto(t, project, ".cursor/rules", "demo", src)
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude", "cursor"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude", "cursor"},
 	}
 	removed, err := disableSkill(entry, project, false)
 	if err != nil {
@@ -43,9 +45,10 @@ func TestDisableSkill_Idempotent(t *testing.T) {
 	linkSkillInto(t, project, ".claude/skills", "demo", src)
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 	if _, err := disableSkill(entry, project, false); err != nil {
 		t.Fatalf("first disable: %v", err)
@@ -64,9 +67,10 @@ func TestEnableSkill_RestoresSymlinks(t *testing.T) {
 	project := t.TempDir()
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude", "cursor"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude", "cursor"},
 	}
 	created, err := enableSkill(entry, project, false)
 	if err != nil {
@@ -88,9 +92,10 @@ func TestEnableSkill_Idempotent(t *testing.T) {
 	project := t.TempDir()
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 	if _, err := enableSkill(entry, project, false); err != nil {
 		t.Fatalf("first: %v", err)
@@ -114,7 +119,9 @@ func TestEnableSkill_NoWorktree(t *testing.T) {
 // enableSkill passed entry.Worktree to CreateSymlink which rejected it
 // because the root has no SKILL.md.
 func TestEnableSkill_HonorsSkillPath(t *testing.T) {
-	worktree := t.TempDir()
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	reg, name, commit := "r", "demo", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	skillDir := filepath.Join(worktree, "skills", "demo")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir leaf: %v", err)
@@ -127,8 +134,11 @@ func TestEnableSkill_HonorsSkillPath(t *testing.T) {
 
 	entry := &model.LockEntry{
 		Name:     "demo",
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
 		Path:     "skills/demo",
-		Worktree: worktree,
+		Ref:      "main",
+		Commit:   commit,
 		Targets:  []string{"claude"},
 	}
 	created, err := enableSkill(entry, project, false)
@@ -149,9 +159,10 @@ func TestDisableEnableRoundTrip(t *testing.T) {
 	linkSkillInto(t, project, ".claude/skills", "demo", src)
 
 	entry := &model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude"},
+		Name:    "demo",
+		Source:  src,
+		Ref:     "local",
+		Targets: []string{"claude"},
 	}
 
 	if _, err := disableSkill(entry, project, false); err != nil {
@@ -171,13 +182,12 @@ func TestDisableEnableRoundTrip(t *testing.T) {
 
 func TestDoctor_DisabledSymlinkSkipped(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
-	src := writeFullSkill(t, "demo")
+	_ = writeFullSkill(t, "demo")
 	project := t.TempDir()
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
 		Name:     "demo",
-		Worktree: src,
 		Targets:  []string{"claude"},
 		Disabled: true,
 	})

@@ -12,11 +12,20 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 )
 
-func initWorktreeWithFile(t *testing.T, fileName, body string) string {
+// initWorktreeWithFile seeds a git worktree at the path skill.EntryWorktreePath
+// would compute for the returned entry. Tests pass that entry to skillDiff
+// which derives the worktree via WorktreePath(Registry, Name, sha7).
+func initWorktreeWithFile(t *testing.T, fileName, body string) (*model.LockEntry, string) {
 	t.Helper()
-	dir := t.TempDir()
+	t.Setenv("QUIVER_HOME", t.TempDir())
+	reg, name, commit := "difftest", "demo", "abc1234"
+	dir := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
 	repo, err := gogit.PlainInit(dir, false)
 	if err != nil {
 		t.Fatalf("init: %v", err)
@@ -36,16 +45,20 @@ func initWorktreeWithFile(t *testing.T, fileName, body string) string {
 	}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
-	return dir
+	return &model.LockEntry{
+		Name:     name,
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
+		Ref:      "main",
+		Commit:   commit,
+	}, dir
 }
 
 func TestSkillDiff_DirtyWorktreeReturnsHunk(t *testing.T) {
-	dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
+	entry, dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("modify: %v", err)
 	}
-
-	entry := &model.LockEntry{Name: "demo", Worktree: dir}
 	out, err := skillDiff(context.Background(), entry, false, false)
 	if err != nil {
 		t.Fatalf("skillDiff: %v", err)
@@ -63,8 +76,7 @@ func TestSkillDiff_DirtyWorktreeReturnsHunk(t *testing.T) {
 }
 
 func TestSkillDiff_CleanWorktreeIsEmpty(t *testing.T) {
-	dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
-	entry := &model.LockEntry{Name: "demo", Worktree: dir}
+	entry, _ := initWorktreeWithFile(t, "SKILL.md", "hello\n")
 	out, err := skillDiff(context.Background(), entry, false, false)
 	if err != nil {
 		t.Fatalf("skillDiff: %v", err)
@@ -75,7 +87,7 @@ func TestSkillDiff_CleanWorktreeIsEmpty(t *testing.T) {
 }
 
 func TestSkillDiff_StagedFlag(t *testing.T) {
-	dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
+	entry, dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
 	repo, err := gogit.PlainOpen(dir)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -90,8 +102,6 @@ func TestSkillDiff_StagedFlag(t *testing.T) {
 	if _, err := wt.Add("SKILL.md"); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-
-	entry := &model.LockEntry{Name: "demo", Worktree: dir}
 
 	unstaged, err := skillDiff(context.Background(), entry, false, false)
 	if err != nil {
@@ -111,11 +121,10 @@ func TestSkillDiff_StagedFlag(t *testing.T) {
 }
 
 func TestSkillDiff_StatFlag(t *testing.T) {
-	dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
+	entry, dir := initWorktreeWithFile(t, "SKILL.md", "hello\n")
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatalf("modify: %v", err)
 	}
-	entry := &model.LockEntry{Name: "demo", Worktree: dir}
 	out, err := skillDiff(context.Background(), entry, false, true)
 	if err != nil {
 		t.Fatalf("stat diff: %v", err)

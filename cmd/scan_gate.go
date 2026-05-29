@@ -2,15 +2,24 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/security"
 	"github.com/raks097/quiver/internal/skill"
 )
+
+// scannerVersion is the qvr release whose rule set produced a ScanRef.
+// Stored on lockfile scan entries so a later `qvr lock verify` can detect
+// drift even when the scanner has been upgraded since the install.
+const scannerVersion = "0.6.0"
 
 // scanGateOptions tunes a single ScanAndGate call.
 type scanGateOptions struct {
@@ -207,3 +216,80 @@ func gateAvailable(cfg *config.Config, disabled bool) bool {
 // ensure the output import is retained even if all renderers use printer.Err
 // directly.
 var _ output.Format = output.FormatText
+
+// toScanRef condenses a scanGateResult into the compact form persisted on a
+// lock entry's verification block. Returns nil when the gate was skipped
+// (scan_on_install=false, --no-scan, etc.) — the caller treats that as "no
+// scan signal to record" and leaves entry.Verification untouched.
+func toScanRef(gate *scanGateResult) *model.ScanRef {
+	if gate == nil || gate.Skipped || gate.Result == nil {
+		return nil
+	}
+	decision := "allowed"
+	if gate.Blocked {
+		decision = "blocked"
+	}
+	return &model.ScanRef{
+		ReportSHA:      hashScanResult(gate.Result),
+		ScannerVersion: scannerVersion,
+		Counts:         severityCountsFromSummary(gate.Result.Summary),
+		Decision:       decision,
+	}
+}
+
+// hashScanResult fingerprints the structured ScanResult so `qvr lock verify`
+// can detect drift without re-running the scan. Uses encoding/json which
+// sorts map keys, so the same content always produces the same digest.
+// Marshal failure returns an empty string — ScanResult is JSON-clean by
+// construction, so this is defensive only.
+func hashScanResult(result *security.ScanResult) string {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// severityCountsFromSummary maps the scanner's 4-rung severity ladder
+// (info/warning/error/critical) onto the lockfile's 5-rung shape
+// (info/low/medium/high/critical). The scanner has no "low" equivalent so
+// that bucket stays zero; the rest map straight across.
+func severityCountsFromSummary(s security.Summary) model.SeverityCounts {
+	return model.SeverityCounts{
+		Critical: s.Critical,
+		High:     s.Error,
+		Medium:   s.Warning,
+		Info:     s.Info,
+	}
+}
+
+// recordScanResult writes the gate's result into the named entry's
+// verification.scan slot on the lockfile at lockPath. No-op when the gate
+// produced no recordable signal (skipped, no result). Should be called
+// inside the same WithLock window that performed the install — otherwise a
+// concurrent qvr command could see the lock briefly without the scan
+// record.
+func recordScanResult(lockPath, name string, gate *scanGateResult) error {
+	scan := toScanRef(gate)
+	if scan == nil {
+		return nil
+	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lock for scan record: %w", err)
+	}
+	entry, err := lock.Get(name)
+	if err != nil {
+		return fmt.Errorf("locate %s in lock: %w", name, err)
+	}
+	if entry.Verification == nil {
+		entry.Verification = &model.VerificationRecord{}
+	}
+	entry.Verification.Scan = scan
+	lock.Put(entry)
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("write lock for scan record: %w", err)
+	}
+	return nil
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
+	"github.com/raks097/quiver/internal/skill"
 	"github.com/spf13/cobra"
 )
 
@@ -49,8 +50,8 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if entry.Source == "link" {
-		return fmt.Errorf("diff does not apply to link installs; edit %s directly", entry.LinkTarget)
+	if entry.IsLink() {
+		return fmt.Errorf("diff does not apply to link installs; edit %s directly", entry.Source)
 	}
 
 	diff, err := skillDiff(cmd.Context(), entry, diffStaged, diffStat)
@@ -61,7 +62,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(map[string]any{
 			"skill":    name,
-			"worktree": entry.Worktree,
+			"worktree": skill.EntryWorktreePath(entry),
 			"staged":   diffStaged,
 			"stat":     diffStat,
 			"diff":     string(diff),
@@ -86,7 +87,7 @@ func skillDiff(ctx context.Context, entry *model.LockEntry, staged, stat bool) (
 	if stat {
 		args = append(args, "--stat")
 	}
-	return git.RunInDir(ctx, entry.Worktree, args...)
+	return git.RunInDir(ctx, skill.EntryWorktreePath(entry), args...)
 }
 
 func changesNoun(staged bool) string {

@@ -213,7 +213,7 @@ func TestEdit_BranchesFromOriginWhenRemoteExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	mainCommit := entry.ResolvedSHA
+	mainCommit := entry.Commit
 
 	syncer := newSyncer()
 	updated, warning, err := syncer.CreateEditBranch(context.Background(), entry, "qvr/alice/code-review")
@@ -223,9 +223,9 @@ func TestEdit_BranchesFromOriginWhenRemoteExists(t *testing.T) {
 	if warning == "" {
 		t.Error("expected warning that branch already exists on origin")
 	}
-	if updated.ResolvedSHA != upstreamCommit.String() {
+	if updated.Commit != upstreamCommit.String() {
 		t.Errorf("commit = %s, want upstream %s (main was %s)",
-			updated.ResolvedSHA, upstreamCommit.String(), mainCommit)
+			updated.Commit, upstreamCommit.String(), mainCommit)
 	}
 }
 
@@ -254,8 +254,8 @@ func TestEdit_CreatesLocalBranchFromHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	tagCommit := entry.ResolvedSHA
-	installPath := entry.Worktree
+	tagCommit := entry.Commit
+	installPath := skill.EntryWorktreePath(entry)
 
 	syncer := newSyncer()
 	updated, _, err := syncer.CreateEditBranch(context.Background(), entry, "qvr/alice/code-review")
@@ -269,17 +269,17 @@ func TestEdit_CreatesLocalBranchFromHEAD(t *testing.T) {
 	if updated.Ref != "qvr/alice/code-review" {
 		t.Errorf("branch = %q, want qvr/alice/code-review", updated.Ref)
 	}
-	if updated.ResolvedSHA != tagCommit {
-		t.Errorf("commit changed: was %s, now %s", tagCommit, updated.ResolvedSHA)
+	if updated.Commit != tagCommit {
+		t.Errorf("commit changed: was %s, now %s", tagCommit, updated.Commit)
 	}
 
 	// Worktree path is SHA-keyed and the edit didn't change the commit, so
 	// the on-disk path is unchanged from install — only the in-worktree HEAD
 	// label and the lock entry's Ref move.
-	if updated.Worktree != installPath {
-		t.Errorf("worktree path drifted: was %q, now %q", installPath, updated.Worktree)
+	if skill.EntryWorktreePath(updated) != installPath {
+		t.Errorf("worktree path drifted: was %q, now %q", installPath, skill.EntryWorktreePath(updated))
 	}
-	if _, err := os.Stat(updated.Worktree); err != nil {
+	if _, err := os.Stat(skill.EntryWorktreePath(updated)); err != nil {
 		t.Errorf("new worktree path does not exist: %v", err)
 	}
 
@@ -288,12 +288,12 @@ func TestEdit_CreatesLocalBranchFromHEAD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if !strings.HasPrefix(target, updated.Worktree) {
-		t.Errorf("symlink = %q, expected to point inside %q", target, updated.Worktree)
+	if !strings.HasPrefix(target, skill.EntryWorktreePath(updated)) {
+		t.Errorf("symlink = %q, expected to point inside %q", target, skill.EntryWorktreePath(updated))
 	}
 
 	// Confirm the worktree's git HEAD actually moved to the new branch.
-	repo, err := gogit.PlainOpen(updated.Worktree)
+	repo, err := gogit.PlainOpen(skill.EntryWorktreePath(updated))
 	if err != nil {
 		t.Fatalf("open worktree: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestEdit_ReentryAfterPushAndSwitch(t *testing.T) {
 	}
 
 	// Confirm the worktree HEAD is back on the edit branch.
-	repo, err := gogit.PlainOpen(reEntered.Worktree)
+	repo, err := gogit.PlainOpen(skill.EntryWorktreePath(reEntered))
 	if err != nil {
 		t.Fatalf("open worktree: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestUpgrade_FollowsLatestTag(t *testing.T) {
 	if updated.Ref != "v2.0.0" {
 		t.Errorf("branch = %q, want v2.0.0", updated.Ref)
 	}
-	if _, err := os.Stat(updated.Worktree); err != nil {
+	if _, err := os.Stat(skill.EntryWorktreePath(updated)); err != nil {
 		t.Errorf("new worktree missing: %v", err)
 	}
 }

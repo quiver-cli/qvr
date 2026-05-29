@@ -138,6 +138,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				}
 				continue
 			}
+			// Persist the (allowed) scan result onto the lock entry so
+			// downstream tools can inspect it without re-running the scan.
+			// A write failure here is non-fatal — the install itself
+			// succeeded and the user can re-record via `qvr scan`.
+			if recErr := recordScanResult(lockPath, result.Name, gate); recErr != nil {
+				printer.Warning(fmt.Sprintf("add %s: scan recorded only in memory (%v)", result.Name, recErr))
+			}
 			results = append(results, result)
 		}
 		return nil
@@ -211,8 +218,9 @@ func skillDirFor(result *skill.InstallResult, lockPath string) string {
 	if err != nil {
 		return result.Worktree
 	}
+	worktreePath := skill.EntryWorktreePath(entry)
 	if entry.Path == "" || entry.Path == "." {
-		return entry.Worktree
+		return worktreePath
 	}
-	return filepath.Join(entry.Worktree, entry.Path)
+	return filepath.Join(worktreePath, entry.Path)
 }

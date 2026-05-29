@@ -46,27 +46,29 @@ type VerifyDriftItem struct {
 	Actual   string `json:"actual"`
 }
 
-// VerifySingleEntry recomputes the canonical subtree hash for entry and
-// compares it against the recorded VerificationRecord. Returns a
-// structured result that callers (the CLI, integration tests, future
-// daemons) classify into pass/fail per their own policy.
+// VerifySingleEntry recomputes the canonical subtree hash for entry's
+// worktree and compares it against entry.SubtreeHash. Returns a structured
+// result that callers (the CLI, integration tests, future daemons)
+// classify into pass/fail per their own policy.
 //
-// Phase 1 detects drift at the subtree/tree/commit level; signature and
-// scan verification are wired in later phases by extending the result
-// with additional Drift entries.
+// In v5 SubtreeHash is the single load-bearing integrity field; verifier
+// no longer compares git tree/commit SHAs separately (the working-copy
+// hash captures any tamper that matters). Scan/signature/eval signals are
+// surfaced via VerifyEntryResult by later phases.
 func VerifySingleEntry(entry *model.LockEntry) VerifyEntryResult {
 	res := VerifyEntryResult{Name: entry.Name}
-	if entry.Source == "link" {
+	if entry.IsLink() {
 		res.Status = VerifyStatusLink
 		res.Message = "link install — no upstream to verify"
 		return res
 	}
-	if entry.Worktree == "" {
+	worktreePath := EntryWorktreePath(entry)
+	if worktreePath == "" {
 		res.Status = VerifyStatusMissing
 		res.Message = "worktree path is empty"
 		return res
 	}
-	if _, err := os.Stat(entry.Worktree); err != nil {
+	if _, err := os.Stat(worktreePath); err != nil {
 		res.Status = VerifyStatusMissing
 		res.Message = fmt.Sprintf("worktree not found: %v", err)
 		return res
@@ -76,7 +78,7 @@ func VerifySingleEntry(entry *model.LockEntry) VerifyEntryResult {
 	// is invisible (the git tree object never changes when working-copy
 	// bytes do). The disk hasher mirrors HashSubtree's algorithm so an
 	// untampered checkout produces the same digest the installer recorded.
-	diskHash, err := canonical.HashSubtreeFromDisk(filepath.Join(entry.Worktree, entry.Path))
+	diskHash, err := canonical.HashSubtreeFromDisk(filepath.Join(worktreePath, entry.Path))
 	if err != nil {
 		res.Status = VerifyStatusFailed
 		res.Message = err.Error()
@@ -84,36 +86,21 @@ func VerifySingleEntry(entry *model.LockEntry) VerifyEntryResult {
 	}
 	res.SubtreeHash = diskHash
 
-	// TreeSHA / CommitSHA still come from the git tree at HEAD — they
-	// describe the upstream commit pointer, which is orthogonal to whether
-	// the working copy has been mutated. Soft-fail (warning, not failure)
-	// when the git side can't be read: a missing .git directory in the
-	// worktree shouldn't mask a working-copy tamper detected above.
-	gitID, gitErr := canonical.HashSubtree(entry.Worktree, entry.Path)
-	if entry.Verification == nil || entry.Verification.SubtreeHash == "" {
+	if entry.SubtreeHash == "" {
 		res.Status = VerifyStatusUnverified
-		res.Message = "no recorded subtree hash (legacy entry — run `qvr lock upgrade`)"
+		res.Message = "no recorded subtree hash (run `qvr lock --repair`)"
 		return res
 	}
 
-	rec := entry.Verification
-	var drift []VerifyDriftItem
-	if rec.SubtreeHash != diskHash {
-		drift = append(drift, VerifyDriftItem{Field: "subtreeHash", Expected: rec.SubtreeHash, Actual: diskHash})
-	}
-	if gitErr == nil {
-		if rec.TreeSHA != "" && rec.TreeSHA != gitID.TreeSHA {
-			drift = append(drift, VerifyDriftItem{Field: "treeSHA", Expected: rec.TreeSHA, Actual: gitID.TreeSHA})
-		}
-		if rec.CommitSHA != "" && rec.CommitSHA != gitID.CommitSHA {
-			drift = append(drift, VerifyDriftItem{Field: "commitSHA", Expected: rec.CommitSHA, Actual: gitID.CommitSHA})
-		}
-	}
-	if len(drift) == 0 {
-		res.Status = VerifyStatusOK
+	if entry.SubtreeHash != diskHash {
+		res.Status = VerifyStatusDrift
+		res.Drift = []VerifyDriftItem{{
+			Field:    "subtreeHash",
+			Expected: entry.SubtreeHash,
+			Actual:   diskHash,
+		}}
 		return res
 	}
-	res.Status = VerifyStatusDrift
-	res.Drift = drift
+	res.Status = VerifyStatusOK
 	return res
 }

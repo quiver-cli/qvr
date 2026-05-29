@@ -83,7 +83,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("push %s: %w", entry.Name, err)
 		}
-		entry.ResolvedSHA = hash
+		entry.Commit = hash
 		lock.Put(entry)
 		if err := lock.Write(); err != nil {
 			return fmt.Errorf("write lock: %w", err)

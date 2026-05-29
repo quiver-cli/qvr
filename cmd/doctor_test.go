@@ -7,6 +7,7 @@ import (
 
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/registry"
 )
 
 // findCheck returns the first check matching type and skill, or fails the test.
@@ -24,16 +25,33 @@ func findCheck(t *testing.T, checks []doctorCheck, ckType, skill string) doctorC
 func TestDoctorChecks_AllGreen(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
 
-	src := writeFullSkill(t, "demo")
+	// Use a v5 registry install (not link), so the worktree check exists.
+	// Seed a real worktree at the derived path with a skill directory the
+	// symlink can target.
+	reg, name, commit := "acme", "demo", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
+	skillRel := filepath.Join("skills", "demo")
+	skillDir := filepath.Join(worktree, skillRel)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: demo\ndescription: x\n---\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
 	project := t.TempDir()
-	linkSkillInto(t, project, ".claude/skills", "demo", src)
+	linkSkillInto(t, project, ".claude/skills", "demo", skillDir)
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
+		Name:     name,
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
+		Path:     skillRel,
+		Ref:      "main",
+		Commit:   commit,
 		Targets:  []string{"claude"},
-		Registry: "", // no registry → registry check skipped
 	})
 
 	cfg := config.Default()
@@ -57,7 +75,8 @@ func TestDoctorChecks_AllGreen(t *testing.T) {
 func TestDoctorChecks_HonorsSkillPath(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
 
-	worktree := t.TempDir()
+	reg, name, commit := "r", "demo", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	skillDir := filepath.Join(worktree, "skills", "demo")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir leaf: %v", err)
@@ -72,8 +91,11 @@ func TestDoctorChecks_HonorsSkillPath(t *testing.T) {
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
 		Name:     "demo",
+		Registry: reg,
+		Source:   "git@example.test:" + reg + ".git",
 		Path:     "skills/demo",
-		Worktree: worktree,
+		Ref:      "main",
+		Commit:   commit,
 		Targets:  []string{"claude"},
 	})
 
@@ -88,9 +110,14 @@ func TestDoctorChecks_BrokenWorktree(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
 	project := t.TempDir()
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	// Registry+Commit point at a path WorktreePath will compute but that
+	// does not exist on disk — doctor should flag it as broken.
 	lock.Put(&model.LockEntry{
 		Name:     "ghost",
-		Worktree: filepath.Join(t.TempDir(), "nonexistent"),
+		Registry: "ghost-reg",
+		Source:   "git@x:ghost.git",
+		Ref:      "main",
+		Commit:   "deadbeef000000000000000000000000000000",
 		Targets:  []string{"claude"},
 	})
 
@@ -106,7 +133,7 @@ func TestDoctorChecks_BrokenWorktree(t *testing.T) {
 
 func TestDoctorChecks_BrokenSymlink(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
-	src := writeFullSkill(t, "demo")
+	_ = writeFullSkill(t, "demo")
 	project := t.TempDir()
 
 	otherSrc := writeFullSkill(t, "demo")
@@ -114,9 +141,8 @@ func TestDoctorChecks_BrokenSymlink(t *testing.T) {
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
-		Name:     "demo",
-		Worktree: src,
-		Targets:  []string{"claude"},
+		Name:    "demo",
+		Targets: []string{"claude"},
 	})
 	checks := runDoctorChecks(lock, config.Default(), project)
 
@@ -128,14 +154,13 @@ func TestDoctorChecks_BrokenSymlink(t *testing.T) {
 
 func TestDoctorChecks_RegistryMissing(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
-	src := writeFullSkill(t, "demo")
+	_ = writeFullSkill(t, "demo")
 	project := t.TempDir()
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
 		Name:     "demo",
 		Registry: "ghost-reg",
-		Worktree: src,
 		Targets:  []string{},
 	})
 
@@ -152,24 +177,35 @@ func TestDoctorChecks_RegistryMissing(t *testing.T) {
 // the lock entry — so the registry-config check must be skipped, not failed.
 func TestDoctorChecks_SubdirSourceSkipsRegistry(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
+	reg, name, commit := "github.com--mattpocock--skills", "demo", "abc1234"
+
+	// Seed the derived worktree path so the worktree check sees a real dir.
+	wtPath := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+
 	src := writeFullSkill(t, "demo")
 	project := t.TempDir()
 	linkSkillInto(t, project, ".claude/skills", "demo", src)
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
+	// v5: source URL on a remote-installed entry (no separate "subdir" enum).
+	// Registry is set but not in cfg — should not trip the registry check
+	// because Source carries the fetch URL on every v5 entry.
 	lock.Put(&model.LockEntry{
-		Name:     "demo",
-		Registry: "github.com--mattpocock--skills",
-		Source:   "subdir",
-		RepoURL:  "https://github.com/mattpocock/skills.git",
-		Worktree: src,
+		Name:     name,
+		Registry: reg,
+		Source:   "https://github.com/mattpocock/skills.git",
+		Ref:      "main",
+		Commit:   commit,
 		Targets:  []string{"claude"},
 	})
 
 	checks := runDoctorChecks(lock, config.Default(), project)
 	for _, c := range checks {
 		if c.Type == "registry" {
-			t.Errorf("subdir-sourced entries must not produce a registry check, got %+v", c)
+			t.Errorf("v5 entries with source URL must not produce a registry check, got %+v", c)
 		}
 	}
 	wt := findCheck(t, checks, "worktree", "demo")
@@ -244,11 +280,10 @@ func TestDoctorChecks_LinkInstallSkipped(t *testing.T) {
 
 	lock := model.NewLockFile(filepath.Join(project, model.LockFileName))
 	lock.Put(&model.LockEntry{
-		Name:       "linked",
-		Source:     "link",
-		LinkTarget: "/some/where",
-		Worktree:   "/some/where",
-		Targets:    []string{"claude"},
+		Name:    "linked",
+		Source:  "/some/where",
+		Ref:     "local",
+		Targets: []string{"claude"},
 	})
 	checks := runDoctorChecks(lock, config.Default(), project)
 	for _, c := range checks {

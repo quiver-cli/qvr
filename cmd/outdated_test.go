@@ -16,7 +16,7 @@ func newRefs(m map[string]string) *git.RemoteRefInfo {
 func TestComputeOutdated_UpToDate(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "main",
-		ResolvedSHA: "aaaaaaa1111111111111111111111111111111111",
+		Commit: "aaaaaaa1111111111111111111111111111111111",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "aaaaaaa1111111111111111111111111111111111",
@@ -30,7 +30,7 @@ func TestComputeOutdated_UpToDate(t *testing.T) {
 func TestComputeOutdated_Behind(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "main",
-		ResolvedSHA: "0000000000000000000000000000000000000000",
+		Commit: "0000000000000000000000000000000000000000",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "ffffffffffffffffffffffffffffffffffffffff",
@@ -47,7 +47,7 @@ func TestComputeOutdated_Behind(t *testing.T) {
 func TestComputeOutdated_TagPinned(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "v1.2.0",
-		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main":  "ddddddddddddddddddddddddddddddddddddddd0",
@@ -62,7 +62,7 @@ func TestComputeOutdated_TagPinned(t *testing.T) {
 func TestComputeOutdated_TagPinned_NewerTagAvailable(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "v0.1.1",
-		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main":  "ddddddddddddddddddddddddddddddddddddddd0",
@@ -84,7 +84,7 @@ func TestComputeOutdated_TagPinned_NewerTagAvailable(t *testing.T) {
 func TestComputeOutdated_TagPinned_PeeledTagRefsIgnored(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "v1.0.0",
-		ResolvedSHA: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
+		Commit: "abcabcabcabcabcabcabcabcabcabcabcabcabca",
 	}
 	// Some servers publish `v1.0.0^{}` peeled refs. They must not win the
 	// "latest tag" election over the semver-named ref.
@@ -101,7 +101,7 @@ func TestComputeOutdated_TagPinned_PeeledTagRefsIgnored(t *testing.T) {
 func TestComputeOutdated_RefNotOnRemote(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "feature/x",
-		ResolvedSHA: "1111111111111111111111111111111111111111",
+		Commit: "1111111111111111111111111111111111111111",
 	}
 	remote := remoteResult{refs: newRefs(map[string]string{
 		"refs/heads/main": "ffffffffffffffffffffffffffffffffffffffff",
@@ -118,7 +118,7 @@ func TestComputeOutdated_RefNotOnRemote(t *testing.T) {
 func TestComputeOutdated_Unreachable(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "main",
-		ResolvedSHA: "1111111111111111111111111111111111111111",
+		Commit: "1111111111111111111111111111111111111111",
 	}
 	remote := remoteResult{err: errors.New("network: connection refused")}
 	got := computeOutdated(entry, remote)
@@ -132,7 +132,7 @@ func TestComputeOutdated_Unreachable(t *testing.T) {
 
 func TestComputeOutdated_LinkInstall(t *testing.T) {
 	entry := &model.LockEntry{
-		Name: "demo", Source: "link", Ref: "main",
+		Name: "demo", Source: "/local/path", Ref: "local",
 	}
 	got := computeOutdated(entry, remoteResult{})
 	if got.State != outStateLink {
@@ -187,26 +187,27 @@ func TestRemoteURLFor_RegistrySourceMissing(t *testing.T) {
 	}
 }
 
-func TestRemoteURLFor_SubdirUsesRepoURL(t *testing.T) {
+// v5: source carries the fetch URL directly, so remoteURLFor returns it
+// regardless of whether the entry has a configured registry name.
+func TestRemoteURLFor_UsesSourceURL(t *testing.T) {
 	cfg := config.Default()
 	url, err := remoteURLFor(&model.LockEntry{
 		Registry: "github.com--mattpocock--skills",
-		Source:   "subdir",
-		RepoURL:  "https://github.com/mattpocock/skills.git",
+		Source:   "https://github.com/mattpocock/skills.git",
 	}, cfg)
 	if err != nil || url != "https://github.com/mattpocock/skills.git" {
-		t.Errorf("subdir URL: got (%q, %v)", url, err)
+		t.Errorf("source URL: got (%q, %v)", url, err)
 	}
 }
 
-func TestRemoteURLFor_SubdirMissingRepoURL(t *testing.T) {
+func TestRemoteURLFor_LinkEntryErrors(t *testing.T) {
 	cfg := config.Default()
 	_, err := remoteURLFor(&model.LockEntry{
-		Name:     "demo",
-		Registry: "slug",
-		Source:   "subdir",
+		Name:   "demo",
+		Source: "/local/path",
+		Ref:    "local",
 	}, cfg)
 	if err == nil {
-		t.Error("subdir entry without RepoURL should be a clear error")
+		t.Error("link install should error from remoteURLFor")
 	}
 }

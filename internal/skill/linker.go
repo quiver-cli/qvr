@@ -144,26 +144,24 @@ func VerifySymlink(linkPath string) error {
 // point at for entry. Agent tools expect `.../skills/<name>/SKILL.md` directly
 // under the symlinked directory, so the effective target is the worktree root
 // joined with the skill's relative path inside the registry. Link installs
-// store their absolute source in LinkTarget (or Path) and have no worktree.
+// carry their absolute source in entry.Source and have no derived worktree.
 // Keeping this as one helper prevents the three-way drift between
 // `install`, `enable`, `doctor`, and `info` that shipped in v0.3.5.
 func EffectiveTarget(entry *model.LockEntry) string {
 	if entry == nil {
 		return ""
 	}
-	if entry.Source == "link" {
-		if entry.LinkTarget != "" {
-			return entry.LinkTarget
-		}
-		return entry.Path
+	if entry.IsLink() {
+		return entry.Source
 	}
-	if entry.Worktree == "" {
+	worktree := EntryWorktreePath(entry)
+	if worktree == "" {
 		return ""
 	}
 	if entry.Path == "" {
-		return entry.Worktree
+		return worktree
 	}
-	return filepath.Join(entry.Worktree, entry.Path)
+	return filepath.Join(worktree, entry.Path)
 }
 
 // VerifyTarget checks that a symlink points to the expected skillDir.

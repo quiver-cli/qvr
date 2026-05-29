@@ -10,6 +10,7 @@ import (
 
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/output"
+	"github.com/raks097/quiver/internal/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,14 +48,18 @@ func TestScanGlobalNestedRegistryResolves(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("QUIVER_HOME", home)
 
-	worktree := filepath.Join(home, "subdir", "github.com--mattpocock--skills--diagnose--main")
+	reg, name, commit := "github.com--mattpocock--skills", "diagnose", "abc1234"
+	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	subpath := "skills/engineering/diagnose"
 	writeTestSkillMD(t, filepath.Join(worktree, subpath), "diagnose")
 	writeLock(t, filepath.Join(home, model.LockFileName), map[string]*model.LockEntry{
 		"diagnose": {
-			Name:        "diagnose",
-			Worktree:    worktree,
+			Name:        name,
+			Registry:    reg,
+			Source:      "https://github.com/mattpocock/skills.git",
 			Path:        subpath,
+			Ref:         "main",
+			Commit:      commit,
 			InstalledAt: time.Now(),
 		},
 	})

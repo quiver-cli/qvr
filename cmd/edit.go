@@ -122,7 +122,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if warning != "" {
 		printer.Warning(warning)
 	}
-	printer.Success(fmt.Sprintf("%s: editing on %s (from %s)", updated.Name, updated.Ref, shortHash(updated.ResolvedSHA)))
+	printer.Success(fmt.Sprintf("%s: editing on %s (from %s)", updated.Name, updated.Ref, shortHash(updated.Commit)))
 	return nil
 }
 

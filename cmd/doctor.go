@@ -211,16 +211,18 @@ func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot strin
 	knownLinks := make(map[string]struct{})
 
 	for _, e := range lock.Entries() {
-		if e.Source == "link" {
+		if e.IsLink() {
 			continue
 		}
 		checks = append(checks, checkWorktree(e))
-		// Subdir installs (`qvr add <url>`) deliberately don't appear in
-		// cfg.Registries — the bare clone is owned by the lock entry and
-		// kept under registry.SubdirRoot(). Verifying that the worktree
-		// path exists (above) is sufficient; demanding a config entry
-		// would flag every `qvr add` install as broken.
-		if e.Registry != "" && e.Source != "subdir" {
+		// In v5 the lock is self-contained — entry.Source carries the
+		// fetch URL on every non-link entry, so `qvr sync` will auto-
+		// register any missing registry. Doctor only flags a missing
+		// registry when the entry has no Source either (legacy entries
+		// or hand-edited locks). Otherwise the registry config is
+		// recoverable on the next sync and demanding it here would
+		// false-positive on every fresh-clone qvr.lock.
+		if e.Registry != "" && e.Source == "" {
 			checks = append(checks, checkRegistry(e, cfg))
 		}
 		for _, t := range e.Targets {
@@ -247,12 +249,13 @@ func runDoctorChecks(lock *model.LockFile, cfg *config.Config, projectRoot strin
 }
 
 func checkWorktree(e *model.LockEntry) doctorCheck {
-	c := doctorCheck{Type: "worktree", Skill: e.Name, Path: e.Worktree}
-	if e.Worktree == "" {
-		c.Message = "lock entry has no worktree path"
+	worktreePath := skill.EntryWorktreePath(e)
+	c := doctorCheck{Type: "worktree", Skill: e.Name, Path: worktreePath}
+	if worktreePath == "" {
+		c.Message = "lock entry has no derivable worktree path"
 		return c
 	}
-	info, err := os.Stat(e.Worktree)
+	info, err := os.Stat(worktreePath)
 	if err != nil {
 		c.Message = err.Error()
 		return c
@@ -320,21 +323,16 @@ func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bo
 	// Index every claim by category so a single pass over each dir is enough.
 	claimedWorktrees := map[string]struct{}{}
 	claimedRegistries := map[string]struct{}{}
-	claimedSubdir := map[string]struct{}{} // by repo slug (basename without .git)
 	for _, lock := range []*model.LockFile{primary, otherLock} {
 		if lock == nil {
 			continue
 		}
 		for _, e := range lock.Entries() {
-			if e.Worktree != "" {
-				claimedWorktrees[e.Worktree] = struct{}{}
+			if wt := skill.EntryWorktreePath(e); wt != "" {
+				claimedWorktrees[wt] = struct{}{}
 			}
 			if e.Registry != "" {
 				claimedRegistries[e.Registry] = struct{}{}
-			}
-			if e.Source == "subdir" && e.Registry != "" {
-				// Subdir installs reuse the registry slug as their bare-clone dir name.
-				claimedSubdir[e.Registry] = struct{}{}
 			}
 		}
 	}
@@ -365,10 +363,7 @@ func scanOrphans(cfg *config.Config, primary *model.LockFile, primaryIsGlobal bo
 
 	// Subdir / standalone orphan scans were removed in v4 — both directories
 	// were collapsed into registries/, so the registry orphan scan above
-	// covers everything. claimedSubdir is retained on the lock-entry loop
-	// upstream so a v4 migration that leaves stale "subdir" Source labels
-	// still resolves the right registry.
-	_ = claimedSubdir
+	// covers everything.
 
 	// Index cache orphan: cache/index/<name>.json where <name> isn't a configured registry.
 	cacheDir := filepath.Join(config.Dir(), "cache", "index")

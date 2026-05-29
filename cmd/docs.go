@@ -83,19 +83,22 @@ func writeAgentsMD(outPath string, entries []*model.LockEntry) error {
 		b.WriteString("## Skills\n\n")
 		for _, e := range entries {
 			desc := ""
-			if e.Worktree != "" {
-				loaded, err := skill.LoadFromPath(filepath.Join(e.Worktree, e.Path))
+			if e.IsLink() {
+				loaded, err := skill.LoadFromPath(e.Source)
 				if err == nil {
 					desc = loaded.Frontmatter.Description
 				}
-			} else if e.LinkTarget != "" {
-				loaded, err := skill.LoadFromPath(e.LinkTarget)
-				if err == nil {
-					desc = loaded.Frontmatter.Description
+			} else {
+				worktreePath := skill.EntryWorktreePath(e)
+				if worktreePath != "" {
+					loaded, err := skill.LoadFromPath(filepath.Join(worktreePath, e.Path))
+					if err == nil {
+						desc = loaded.Frontmatter.Description
+					}
 				}
 			}
 			origin := e.Registry
-			if e.Source == "link" {
+			if e.IsLink() {
 				origin = "link"
 			} else if origin == "" {
 				origin = "standalone"

@@ -29,6 +29,11 @@ type targetStatus struct {
 }
 
 // skillInfo is the structured single-skill summary returned by `qvr info`.
+//
+// Worktree, LinkTarget, and Source are synthesised from the v5 lock entry:
+// the on-disk lock only carries Source (URL or absolute path), so the JSON
+// surface keeps the friendlier fields for downstream consumers that already
+// scripted against them.
 type skillInfo struct {
 	Name          string            `json:"name"`
 	Description   string            `json:"description"`
@@ -42,11 +47,11 @@ type skillInfo struct {
 	Worktree      string            `json:"worktree,omitempty"`
 	LinkTarget    string            `json:"link_target,omitempty"`
 	Source        string            `json:"source,omitempty"`
+	SubtreeHash   string            `json:"subtree_hash,omitempty"`
 	Targets       []targetStatus    `json:"targets"`
 	Files         []string          `json:"files"`
-	// Verification mirrors the lockfile's VerificationRecord — same shape
-	// `qvr switch --output json` emits, so supply-chain dashboards can
-	// script against `qvr info` instead of parsing qvr.lock directly.
+	// Verification surfaces real signals (scan, signature, eval, attestation,
+	// skill card) when present on the lock entry.
 	Verification *model.VerificationRecord `json:"verification,omitempty"`
 }
 
@@ -105,12 +110,20 @@ func buildSkillInfo(entry *model.LockEntry, projectRoot string, global bool) (*s
 	info := &skillInfo{
 		Name:         entry.Name,
 		Registry:     entry.Registry,
-		Branch:       entry.Ref,
-		Commit:       entry.ResolvedSHA,
-		Worktree:     entry.Worktree,
-		LinkTarget:   entry.LinkTarget,
 		Source:       entry.Source,
+		SubtreeHash:  entry.SubtreeHash,
 		Verification: entry.Verification,
+	}
+	if entry.IsLink() {
+		// Link installs carry no upstream git state — leave Branch/Commit/
+		// Worktree blank so consumers don't render placeholder columns and
+		// surface LinkTarget instead. Source still appears for parity with
+		// remote installs.
+		info.LinkTarget = entry.Source
+	} else {
+		info.Branch = entry.Ref
+		info.Commit = entry.Commit
+		info.Worktree = skill.EntryWorktreePath(entry)
 	}
 
 	skillDir := skill.EffectiveTarget(entry)
@@ -227,55 +240,34 @@ func renderInfoText(info *skillInfo) {
 	renderVerificationSection(w, info.Verification)
 }
 
-// renderVerificationSection prints the supply-chain provenance block in
-// text mode. Omitted entirely when nil (legacy v2-loaded entries) so the
-// output stays tidy for skills without recorded provenance.
+// renderVerificationSection prints the supply-chain signals block in text
+// mode. Omitted entirely when nil (the default at install time, before any
+// scan/signature/eval has been recorded) so the output stays tidy.
 func renderVerificationSection(w io.Writer, v *model.VerificationRecord) {
-	if v == nil {
+	if v == nil || v.IsEmpty() {
 		return
 	}
 	fmt.Fprintln(w, "Verification:")
-	if v.Status != "" {
-		fmt.Fprintf(w, "  Status:      %s\n", v.Status)
-	}
-	if v.SubtreeHash != "" {
-		fmt.Fprintf(w, "  SubtreeHash: %s\n", shortHashLabel(v.SubtreeHash))
-	}
-	// Provenance one-liner mirrors what installer.go records.
-	if src := provenanceSummary(v.Provenance); src != "" {
-		fmt.Fprintf(w, "  Source:      %s\n", src)
+	if v.Scan != nil {
+		fmt.Fprintf(w, "  Scan:        %s — %s (critical=%d, high=%d, medium=%d, low=%d, info=%d)\n",
+			v.Scan.Decision, v.Scan.ScannerVersion,
+			v.Scan.Counts.Critical, v.Scan.Counts.High,
+			v.Scan.Counts.Medium, v.Scan.Counts.Low, v.Scan.Counts.Info)
 	}
 	if v.Signature != nil {
 		fmt.Fprintf(w, "  Signature:   %s (%s)\n", v.Signature.Path, v.Signature.Algorithm)
 	}
-	for _, warn := range v.Warnings {
-		fmt.Fprintf(w, "  Warning:     %s\n", warn)
-	}
-	if !v.VerifiedAt.IsZero() {
-		fmt.Fprintf(w, "  VerifiedAt:  %s\n", v.VerifiedAt.UTC().Format("2006-01-02T15:04:05Z"))
-	}
-}
-
-// provenanceSummary collapses the four ProvenanceRef fields into a single
-// line for the text view. Returns empty when nothing's recorded so the
-// caller skips the row entirely.
-func provenanceSummary(p model.ProvenanceRef) string {
-	if p.RegistryName == "" && p.RegistryURL == "" && p.Ref == "" && p.Subpath == "" {
-		return ""
-	}
-	target := p.RegistryName
-	if p.RegistryURL != "" {
-		if target == "" {
-			target = p.RegistryURL
-		} else {
-			target = fmt.Sprintf("%s (%s)", target, p.RegistryURL)
+	if v.Eval != nil {
+		status := "failed"
+		if v.Eval.Passed {
+			status = "passed"
 		}
+		fmt.Fprintf(w, "  Eval:        %s — %s\n", status, v.Eval.HarnessVersion)
 	}
-	if p.Ref != "" {
-		target = fmt.Sprintf("%s @ %s", target, p.Ref)
+	if v.Attestation != nil {
+		fmt.Fprintf(w, "  Attestation: %s\n", v.Attestation.Path)
 	}
-	if p.Subpath != "" {
-		target = fmt.Sprintf("%s → %s", target, p.Subpath)
+	if v.SkillCard != nil {
+		fmt.Fprintf(w, "  SkillCard:   %s\n", v.SkillCard.Path)
 	}
-	return target
 }

@@ -92,7 +92,7 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 		if entry.Disabled {
 			continue
 		}
-		if entry.Source == "link" {
+		if entry.IsLink() {
 			// Link installs don't have a worktree to restore — just keep
 			// the symlink wired up.
 			if err := r.fixSymlinks(entry, projectRoot, global, opts, res); err != nil {
@@ -101,9 +101,10 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			continue
 		}
 
-		needsRestore := entry.Worktree == ""
+		worktreePath := EntryWorktreePath(entry)
+		needsRestore := worktreePath == ""
 		if !needsRestore {
-			if _, err := os.Stat(entry.Worktree); err != nil {
+			if _, err := os.Stat(worktreePath); err != nil {
 				needsRestore = true
 			}
 		}

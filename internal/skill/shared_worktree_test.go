@@ -97,8 +97,8 @@ func TestSharedWorktree_SwitchInOneProjectPreservesAnother(t *testing.T) {
 	if err != nil {
 		t.Fatalf("A lock get: %v", err)
 	}
-	if entryA.Worktree != resultA.Worktree {
-		t.Errorf("A lock.Worktree changed: was %s, now %s", resultA.Worktree, entryA.Worktree)
+	if skill.EntryWorktreePath(entryA) != resultA.Worktree {
+		t.Errorf("A lock.Worktree changed: was %s, now %s", resultA.Worktree, skill.EntryWorktreePath(entryA))
 	}
 
 	// A's symlink target still resolves to A's worktree (not B's new one).

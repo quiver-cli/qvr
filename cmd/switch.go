@@ -94,6 +94,6 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(updated)
 	}
-	printer.Success(fmt.Sprintf("%s: switched to %s (%s)", updated.Name, updated.Ref, shortHash(updated.ResolvedSHA)))
+	printer.Success(fmt.Sprintf("%s: switched to %s (%s)", updated.Name, updated.Ref, shortHash(updated.Commit)))
 	return nil
 }

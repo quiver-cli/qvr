@@ -66,14 +66,24 @@ func runSync(cmd *cobra.Command, args []string) error {
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), syncGlobal)
 
 	var (
-		result     *skill.ReconcileResult
-		latestLock *model.LockFile
+		result             *skill.ReconcileResult
+		latestLock         *model.LockFile
+		atOrAboveThreshold map[string]security.Severity
 	)
 	lockErr := model.WithLock(lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)
 		}
+
+		// Self-healing registry config: a fresh clone of a project may
+		// have qvr.lock entries that reference registries this user
+		// hasn't registered yet. v5's `source` field carries the fetch
+		// URL on every non-link entry, so we can auto-register the
+		// missing ones from the lock — letting `qvr sync` succeed on a
+		// fresh checkout without making the user re-add registries by
+		// hand.
+		autoRegisterRegistriesFromLock(lock)
 
 		gc := git.NewGoGitClient()
 		wt := git.NewGoGitWorktree()
@@ -89,6 +99,29 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 		result = r
 		latestLock = lock
+
+		// Security gate. Sync re-materialises worktrees from the lock;
+		// we rescan each restored skill so a registry that turned
+		// hostile between add and sync gets flagged. Sync only surfaces
+		// findings and does not roll back — the lock already committed
+		// to these refs and the user can `qvr remove` individually
+		// after reviewing what the scan said.
+		//
+		// Runs inside the lock window because scanRestoredSkillsAfterSync
+		// writes the scan signal into entry.Verification.Scan on the
+		// in-memory lock. The lock.Write() that follows persists those
+		// mutations alongside any reconciler-side changes; both must be
+		// inside WithLock so concurrent qvr commands see a consistent
+		// snapshot.
+		if !syncDryRun {
+			cfg, cerr := config.Load()
+			if cerr == nil {
+				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg)
+				if werr := lock.Write(); werr != nil {
+					return fmt.Errorf("persist scan results: %w", werr)
+				}
+			}
+		}
 		return nil
 	})
 	if lockErr != nil {
@@ -102,23 +135,6 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// can otherwise lie until the next manual `qvr docs`.
 	if !syncGlobal && !syncDryRun && latestLock != nil {
 		_ = refreshAgentsMDIfPresent(projectRoot, latestLock.Entries())
-	}
-
-	// Security gate. Sync re-materialises worktrees from the lock; we rescan
-	// each restored skill so a registry that turned hostile between add and
-	// sync gets flagged. Sync intentionally only surfaces findings and does
-	// not roll back — the lock already committed to these refs and the user
-	// can `qvr remove` individually after reviewing what the scan said.
-	//
-	// Returns a per-skill highest-severity map so the post-render summary
-	// can tag the success lines for skills whose findings met the configured
-	// block_severity threshold (bug #59 paper cut).
-	var atOrAboveThreshold map[string]security.Severity
-	if !syncDryRun && latestLock != nil {
-		cfg, cerr := config.Load()
-		if cerr == nil {
-			atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), latestLock, cfg)
-		}
 	}
 
 	if printer.Format == output.FormatJSON {
@@ -172,13 +188,81 @@ func runSync(cmd *cobra.Command, args []string) error {
 // Returns a name → highest-severity map for entries whose scan met or exceeded
 // the configured block threshold; callers use it to tag the post-render
 // summary so success messages for those skills aren't misleading (bug #59).
+// autoRegisterRegistriesFromLock looks at every non-link lock entry and,
+// for each (registry, source URL) pair where the named registry isn't yet
+// in the user config, adds it. This is the v5 follow-on to making the lock
+// self-contained: `source` is the authoritative URL, so a fresh clone can
+// re-derive the registry pointer set without the user touching config.yaml.
+//
+// Collision safety: if `cfg.Registries[name]` is already set to a different
+// URL we leave it alone and warn — overwriting could silently swap a
+// user's pinned registry for whatever the lock author named.
+//
+// Skips:
+//   - link installs (no upstream URL)
+//   - entries without a Registry name (ad-hoc URL installs use `source`
+//     directly; nothing to register)
+//   - entries whose Source is an absolute path (link semantics — would
+//     not make a valid git remote)
+//
+// Write failures are logged to stderr but do not abort sync — the worst
+// case is the user runs `qvr registry add` manually for the missing entries.
+func autoRegisterRegistriesFromLock(lock *model.LockFile) {
+	if lock == nil {
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	if cfg.Registries == nil {
+		cfg.Registries = make(map[string]config.RegistryConfig)
+	}
+	var added []string
+	var warned bool
+	for _, entry := range lock.Entries() {
+		if entry == nil || entry.IsLink() {
+			continue
+		}
+		if entry.Registry == "" || entry.Source == "" {
+			continue
+		}
+		// Absolute path in Source means a link install — already
+		// excluded by IsLink, but defence-in-depth in case future code
+		// paths produce a non-link entry with a local Source.
+		if strings.HasPrefix(entry.Source, "/") {
+			continue
+		}
+		existing, ok := cfg.Registries[entry.Registry]
+		if !ok {
+			cfg.Registries[entry.Registry] = config.RegistryConfig{URL: entry.Source}
+			added = append(added, entry.Registry)
+			fmt.Fprintf(printer.Err, "registered registry %q → %s (from qvr.lock)\n", entry.Registry, entry.Source)
+			continue
+		}
+		if existing.URL != entry.Source {
+			fmt.Fprintf(printer.Err,
+				"registry %q already configured with a different URL; lock expects %s, config has %s — leaving config unchanged\n",
+				entry.Registry, entry.Source, existing.URL)
+			warned = true
+		}
+	}
+	if len(added) == 0 {
+		_ = warned
+		return
+	}
+	if saveErr := config.Save(cfg); saveErr != nil {
+		fmt.Fprintf(printer.Err, "auto-register: failed to persist config (%v); registries %v added in-memory only\n", saveErr, added)
+	}
+}
+
 func scanRestoredSkillsAfterSync(ctx context.Context, lock *model.LockFile, cfg *config.Config) map[string]security.Severity {
 	if !gateAvailable(cfg, syncNoScan) {
 		return nil
 	}
 	flagged := map[string]security.Severity{}
 	for _, entry := range lock.Entries() {
-		if entry.Disabled || entry.Source == "link" {
+		if entry.Disabled || entry.IsLink() {
 			continue
 		}
 		skillDir := skill.EffectiveTarget(entry)
@@ -196,6 +280,15 @@ func scanRestoredSkillsAfterSync(ctx context.Context, lock *model.LockFile, cfg 
 		})
 		if gerr != nil || gate == nil || gate.Result == nil {
 			continue
+		}
+		// Persist the scan signal onto the entry's verification block.
+		// In-memory mutation only — the caller writes the lock once at
+		// the end of sync (the WithLock-held window).
+		if scan := toScanRef(gate); scan != nil {
+			if entry.Verification == nil {
+				entry.Verification = &model.VerificationRecord{}
+			}
+			entry.Verification.Scan = scan
 		}
 		if gate.Blocked {
 			flagged[entry.Name] = gate.Result.Summary.MaxSeverity()

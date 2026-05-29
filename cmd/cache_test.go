@@ -35,17 +35,24 @@ func fakeWorktree(t *testing.T, segments ...string) string {
 	return path
 }
 
-// recordProjectWithLock writes a lock file at projectRoot/qvr.lock pointing
-// at the given worktree, then records the project so reachability sees it.
-func recordProjectWithLock(t *testing.T, projectRoot, worktree string) string {
+// recordProjectWithLock writes a lock file at projectRoot/qvr.lock with a
+// v5 entry whose EntryWorktreePath derivation (registry+name+
+// ShortSHA(commit)) matches the path fakeWorktree(t, "acme", "demo",
+// "abc1234") produces, then records the project so reachability sees it.
+// Callers pass the seeded worktree path purely as a sanity hook — the
+// derivation is authoritative.
+func recordProjectWithLock(t *testing.T, projectRoot string) string {
 	t.Helper()
 	lockPath := filepath.Join(projectRoot, model.LockFileName)
 	lock := model.NewLockFile(lockPath)
 	lock.Put(&model.LockEntry{
 		Name:     "demo",
 		Registry: "acme",
+		Source:   "git@example.test:acme.git",
 		Ref:      "main",
-		Worktree: worktree,
+		// The commit lines up with fakeWorktree(t, "acme", "demo",
+		// "abc1234") so EntryWorktreePath resolves to the live worktree.
+		Commit: "abc1234abcdef",
 	})
 	if err := lock.Write(); err != nil {
 		t.Fatalf("write lock: %v", err)
@@ -65,7 +72,7 @@ func TestCollectCacheEntries_FlagsOrphansAndReachables(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatalf("mkdir proj: %v", err)
 	}
-	recordProjectWithLock(t, proj, live)
+	recordProjectWithLock(t, proj)
 
 	entries, missing, err := collectCacheEntries()
 	if err != nil {
@@ -92,10 +99,10 @@ func TestRunCachePrune_DryRunDoesNotDelete(t *testing.T) {
 	t.Setenv("QUIVER_HOME", home)
 
 	orphan := fakeWorktree(t, "acme", "demo", "deadbee")
-	live := fakeWorktree(t, "acme", "demo", "abc1234")
+	_ = fakeWorktree(t, "acme", "demo", "abc1234") // live worktree the lock points at
 	proj := filepath.Join(t.TempDir(), "proj")
 	_ = os.MkdirAll(proj, 0o755)
-	recordProjectWithLock(t, proj, live)
+	recordProjectWithLock(t, proj)
 
 	// Wire up the printer for the test — runCachePrune touches it.
 	resetPrinter(t)
@@ -119,7 +126,7 @@ func TestRunCachePrune_DeletesOrphans(t *testing.T) {
 	live := fakeWorktree(t, "acme", "demo", "abc1234")
 	proj := filepath.Join(t.TempDir(), "proj")
 	_ = os.MkdirAll(proj, 0o755)
-	recordProjectWithLock(t, proj, live)
+	recordProjectWithLock(t, proj)
 
 	resetPrinter(t)
 	cachePruneDryRun = false
@@ -175,10 +182,10 @@ func TestRunCachePrune_ReturnsErrorOnDeleteFailure(t *testing.T) {
 func TestRunCachePrune_ForgetsVanishedProjects(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("QUIVER_HOME", home)
-	live := fakeWorktree(t, "acme", "demo", "abc1234")
+	_ = fakeWorktree(t, "acme", "demo", "abc1234") // live worktree the lock points at
 	proj := filepath.Join(t.TempDir(), "proj")
 	_ = os.MkdirAll(proj, 0o755)
-	livePath := recordProjectWithLock(t, proj, live)
+	livePath := recordProjectWithLock(t, proj)
 
 	deadProj := filepath.Join(t.TempDir(), "dead")
 	deadLock := filepath.Join(deadProj, model.LockFileName)
