@@ -52,12 +52,7 @@ var publishCmd = &cobra.Command{
     to a multi-skill registry repo.
 
 The first argument is treated as an installed skill name when it matches a
-lock entry; otherwise as a filesystem path.
-
-Flag groups (see --help for full descriptions):
-  Authoring: --branch --tag --message --author --email
-  Control:   --dry-run --no-scan --force --auto-commit --no-create-branch --allow-lockfile-heal
-  Layout:    --layout --fork --migrate --registry --global`,
+lock entry; otherwise as a filesystem path.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPublish,
 }
@@ -79,6 +74,33 @@ func init() {
 	publishCmd.Flags().BoolVar(&publishAutoCommit, "auto-commit", false, "(installed mode) stage and commit dirty changes in the eject dir before pushing (default refuses dirty WD — issue #83)")
 	publishCmd.Flags().BoolVar(&publishForce, "force", false, "overwrite an existing same-name skill in the target registry (issue #72)")
 	publishCmd.Flags().StringVar(&publishLayout, "layout", "", "(installed mode) repo layout to publish: \"root\" (single-skill repo) or \"nested\" (multi-skill registry under skills/<name>/). Defaults: root for --fork, nested otherwise (issue #70)")
+
+	// Group flags for --help (issue #109). Order matches the Long
+	// description's narrative: what you set every time, then commit
+	// metadata, then where the publish goes, then security/integrity
+	// overrides, then per-machine scope.
+	for flag, group := range map[string]string{
+		"message":             "Common",
+		"tag":                 "Common",
+		"dry-run":             "Common",
+		"author":              "Authoring",
+		"email":               "Authoring",
+		"branch":              "Authoring",
+		"registry":            "Routing",
+		"fork":                "Routing",
+		"migrate":             "Routing",
+		"layout":              "Routing",
+		"no-scan":             "Trust",
+		"allow-lockfile-heal": "Trust",
+		"global":              "Scope",
+		"force":               "Scope",
+		"auto-commit":         "Scope",
+		"no-create-branch":    "Scope",
+	} {
+		markFlagGroup(publishCmd.Flags(), flag, group)
+	}
+	publishCmd.SetUsageFunc(groupedUsageFunc([]string{"Common", "Authoring", "Routing", "Trust", "Scope"}))
+
 	rootCmd.AddCommand(publishCmd)
 }
 
