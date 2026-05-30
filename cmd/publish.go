@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -117,6 +118,60 @@ func runPublish(cmd *cobra.Command, args []string) error {
 // arg doesn't match a lock entry (and so we'd otherwise fall through to
 // greenfield mode, which can't accept --fork).
 var ErrPublishForkNeedsInstall = errors.New("--fork requires an installed skill name; pass the skill name (not a path) and run `qvr edit <skill>` first")
+
+// autoRegisterForkAsRegistry registers a fork URL as a local configured
+// registry so the post-publish auto-uneject can route through the
+// standard installer (which only knows how to resolve via configured
+// registries). Derives the name with registry.InferRegistryName so the
+// fork lands at `~/.quiver/registries/<org>/<repo>.git/` — the same
+// shape `qvr registry add` would have produced.
+//
+// Returns the registry name on success, "" on every refusable failure
+// (with a warning printed). Failures intentionally never propagate as
+// errors: the publish itself succeeded; the user just doesn't get the
+// auto-uneject convenience. Refusal cases:
+//
+//   - URL doesn't yield a usable name (e.g. a path-only "./fork" URL)
+//   - derived name already maps to a different URL — silently reusing
+//     would attach the local install to an unrelated registry
+//   - cfg.Load or mgr.Add fail (network / fs)
+//
+// Issue #108.
+func autoRegisterForkAsRegistry(ctx context.Context, forkURL string, e *model.LockEntry) string {
+	name := registry.InferRegistryName(forkURL)
+	if name == "" {
+		printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — could not infer a registry name from %q (run `qvr registry add <name> %s` + `qvr add %s@<tag> --registry <name>` to finish manually)",
+			e.Name, forkURL, forkURL, e.Name))
+		return ""
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — config load failed (%v)", e.Name, err))
+		return ""
+	}
+	if existing, exists := cfg.Registries[name]; exists {
+		if existing.URL != forkURL {
+			printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — derived registry name %q already maps to %s (not %s); pass a different --fork name or `qvr registry add` manually",
+				e.Name, name, existing.URL, forkURL))
+			return ""
+		}
+		e.Registry = name
+		return name
+	}
+	mgr := newRegistryManager(git.NewGoGitClient())
+	if _, addErr := mgr.Add(ctx, name, forkURL); addErr != nil {
+		if errors.Is(addErr, registry.ErrRegistryExists) {
+			// Race or stale read; treat as success and route through.
+			e.Registry = name
+			return name
+		}
+		printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — could not auto-register %q at %s (%v)",
+			e.Name, name, forkURL, addErr))
+		return ""
+	}
+	e.Registry = name
+	return name
+}
 
 func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string) error {
 	if publishMigrate && publishFork == "" {
@@ -250,15 +305,33 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 			// Skipped for:
 			//   - dry-run / nothing-to-publish (no new state to switch to)
 			//   - HEAD-only push (no tag means the user is iterating)
-			//   - --fork (the new tag lives on the fork, and the local
-			//     bare clone tracks the original registry — re-resolving
-			//     against the old registry would silently pick the wrong
-			//     source)
-			//   - empty Registry on the entry (migrated; no local bare
-			//     clone to refresh)
-			if r != nil && !r.NothingToPublish && publishTag != "" && publishFork == "" {
+			//   - --fork without --migrate (the local entry still tracks
+			//     the original registry — re-resolving against the old
+			//     registry's tags would silently pick the wrong source)
+			//   - any other state where Registry can't be resolved
+			//     (auto-register attempted for --fork --migrate; see
+			//     autoRegisterForkAsRegistry — issue #108)
+			if r != nil && !r.NothingToPublish && publishTag != "" {
 				targetsCopy := append([]string{}, e.Targets...)
 				registryName := e.Registry
+				if registryName == "" && publishFork != "" && publishMigrate {
+					// --fork --migrate --tag graduation: PublishInstalled
+					// just cleared e.Registry and pointed e.Source at the
+					// fork URL. Auto-register the fork as a local
+					// registry so the standard install path can resolve
+					// it, then proceed through the same Remove + Install
+					// rails as a same-registry graduation. Issue #108.
+					if newName := autoRegisterForkAsRegistry(cmd.Context(), publishFork, e); newName != "" {
+						registryName = newName
+						// Persist the entry's freshly-set Registry now so
+						// a mid-flight failure leaves the lock pointing
+						// at a registry the world knows about, not "".
+						lock.Put(e)
+						if perr := lock.Write(); perr != nil {
+							printer.Warning(fmt.Sprintf("publish %s: persist auto-added registry failed (%v)", name, perr))
+						}
+					}
+				}
 				if registryName != "" {
 					gcc := git.NewGoGitClient()
 					wt := git.NewGoGitWorktree()
@@ -338,7 +411,10 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		msg += fmt.Sprintf(", tagged %s", result.Tag)
 	}
 	if result.Migrated {
-		msg += " — lock entry now tracks the fork (Registry field cleared)"
+		msg += " — lock entry now tracks the fork"
+		if !autoUnejected {
+			msg += " (Registry field cleared; auto-uneject did not run)"
+		}
 		_ = entry // suppress unused — kept for future hook points
 	}
 	if result.Layout != "" {
@@ -364,10 +440,15 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 	case autoUnejectNeedsAdd:
 		printer.Info(fmt.Sprintf("Hint: run `qvr add %s@%s` to finish switching back to consume mode",
 			result.Skill, result.Tag))
-	case result.Tag != "" && !result.DryRun && !result.NothingToPublish:
+	case result.Tag != "" && !result.DryRun && !result.NothingToPublish && publishFork == "":
 		printer.Info(fmt.Sprintf(
 			"Hint: run `qvr remove --force %s && qvr add %s@%s` to switch back to consume mode at the new tag",
 			result.Skill, result.Skill, result.Tag))
+		// The --fork --migrate --tag case is handled by
+		// autoRegisterForkAsRegistry's bespoke warning when auto-uneject
+		// fails (and Switched … above when it succeeds). No generic
+		// trailing hint — `qvr add %s@%s` doesn't work for a fork URL
+		// that isn't a configured registry yet.
 	}
 	return nil
 }
