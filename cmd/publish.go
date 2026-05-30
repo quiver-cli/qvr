@@ -360,6 +360,21 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 					mgr := newRegistryManager(gcc)
 					installer := skill.NewInstaller(mgr, wt, gcc)
 
+					// Aliased installs need to re-install with the canonical
+					// name + As=alias because the registry index lists the
+					// canonical, not the local alias. Pre-#113 the auto-
+					// uneject used `name + "@" + publishTag` directly, which
+					// silently failed `FindSkillIn` for aliased entries. The
+					// non-aliased path is a no-op (canonical == name, As ==
+					// ""). Mirrors the same pattern in cmd/switch.go and
+					// cmd/upgrade.go.
+					canonicalSkill := name
+					aliasFlag := ""
+					if e.Canonical != "" {
+						canonicalSkill = e.Canonical
+						aliasFlag = name
+					}
+
 					// Refresh the bare clone so FindSkillIn sees the
 					// just-pushed tag; without this the new tag isn't
 					// in the local index yet and Install would resolve
@@ -374,13 +389,14 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 					}); rerr != nil {
 						printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — remove failed (%v)", name, rerr))
 					} else if _, ierr := installer.Install(skill.InstallRequest{
-						Skill:       name + "@" + publishTag,
+						Skill:       canonicalSkill + "@" + publishTag,
 						Targets:     targetsCopy,
 						Global:      publishGlobal,
 						ProjectRoot: projectRoot,
 						LockPath:    lockPath,
 						Force:       true,
 						Registry:    registryName,
+						As:          aliasFlag,
 					}); ierr != nil {
 						// Remove already tore down the eject dir + lock
 						// entry. The user needs `qvr add` (not the full

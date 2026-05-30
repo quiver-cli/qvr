@@ -33,8 +33,11 @@ func markFlagGroup(fs *pflag.FlagSet, flagName, group string) {
 // an automatic trailing "Other" bucket so newly-added flags can't
 // silently disappear.
 //
-// The rest of the help (usage line, aliases, examples, long
-// description, global flags) is rendered the same as cobra's default.
+// The rest of the help (usage line, aliases, examples, global flags)
+// is rendered the same as cobra's default. The command's `Long`
+// description is deliberately NOT printed here because cobra's default
+// HelpTemplate already prints it before calling UsageString (issue #114
+// — printing it again here caused --help to double the block).
 func groupedUsageFunc(order []string) func(*cobra.Command) error {
 	return func(c *cobra.Command) error {
 		w := c.OutOrStderr()
@@ -48,9 +51,6 @@ func groupedUsageFunc(order []string) func(*cobra.Command) error {
 		}
 		if c.HasExample() {
 			fmt.Fprintf(w, "\nExamples:\n%s\n", c.Example)
-		}
-		if c.Long != "" {
-			fmt.Fprintf(w, "\n%s\n", c.Long)
 		}
 
 		// Bucket flags by annotation.

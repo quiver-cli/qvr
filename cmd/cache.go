@@ -12,18 +12,22 @@ import (
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/registry"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // stdinIsTTYFn is the package-level seam tests use to drive the
 // `qvr cache prune` confirmation gate without inheriting the test
-// runner's actual TTY status. Real callers see the os.Stdin check;
-// tests override to return false (non-TTY = CI / pipeline path).
+// runner's actual TTY status. Real callers see the term.IsTerminal
+// check; tests override to return false (non-TTY = CI / pipeline path).
+//
+// term.IsTerminal calls into platform-specific tty ioctls (TIOCGWINSZ
+// on Unix, GetConsoleMode on Windows), which correctly distinguish a
+// real terminal from a char device like /dev/null (issue #115 —
+// os.ModeCharDevice alone falsely flagged /dev/null as a TTY, so a
+// `qvr cache prune` running under cron/systemd with stdin closed
+// hit the prompt path, read EOF, aborted silently with exit 0).
 var stdinIsTTYFn = func() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // stdinIsTTY reports whether stdin is attached to a terminal. The
