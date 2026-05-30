@@ -16,11 +16,13 @@ import (
 )
 
 var (
-	addTargets []string
-	addGlobal  bool
-	addForce   bool
-	addFrozen  bool
-	addNoScan  bool
+	addTargets  []string
+	addGlobal   bool
+	addForce    bool
+	addFrozen   bool
+	addNoScan   bool
+	addRegistry string
+	addAs       string
 )
 
 var addCmd = &cobra.Command{
@@ -56,6 +58,10 @@ func init() {
 		"refuse drift from the recorded subtree hash; the skill must already be in the lock")
 	addCmd.Flags().BoolVar(&addNoScan, "no-scan", false,
 		"skip the security scan that normally gates installs (override security.scan_on_install)")
+	addCmd.Flags().StringVar(&addRegistry, "registry", "",
+		"scope resolution to a single registry (defaults to all configured); use to disambiguate same-named skills")
+	addCmd.Flags().StringVar(&addAs, "as", "",
+		"install under a different local name (lock entry + symlink filename). Lets two versions of the same skill coexist in one project for A/B testing. Single skill only.")
 	rootCmd.AddCommand(addCmd)
 }
 
@@ -63,6 +69,23 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	// --as renames a single lock entry; with multiple positional args it
+	// would silently apply to only one and skip the rest, which would be
+	// the kind of "looks like it worked" footgun the rest of `qvr add`
+	// guards against. Refuse rather than guess.
+	if addAs != "" && len(args) != 1 {
+		return fmt.Errorf("--as can only be used with a single skill argument (got %d)", len(args))
+	}
+	// --as "" reaches the installer as an empty string indistinguishable
+	// from "flag not passed", so the installer silently installs under the
+	// canonical name. From the user's perspective they explicitly asked
+	// for an alias and got none — a footgun for `qvr add foo --as "$x"`
+	// when $x is empty. Detect the explicit empty here and route through
+	// the same invalid-name error that other malformed --as values produce.
+	// Issue #103.
+	if cmd.Flags().Changed("as") && addAs == "" {
+		return fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", addAs)
 	}
 	targets := addTargets
 	if len(targets) == 0 {
@@ -94,6 +117,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				LockPath:    lockPath,
 				Force:       addForce,
 				Frozen:      addFrozen,
+				Registry:    addRegistry,
+				As:          addAs,
 			})
 			if err != nil {
 				// Skill not found is the headline error — point at `qvr registry add`
@@ -117,6 +142,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				Disabled: addNoScan,
 				Action:   "add",
 				Subject:  result.Name,
+				// Quiet: collapse benign-finding noise to a one-line banner.
+				// Blocked installs still get the full detail.
+				Quiet: true,
 			})
 			if gerr != nil {
 				printer.Warning(fmt.Sprintf("add %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", result.Name, gerr, result.Name))
@@ -152,6 +180,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			// after all failures, making partial-failure batches look
 			// like total failures on a CI scroll-by.
 			if printer.Format != output.FormatJSON {
+				// Surface installer-side advisories (e.g. multi-registry
+				// ambiguity pick) before the ✓ so the user sees the
+				// caveat associated with the install it qualifies
+				// (issue #101).
+				for _, w := range result.Warnings {
+					printer.Warning(w)
+				}
 				printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
 			}
 		}
@@ -186,6 +221,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		// failed" even when successes ran (issue #66). Sentinel
 		// preserves the exit-1 contract without the duplicate.
 		return errTextHandled
+	}
+	// Next-step hint, init.go-style. Only when at least one skill landed;
+	// otherwise a no-op rerun stays quiet. Project installs get the
+	// "commit your lockfile" nudge because reproducibility is the
+	// whole point of qvr.lock; global installs get the inspection hint.
+	if len(results) > 0 {
+		if addGlobal {
+			printer.Info("Hint: `qvr list --global` shows what's installed in the ambient lane")
+		} else {
+			printer.Info("Hint: commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
+		}
 	}
 	return nil
 }

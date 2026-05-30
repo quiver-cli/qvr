@@ -51,7 +51,12 @@ var publishCmd = &cobra.Command{
     to a multi-skill registry repo.
 
 The first argument is treated as an installed skill name when it matches a
-lock entry; otherwise as a filesystem path.`,
+lock entry; otherwise as a filesystem path.
+
+Flag groups (see --help for full descriptions):
+  Authoring: --branch --tag --message --author --email
+  Control:   --dry-run --no-scan --force --auto-commit --no-create-branch --allow-lockfile-heal
+  Layout:    --layout --fork --migrate --registry --global`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPublish,
 }
@@ -119,8 +124,10 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 	}
 
 	var (
-		result *skill.PublishInstalledResult
-		entry  *model.LockEntry
+		result              *skill.PublishInstalledResult
+		entry               *model.LockEntry
+		autoUnejected       bool // tag pushed + relocked + relinked at the new tag
+		autoUnejectNeedsAdd bool // eject torn down, but re-install failed; user must `qvr add` to finish
 	)
 	lockErr := model.WithLock(lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
@@ -230,6 +237,66 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 			if err := lock.Write(); err != nil {
 				return fmt.Errorf("write lock: %w", err)
 			}
+
+			// Auto un-eject: after a tagged publish, flip the lockfile
+			// out of edit mode and re-symlink the agent targets at the
+			// new tag's shared worktree — the same end state as
+			//   qvr remove --force <skill> && qvr add <skill>@<tag>
+			// without making the maintainer run them. The eject dir is
+			// removed; any committed-but-unpublished work beyond <tag>
+			// is gone, matching the cargo/npm convention that publish
+			// ends the editing session.
+			//
+			// Skipped for:
+			//   - dry-run / nothing-to-publish (no new state to switch to)
+			//   - HEAD-only push (no tag means the user is iterating)
+			//   - --fork (the new tag lives on the fork, and the local
+			//     bare clone tracks the original registry — re-resolving
+			//     against the old registry would silently pick the wrong
+			//     source)
+			//   - empty Registry on the entry (migrated; no local bare
+			//     clone to refresh)
+			if r != nil && !r.NothingToPublish && publishTag != "" && publishFork == "" {
+				targetsCopy := append([]string{}, e.Targets...)
+				registryName := e.Registry
+				if registryName != "" {
+					gcc := git.NewGoGitClient()
+					wt := git.NewGoGitWorktree()
+					mgr := newRegistryManager(gcc)
+					installer := skill.NewInstaller(mgr, wt, gcc)
+
+					// Refresh the bare clone so FindSkillIn sees the
+					// just-pushed tag; without this the new tag isn't
+					// in the local index yet and Install would resolve
+					// against stale tags.
+					if _, uerr := mgr.Update(cmd.Context(), registryName); uerr != nil {
+						printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — refresh %s failed (%v)", name, registryName, uerr))
+					} else if rerr := installer.Remove(name, skill.InstallRequest{
+						ProjectRoot: projectRoot,
+						Global:      publishGlobal,
+						LockPath:    lockPath,
+						Force:       true,
+					}); rerr != nil {
+						printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — remove failed (%v)", name, rerr))
+					} else if _, ierr := installer.Install(skill.InstallRequest{
+						Skill:       name + "@" + publishTag,
+						Targets:     targetsCopy,
+						Global:      publishGlobal,
+						ProjectRoot: projectRoot,
+						LockPath:    lockPath,
+						Force:       true,
+						Registry:    registryName,
+					}); ierr != nil {
+						// Remove already tore down the eject dir + lock
+						// entry. The user needs `qvr add` (not the full
+						// two-step) to recover.
+						autoUnejectNeedsAdd = true
+						printer.Warning(fmt.Sprintf("publish %s: tag pushed and eject torn down, but re-install at %s failed (%v)", name, publishTag, ierr))
+					} else {
+						autoUnejected = true
+					}
+				}
+			}
 		}
 		result = r
 		entry = e
@@ -278,6 +345,30 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		msg += fmt.Sprintf(" [layout=%s]", result.Layout)
 	}
 	printer.Success(msg)
+
+	// Auto un-eject status. After a tagged install-mode publish, the
+	// maintainer round-trip flips the lockfile out of edit mode and
+	// re-symlinks at the new tag automatically. Cover the four states:
+	//
+	//   - autoUnejected: full success, the entry is back in consume mode.
+	//   - autoUnejectNeedsAdd: Remove tore down state but Install failed;
+	//     the user has no entry on disk and needs to add to recover.
+	//   - publishFork or empty registry: auto un-eject was skipped by
+	//     design; print the manual recovery hint.
+	//   - otherwise (tag set, normal publish): never reached unless the
+	//     auto-un-eject Update or Remove step bailed mid-flight; surface
+	//     the same manual recovery hint as the conservative fallback.
+	switch {
+	case autoUnejected:
+		printer.Info(fmt.Sprintf("Switched %s back to consume mode at %s", result.Skill, result.Tag))
+	case autoUnejectNeedsAdd:
+		printer.Info(fmt.Sprintf("Hint: run `qvr add %s@%s` to finish switching back to consume mode",
+			result.Skill, result.Tag))
+	case result.Tag != "" && !result.DryRun && !result.NothingToPublish:
+		printer.Info(fmt.Sprintf(
+			"Hint: run `qvr remove --force %s && qvr add %s@%s` to switch back to consume mode at the new tag",
+			result.Skill, result.Skill, result.Tag))
+	}
 	return nil
 }
 

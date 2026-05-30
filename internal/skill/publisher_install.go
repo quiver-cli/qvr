@@ -137,6 +137,15 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidSkillPath, err)
 	}
+	// Aliased installs have SKILL.md `name:` == canonical, but LoadFromPath
+	// reads the dir basename as the validator's expected name. The dir is
+	// the alias, so the name-must-match-dir check would always fail. The
+	// published artifact carries the canonical name (it's the registry-side
+	// identity, not the local alias), so swap the validator's expected
+	// name to the canonical for aliased entries. Issue #104.
+	if e.Canonical != "" {
+		loaded.Name = e.Canonical
+	}
 	if vr := Validate(loaded); !vr.Valid {
 		var msgs []string
 		for _, ve := range vr.Errors {

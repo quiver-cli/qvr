@@ -19,6 +19,11 @@ var (
 	ErrSkillNotFound    = errors.New("skill not found in any registry")
 	ErrAlreadyInstalled = errors.New("skill is already installed")
 	ErrInvalidReference = errors.New("invalid skill reference")
+	// ErrAmbiguousRef means the requested skill exists in >1 registry but
+	// the @<ref> the user asked for isn't resolvable in any of them.
+	// Distinct from ErrSkillNotFound so cmd/add.go can render per-registry
+	// version hints instead of a generic "register one" message (issue #101).
+	ErrAmbiguousRef = errors.New("ref not found in any registry that provides the skill")
 )
 
 // InstallRequest describes a desired install.
@@ -34,16 +39,43 @@ type InstallRequest struct {
 	// hash must match the recorded VerificationRecord.SubtreeHash. Drift or
 	// missing entries are hard errors.
 	Frozen bool
+	// Registry restricts skill resolution to the named registry. Empty
+	// means "search every configured registry" (the default `qvr add`
+	// behavior). Set by `qvr add --registry <name>` so users can pick
+	// a specific source when multiple registries publish a skill of
+	// the same name.
+	Registry string
+	// As overrides the local install name: the lock entry, symlink
+	// filename, and `qvr remove`/`qvr list` key all use As instead of
+	// the canonical skill name from the registry. Empty means "install
+	// under the canonical name" (the default). Set by
+	// `qvr add <skill> --as <alias>` so two installs of the same skill
+	// at different refs can coexist in one project (A/B testing,
+	// pinning an old version while iterating on a new one).
+	//
+	// The underlying worktree is still keyed by canonical name + SHA,
+	// so two aliases pointing at the same canonical commit share one
+	// worktree on disk.
+	As string
 }
 
 // InstallResult holds the outcome for a single skill install.
+//
+// Name is the local lock-entry name (the --as alias when set, otherwise the
+// canonical name from the registry). Canonical is the canonical name; the
+// two are equal in the common no-alias case so existing JSON consumers stay
+// stable. Warnings carries non-fatal advisories surfaced during resolution
+// — e.g. "the skill name matched 2 registries, picked X" — so the caller
+// can render them once per install (issue #101).
 type InstallResult struct {
-	Name     string   `json:"name"`
-	Registry string   `json:"registry"`
-	Version  string   `json:"version"`
-	Worktree string   `json:"worktree"`
-	Targets  []string `json:"targets"`
-	Commit   string   `json:"commit"`
+	Name      string   `json:"name"`
+	Canonical string   `json:"canonical,omitempty"`
+	Registry  string   `json:"registry"`
+	Version   string   `json:"version"`
+	Worktree  string   `json:"worktree"`
+	Targets   []string `json:"targets"`
+	Commit    string   `json:"commit"`
+	Warnings  []string `json:"warnings,omitempty"`
 }
 
 // Installer orchestrates worktree + sparse checkout + symlinks + lock file.
@@ -93,9 +125,54 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		}
 	}
 
-	loc, err := in.Registry.FindSkill(name)
+	// --frozen lock peek: the lockfile is authoritative for a frozen
+	// install, so use it to pre-fill request fields the user didn't
+	// supply. Two effects:
+	//   1. Alias support (#102): when the user runs `qvr add --frozen
+	//      <alias>` and the lock records <alias> as an alias entry
+	//      (entry.Canonical != ""), swap the registry lookup to the
+	//      canonical name and preserve the alias via req.As. Without
+	//      this the lookup treats the alias as a registry skill name and
+	//      fails ErrSkillNotFound, even though the lock is self-describing.
+	//      RestoreAll already does this swap explicitly when iterating
+	//      entries; here we handle the caller-supplied-name path.
+	//   2. Registry scoping (#105): pre-fill req.Registry from
+	//      entry.Registry so resolveSkill is scoped to the source that
+	//      was pinned at install time. Without this the resolver walks
+	//      every configured registry and may emit a stale ambiguity
+	//      warning even though the lockfile already chose.
+	if req.Frozen {
+		lp := req.LockPath
+		if lp == "" {
+			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+		}
+		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
+			if existing, gerr := existingLock.Get(name); gerr == nil {
+				if req.As == "" && existing.Canonical != "" {
+					req.As = name
+					name = existing.Canonical
+				}
+				if req.Registry == "" && existing.Registry != "" {
+					req.Registry = existing.Registry
+				}
+			}
+		}
+	}
+
+	// localName is what we record in the lock and use for symlink
+	// filenames; canonical `name` still drives registry lookup and the
+	// worktree path so aliases at the same SHA share one worktree.
+	localName := name
+	if req.As != "" {
+		if !nameRegex.MatchString(req.As) || strings.Contains(req.As, "--") {
+			return nil, fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", req.As)
+		}
+		localName = req.As
+	}
+
+	loc, ambiguityWarning, err := in.resolveSkill(name, version, req.Registry)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrSkillNotFound, name)
+		return nil, err
 	}
 	if version == "" {
 		version = resolveDefaultRef(loc, in.Git)
@@ -114,9 +191,9 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		if lerr != nil {
 			return nil, fmt.Errorf("--frozen requires a readable lock file: %w", lerr)
 		}
-		existing, gerr := existingLock.Get(name)
+		existing, gerr := existingLock.Get(localName)
 		if gerr != nil {
-			return nil, fmt.Errorf("--frozen: skill %q not present in lock file", name)
+			return nil, fmt.Errorf("--frozen: skill %q not present in lock file", localName)
 		}
 		if existing.Ref != "" {
 			version = existing.Ref
@@ -127,16 +204,18 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	// Conflict check: silently swapping the lock entry to a different ref
 	// would contradict the "switching refs is a symlink repoint, not a
 	// re-install" contract. Refuse and point at `qvr switch`. Idempotent
-	// when the existing ref matches.
+	// when the existing ref matches. Uses localName so `--as <alias>`
+	// installs only conflict with prior installs of the same alias, not
+	// the canonical name — the whole point of --as is coexistence.
 	if !req.Force {
 		lp := req.LockPath
 		if lp == "" {
 			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
 		}
 		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
-			if existing, gerr := existingLock.Get(name); gerr == nil && existing.Ref != "" && existing.Ref != version {
+			if existing, gerr := existingLock.Get(localName); gerr == nil && existing.Ref != "" && existing.Ref != version {
 				return nil, fmt.Errorf("%s already installed at %s; use `qvr switch %s %s` to change refs, or `qvr remove %s --force` to uninstall (then re-run `qvr add %s@%s`), or pass --force to `qvr add` to overwrite in place",
-					name, existing.Ref, name, version, name, name, version)
+					localName, existing.Ref, localName, version, localName, localName, version)
 			}
 		}
 	}
@@ -203,7 +282,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	// created symlinks for this install to leave the filesystem consistent.
 	var created []string
 	for _, t := range req.Targets {
-		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, req.Global)
+		linkPath, err := ResolveTargetPath(t, localName, req.ProjectRoot, req.Global)
 		if err != nil {
 			rollbackLinks(created)
 			return nil, err
@@ -229,7 +308,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	}
 	targets := req.Targets
 	var priorVerification *model.VerificationRecord
-	if existing, err := lock.Get(name); err == nil {
+	if existing, err := lock.Get(localName); err == nil {
 		targets = mergeTargets(existing.Targets, req.Targets)
 		// Preserve the prior Verification when the install is a no-op
 		// (same commit). Without this, a re-add wipes the scan attestation
@@ -250,7 +329,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	}
 
 	entry := &model.LockEntry{
-		Name:          name,
+		Name:          localName,
 		Registry:      loc.RegistryName,
 		Source:        loc.RegistryURL,
 		Path:          loc.Entry.Path,
@@ -261,6 +340,12 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		Targets:       targets,
 		Verification:  priorVerification,
 	}
+	// Record the canonical (registry-side) skill name when the user
+	// installed under an alias, so `qvr list` / `qvr upgrade` can map
+	// the local lock key back to the registry skill it points at.
+	if req.As != "" {
+		entry.Canonical = name
+	}
 
 	// --frozen drift check: the just-installed worktree must hash to the
 	// same SubtreeHash recorded in the prior lockfile entry. Mismatch
@@ -270,7 +355,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	if req.Frozen && frozenRef != nil && frozenRef.SubtreeHash != "" {
 		if entry.SubtreeHash != frozenRef.SubtreeHash {
 			return nil, fmt.Errorf("--frozen: subtree hash drift for %s (expected %s, got %s)",
-				name, frozenRef.SubtreeHash, entry.SubtreeHash)
+				localName, frozenRef.SubtreeHash, entry.SubtreeHash)
 		}
 	}
 
@@ -279,14 +364,119 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		return nil, fmt.Errorf("write lock file: %w", err)
 	}
 
-	return &InstallResult{
-		Name:     name,
+	result := &InstallResult{
+		Name:     localName,
 		Registry: loc.RegistryName,
 		Version:  version,
 		Worktree: finalPath,
 		Targets:  targets,
 		Commit:   commit,
-	}, nil
+	}
+	if req.As != "" {
+		result.Canonical = name
+	}
+	if ambiguityWarning != "" {
+		result.Warnings = append(result.Warnings, ambiguityWarning)
+	}
+	return result, nil
+}
+
+// resolveSkill picks the SkillLocation for a (name, version, registry) tuple
+// and returns a non-fatal ambiguity warning when the caller didn't scope to
+// a single registry and the name resolves to >1 source.
+//
+// When registryName is set, this is a single-registry FindSkillIn — the
+// scoped error flows through unchanged.
+//
+// Otherwise we collect every registry that exposes `name`:
+//
+//  0. zero matches → ErrSkillNotFound
+//  1. one match    → use it, no warning
+//     N. multiple:
+//     - if version == "": pick the first (alphabetical) and warn so the
+//     user knows the resolution wasn't unique and can re-pin with
+//     --registry. Closes the silent-pick half of issue #101.
+//     - if version != "": try every candidate via ResolveRef; pick the
+//     first one whose bare clone actually contains the ref. If none
+//     do, return ErrAmbiguousRef with per-registry version summaries
+//     so the user sees who has what instead of the misleading
+//     "create worktree: reference not found" from the old single-pick
+//     path. Closes the wrong-pick-then-error half of issue #101.
+func (in *Installer) resolveSkill(name, version, registryName string) (*registry.SkillLocation, string, error) {
+	if registryName != "" {
+		loc, err := in.Registry.FindSkillIn(name, registryName)
+		if err != nil {
+			return nil, "", err
+		}
+		return loc, "", nil
+	}
+	locs, err := in.Registry.FindAllSkillLocations(name)
+	if err != nil {
+		return nil, "", err
+	}
+	switch len(locs) {
+	case 0:
+		return nil, "", fmt.Errorf("%w: %s", ErrSkillNotFound, name)
+	case 1:
+		return locs[0], "", nil
+	}
+
+	regNames := make([]string, len(locs))
+	for i, l := range locs {
+		regNames[i] = l.RegistryName
+	}
+
+	if version == "" {
+		picked := locs[0]
+		warning := fmt.Sprintf("%s resolves to %d registries (%s) — picked %s (alphabetical). Pass --registry %s to silence this, or --registry <name> to pick another.",
+			name, len(locs), strings.Join(regNames, ", "), picked.RegistryName, picked.RegistryName)
+		return picked, warning, nil
+	}
+
+	for _, l := range locs {
+		if _, rerr := in.Git.ResolveRef(l.RepoPath, version); rerr == nil {
+			return l, "", nil
+		}
+	}
+
+	var lines []string
+	for _, l := range locs {
+		lines = append(lines, fmt.Sprintf("  - %s: %s", l.RegistryName, summarizeVersions(l)))
+	}
+	return nil, "", fmt.Errorf("%w: ref %q not found in any registry that provides %q:\n%s\nPass --registry <name> to scope",
+		ErrAmbiguousRef, version, name, strings.Join(lines, "\n"))
+}
+
+// summarizeVersions renders a compact "tags: vA..vZ; branches: main, dev"
+// hint for a SkillLocation, used in ErrAmbiguousRef messages. Empty lists
+// are dropped so a tag-only registry doesn't carry an empty "branches:"
+// segment.
+func summarizeVersions(loc *registry.SkillLocation) string {
+	var parts []string
+	if tags := loc.Entry.Versions.Tags; len(tags) > 0 {
+		parts = append(parts, "tags: "+strings.Join(tagsForSummary(tags), ", "))
+	}
+	if branches := loc.Entry.Versions.Branches; len(branches) > 0 {
+		parts = append(parts, "branches: "+strings.Join(branches, ", "))
+	}
+	if len(parts) == 0 {
+		return "no published refs"
+	}
+	return strings.Join(parts, "; ")
+}
+
+// tagsForSummary returns the up-to-five most relevant tag labels for an
+// error message. We don't sort — registries publish their own ordering and
+// re-sorting by semver here would be a dependency-heavy distraction in an
+// error path. Truncation just keeps the line readable.
+func tagsForSummary(tags []string) []string {
+	const max = 5
+	if len(tags) <= max {
+		return tags
+	}
+	out := append([]string{}, tags[:max]...)
+	out = append(out, fmt.Sprintf("…(+%d more)", len(tags)-max))
+	return out
 }
 
 // RestoreAll reinstalls every skill recorded in the lock file. Used by
@@ -305,9 +495,18 @@ func (in *Installer) RestoreAll(req InstallRequest) ([]*InstallResult, error) {
 	}
 	var out []*InstallResult
 	for _, entry := range lock.Entries() {
-		skillRef := entry.Name
+		// Aliased entries resolve their registry source by the canonical
+		// name; preserve the alias via As so the restored lock key stays
+		// the local alias, not the canonical name.
+		canonicalName := entry.Name
+		aliasFlag := ""
+		if entry.Canonical != "" {
+			canonicalName = entry.Canonical
+			aliasFlag = entry.Name
+		}
+		skillRef := canonicalName
 		if entry.Ref != "" {
-			skillRef = entry.Name + "@" + entry.Ref
+			skillRef = canonicalName + "@" + entry.Ref
 		}
 		result, err := in.Install(InstallRequest{
 			Skill:       skillRef,
@@ -316,6 +515,7 @@ func (in *Installer) RestoreAll(req InstallRequest) ([]*InstallResult, error) {
 			ProjectRoot: req.ProjectRoot,
 			LockPath:    lockPath,
 			Frozen:      req.Frozen,
+			As:          aliasFlag,
 		})
 		if err != nil {
 			return out, fmt.Errorf("restore %s: %w", entry.Name, err)

@@ -433,36 +433,91 @@ type SkillLocation struct {
 	DefaultBranch string
 }
 
-// FindSkill searches all registries for a skill by name.
+// FindSkill searches all registries for a skill by name and returns the first
+// match in alphabetical-by-registry-name order. Same-named skills in multiple
+// registries surface as whichever registry sorts first — callers that need
+// to detect the ambiguity should use FindAllSkillLocations instead.
 func (m *Manager) FindSkill(skillName string) (*SkillLocation, error) {
+	return m.FindSkillIn(skillName, "")
+}
+
+// FindSkillIn searches for a skill by name, restricted to the named
+// registry when registryName is non-empty. Empty registryName searches
+// every configured registry and returns the first match in alphabetical
+// order (see FindSkill). Used by `qvr add --registry <name>` to
+// disambiguate same-named skills across registries.
+func (m *Manager) FindSkillIn(skillName, registryName string) (*SkillLocation, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	for regName, regCfg := range cfg.Registries {
-		repoPath := RegistryPath(regName)
-		entries, _, err := m.Index(regName, repoPath)
-		if err != nil {
-			continue
+	if registryName != "" {
+		regCfg, ok := cfg.Registries[registryName]
+		if !ok {
+			return nil, fmt.Errorf("registry %q is not configured — run `qvr registry list`", registryName)
 		}
-		for _, entry := range entries {
-			if entry.Name == skillName {
-				defaultBranch, _ := m.Git.DefaultBranch(repoPath)
-				if defaultBranch == "" {
-					defaultBranch = defaultBranchFallback
-				}
-				return &SkillLocation{
-					Entry:         entry,
-					RegistryName:  regName,
-					RegistryURL:   regCfg.URL,
-					RepoPath:      repoPath,
-					DefaultBranch: defaultBranch,
-				}, nil
-			}
+		if loc := m.findSkillInRegistry(skillName, registryName, regCfg.URL); loc != nil {
+			return loc, nil
+		}
+		return nil, fmt.Errorf("skill %q not found in registry %q", skillName, registryName)
+	}
+
+	for _, regName := range registryNames(cfg, "") {
+		if loc := m.findSkillInRegistry(skillName, regName, cfg.Registries[regName].URL); loc != nil {
+			return loc, nil
 		}
 	}
 	return nil, fmt.Errorf("skill %q not found in any registry", skillName)
+}
+
+// FindAllSkillLocations returns every registry that exposes a skill of the
+// given name, in alphabetical-by-registry-name order. The empty-slice +
+// nil-error case means "no registry has this skill"; callers can rely on
+// len(locs) for the ambiguity check that drives `qvr add`'s pick-one warning
+// and ref-aware fallback. Index-build failures for a single registry are
+// silently skipped, matching FindSkill's behavior.
+func (m *Manager) FindAllSkillLocations(skillName string) ([]*SkillLocation, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	var out []*SkillLocation
+	for _, regName := range registryNames(cfg, "") {
+		if loc := m.findSkillInRegistry(skillName, regName, cfg.Registries[regName].URL); loc != nil {
+			out = append(out, loc)
+		}
+	}
+	return out, nil
+}
+
+// findSkillInRegistry returns the SkillLocation for skillName in the named
+// registry, or nil if the index can't be built or the skill isn't present.
+// Shared body for FindSkillIn and FindAllSkillLocations so the lookup,
+// default-branch fallback, and SkillLocation shape stay in one place.
+func (m *Manager) findSkillInRegistry(skillName, regName, regURL string) *SkillLocation {
+	repoPath := RegistryPath(regName)
+	entries, _, err := m.Index(regName, repoPath)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.Name != skillName {
+			continue
+		}
+		defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+		if defaultBranch == "" {
+			defaultBranch = defaultBranchFallback
+		}
+		return &SkillLocation{
+			Entry:         entry,
+			RegistryName:  regName,
+			RegistryURL:   regURL,
+			RepoPath:      repoPath,
+			DefaultBranch: defaultBranch,
+		}
+	}
+	return nil
 }
 
 func registryNames(cfg *config.Config, name string) []string {

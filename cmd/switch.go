@@ -54,16 +54,26 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 		// worktree at the new SHA's path and leaves any existing worktree at
 		// the old SHA untouched — projects pinned to the old SHA keep working.
 		// `qvr cache prune` is the GC for the now-orphan old worktree.
+		//
+		// Aliased entries: lookup the registry source under the canonical
+		// name and replay the alias via As so the lock key stays unchanged.
+		canonicalName := name
+		aliasFlag := ""
+		if entry.Canonical != "" {
+			canonicalName = entry.Canonical
+			aliasFlag = name
+		}
 		gc := git.NewGoGitClient()
 		wt := git.NewGoGitWorktree()
 		installer := skill.NewInstaller(newRegistryManager(gc), wt, gc)
 		result, err := installer.Install(skill.InstallRequest{
-			Skill:       name + "@" + ref,
+			Skill:       canonicalName + "@" + ref,
 			Targets:     entry.Targets,
 			Global:      switchGlobal,
 			ProjectRoot: projectRoot,
 			LockPath:    lockPath,
 			Force:       true,
+			As:          aliasFlag,
 		})
 		if err != nil {
 			return fmt.Errorf("switch: %w", err)

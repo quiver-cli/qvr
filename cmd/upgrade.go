@@ -59,16 +59,42 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
+		// Aliased installs (qvr add --as) keep the registry-side skill
+		// name in entry.Canonical; the lock key is the alias. Index
+		// lookups (FindSkill, Update) need the canonical name; the
+		// alias is only meaningful to the local lockfile.
+		canonicalName := name
+		if entry.Canonical != "" {
+			canonicalName = entry.Canonical
+		}
 		target := upgradeTo
 		if target == "" {
 			mgr := newRegistryManager(git.NewGoGitClient())
-			loc, err := mgr.FindSkill(name)
+			loc, err := mgr.FindSkill(canonicalName)
 			if err != nil {
 				return fmt.Errorf("locate skill: %w", err)
 			}
+			// Refresh the source registry before consulting tags so a
+			// just-published v0.2.0 is visible without first running
+			// `qvr registry update`. Without this, the TTL'd index cache
+			// makes upgrade lie about the latest version while `qvr
+			// outdated` (which ls-remotes) sees the new tag — the
+			// "feels broken on first try" finding from the OSS-readiness
+			// audit. Network failure is non-fatal: fall through with the
+			// stale index so offline workflows still resolve to the best
+			// known tag.
+			if _, uerr := mgr.Update(cmd.Context(), loc.RegistryName); uerr != nil {
+				printer.Warning(fmt.Sprintf("upgrade: refresh %s failed (%v); using cached tags", loc.RegistryName, uerr))
+			} else {
+				// Re-read with the refreshed index so the new tags land
+				// in loc.Entry.Versions.Tags.
+				if refreshed, rerr := mgr.FindSkill(canonicalName); rerr == nil {
+					loc = refreshed
+				}
+			}
 			target = skill.LatestSemverTag(loc.Entry.Versions.Tags)
 			if target == "" {
-				return fmt.Errorf("no semver tags found for %s in registry %s; pass --to <ref> to pick manually", name, loc.RegistryName)
+				return fmt.Errorf("no semver tags found for %s in registry %s; pass --to <ref> to pick manually", canonicalName, loc.RegistryName)
 			}
 		}
 		if target == entry.Ref {
@@ -82,16 +108,25 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		// any existing worktree at the old SHA in place. Shared worktrees
 		// across projects survive other projects upgrading off them; the
 		// orphans get cleaned by `qvr cache prune`.
+		//
+		// For aliased entries we pass As=name (the alias) so Install
+		// rewrites the same lock key instead of creating a new entry
+		// under the canonical name.
+		aliasFlag := ""
+		if entry.Canonical != "" {
+			aliasFlag = name
+		}
 		gcc := git.NewGoGitClient()
 		wt := git.NewGoGitWorktree()
 		installer := skill.NewInstaller(newRegistryManager(gcc), wt, gcc)
 		if _, err := installer.Install(skill.InstallRequest{
-			Skill:       name + "@" + target,
+			Skill:       canonicalName + "@" + target,
 			Targets:     entry.Targets,
 			Global:      upgradeGlobal,
 			ProjectRoot: projectRoot,
 			LockPath:    lockPath,
 			Force:       true,
+			As:          aliasFlag,
 		}); err != nil {
 			return fmt.Errorf("upgrade: %w", err)
 		}

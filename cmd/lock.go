@@ -50,8 +50,9 @@ from the on-disk worktree, and compare against the recorded value. Reports
 per-skill status: ok, drift, unverified (no hash on file), missing (worktree
 gone), link (no upstream), or failed (hash computation errored).
 
---frozen makes any drift or missing-worktree status a non-zero exit.
---strict also fails on unverified entries.
+--frozen makes any drift, missing-worktree, or failed-hash status a
+non-zero exit.
+--strict implies --frozen and also fails on unverified entries.
 --repair rewrites Verification blocks for drifting entries using current
 disk state (use only when you trust the current worktree).`,
 	RunE: runLockVerify,
@@ -70,9 +71,9 @@ that lacks a Verification block, and write the result back. Safe to re-run
 
 func init() {
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyFrozen, "frozen", false,
-		"exit non-zero on any drift or missing worktree")
+		"exit non-zero on any drift, missing-worktree, or failed-hash entry")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyStrict, "strict", false,
-		"also fail on unverified entries (no recorded hash)")
+		"imply --frozen and also fail on unverified entries (no recorded hash)")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyRepair, "repair", false,
 		"rewrite drifting Verification blocks using current worktree state")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyGlobal, "global", false,
@@ -242,11 +243,17 @@ func lockVerifyInternal(lock *model.LockFile, projectRoot string) (*VerifyOutput
 	// envelope can carry it as a sibling field. Two top-level documents
 	// on stdout would break `jq` / `JSON.parse` and was the v0.4.4 doctor
 	// regression pattern repeating itself in the supply-chain commands.
+	// --strict implies --frozen plus unverified: a CI gate that runs
+	// `--strict` is asking for "every entry is verifiably the recorded
+	// state." Without folding the --frozen failure modes into --strict, a
+	// missing worktree would slip through with exit 0 — the regression that
+	// motivated this rule (audit, OSS-readiness pass).
 	var failure string
-	if lockVerifyFrozen && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0) {
+	switch {
+	case lockVerifyStrict && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0 || out.Summary.Unverified > 0):
+		failure = fmt.Sprintf("lock verify: --strict failed (%s)", strictFailureCategories(out.Summary))
+	case lockVerifyFrozen && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0):
 		failure = fmt.Sprintf("lock verify: --frozen failed (%s)", failureCategories(out.Summary))
-	} else if lockVerifyStrict && out.Summary.Unverified > 0 {
-		failure = fmt.Sprintf("lock verify: --strict failed (%d unverified)", out.Summary.Unverified)
 	}
 	return out, failure, nil
 }
@@ -256,14 +263,30 @@ func lockVerifyInternal(lock *model.LockFile, projectRoot string) (*VerifyOutput
 // the old "drift detected" lied when the real cause was a missing worktree
 // or a hash-computation failure.
 func failureCategories(s VerifySummary) string {
-	pairs := []struct {
-		label string
-		count int
-	}{
+	return renderFailureCategories([]failingCategory{
 		{"drift", s.Drift},
 		{"missing", s.Missing},
 		{"failed", s.Failed},
-	}
+	})
+}
+
+// strictFailureCategories is failureCategories plus the unverified bucket,
+// since --strict additionally fails on entries lacking a recorded hash.
+func strictFailureCategories(s VerifySummary) string {
+	return renderFailureCategories([]failingCategory{
+		{"drift", s.Drift},
+		{"missing", s.Missing},
+		{"failed", s.Failed},
+		{"unverified", s.Unverified},
+	})
+}
+
+type failingCategory struct {
+	label string
+	count int
+}
+
+func renderFailureCategories(pairs []failingCategory) string {
 	parts := make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		if p.count > 0 {

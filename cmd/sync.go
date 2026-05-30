@@ -234,7 +234,43 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if len(result.Errors) > 0 {
 		return errTextHandled
 	}
+	// Orphan-worktree hint. After a normal sync, surface accumulated
+	// orphans in the shared cache so users see them without having to
+	// know `qvr cache list` exists. Threshold-gated (5+ orphans OR
+	// 100 MB+) so a single stray worktree doesn't nag every run.
+	// OSS-readiness finding: ~49 orphans (~200 MB) had accumulated
+	// across normal use without any prompt to clean.
+	if !syncDryRun {
+		printOrphanHintIfBig()
+	}
 	return nil
+}
+
+// printOrphanHintIfBig walks the shared worktree cache and emits a
+// one-line cleanup hint when orphans cross either the count (5) or size
+// (100 MB) threshold. Walk failures are silent — the hint is a courtesy,
+// not a contract.
+func printOrphanHintIfBig() {
+	entries, _, err := collectCacheEntries()
+	if err != nil {
+		return
+	}
+	var orphanCount int
+	var orphanBytes int64
+	for _, e := range entries {
+		if !e.Reachable {
+			orphanCount++
+			orphanBytes += e.SizeBytes
+		}
+	}
+	const (
+		orphanCountThreshold = 5
+		orphanBytesThreshold = 100 * 1024 * 1024 // 100 MB
+	)
+	if orphanCount >= orphanCountThreshold || orphanBytes >= orphanBytesThreshold {
+		printer.Info(fmt.Sprintf("Hint: %d orphan worktree(s) (~%s) — run `qvr cache prune` to reclaim",
+			orphanCount, humanBytes(orphanBytes)))
+	}
 }
 
 // needsLockWrite reports whether the in-memory lock would serialise to

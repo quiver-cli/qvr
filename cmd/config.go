@@ -117,6 +117,23 @@ var knownConfigKeys = []string{
 	"cache.index_ttl",
 }
 
+// suggestSubKeys returns the known dotted keys nested under prefix
+// (e.g. "security" → ["security.scan_on_install", "security.block_severity"]).
+// Empty when prefix is already dotted or doesn't match any section.
+func suggestSubKeys(prefix string) []string {
+	if prefix == "" || strings.Contains(prefix, ".") {
+		return nil
+	}
+	p := prefix + "."
+	var out []string
+	for _, k := range knownConfigKeys {
+		if strings.HasPrefix(k, p) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // configRead returns the string form of key, or "" if unknown.
 func configRead(cfg *config.Config, key string) string {
 	switch key {
@@ -189,6 +206,16 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	val := configRead(cfg, key)
 	if val == "" {
+		// Section names (e.g. "security", "output", "cache") have no
+		// scalar value of their own. Tell the user that explicitly and
+		// list the sub-keys they probably meant — beats the old
+		// "unknown or empty config key" error, which lied when the user
+		// was actually looking at a real (nested) section. OSS-readiness
+		// finding.
+		if children := suggestSubKeys(key); len(children) > 0 {
+			return fmt.Errorf("%q is a section, not a value — try one of: %s",
+				key, strings.Join(children, ", "))
+		}
 		return fmt.Errorf("unknown or empty config key: %s", key)
 	}
 

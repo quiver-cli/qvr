@@ -40,6 +40,13 @@ type scanGateOptions struct {
 	// were rendered as `✗ scan blocked` even though the skill was restored
 	// and linked anyway (bug #59).
 	WarnOnly bool
+	// Quiet suppresses the per-finding detail lines when the gate's
+	// decision is "allowed", showing only the one-line banner. Used by
+	// `qvr add` so a first-time install with N benign LOW findings doesn't
+	// dump N WARNING lines and make new users think something is wrong.
+	// Blocked decisions ignore Quiet — the user needs the full picture
+	// when something refuses to install. OSS-readiness finding.
+	Quiet bool
 }
 
 // scanGateResult is the outcome of a single ScanAndGate call. Blocked is true
@@ -163,6 +170,14 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 			action, subject, res.Summary.MaxSeverity(), threshold)
 	}
 	fmt.Fprintln(printer.Err, banner)
+	// Quiet+allowed → summary line only. `qvr add` sets this so a
+	// first-time install with benign findings doesn't dump N WARNING
+	// lines and scare users off. `qvr scan` keeps Quiet=false so the
+	// full report still appears when the user explicitly asked for it.
+	if opts.Quiet && !blocked {
+		fmt.Fprintf(printer.Err, "  Run `qvr scan %s` to see the full report.\n", subject)
+		return
+	}
 	// Render only findings at or above the threshold when blocking; otherwise
 	// show everything so the user has a complete picture of what was flagged.
 	display := res.Findings

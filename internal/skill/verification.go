@@ -31,6 +31,15 @@ func ComputeSubtreeHash(worktreePath, subpath string) (string, error) {
 // directory out from under the existing symlinks. Entries written before
 // this field existed fall back to entry.Commit so legacy v5 installs keep
 // resolving.
+//
+// Aliased entries (installed via `qvr add <skill> --as <alias>`) have
+// entry.Name == alias but the worktree on disk is keyed by the canonical
+// registry-side name — the install path builds finalPath with the
+// canonical name (installer.go: registry.WorktreePath(reg, name, sha)),
+// so we mirror that here by preferring entry.Canonical when set. Without
+// this every read-side caller (info, status, diff, edit, doctor) goes
+// looking at .../reg/<alias>/<sha> while the real dir lives at
+// .../reg/<canonical>/<sha>. Issue #102.
 func EntryWorktreePath(entry *model.LockEntry) string {
 	if entry == nil {
 		return ""
@@ -45,7 +54,11 @@ func EntryWorktreePath(entry *model.LockEntry) string {
 	if key == "" {
 		return ""
 	}
-	return registry.WorktreePath(entry.Registry, entry.Name, registry.ShortSHA(key))
+	name := entry.Name
+	if entry.Canonical != "" {
+		name = entry.Canonical
+	}
+	return registry.WorktreePath(entry.Registry, name, registry.ShortSHA(key))
 }
 
 // RefreshSubtreeHash recomputes entry.SubtreeHash from the on-disk worktree.

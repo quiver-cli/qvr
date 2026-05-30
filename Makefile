@@ -1,7 +1,7 @@
 BINARY := qvr
 BUILD_DIR := bin
 MODULE := github.com/raks097/quiver
-VERSION ?= 0.7.0
+VERSION ?= 0.8.0
 LDFLAGS := -ldflags "-X $(MODULE)/cmd.version=$(VERSION)"
 
 INSTALL_DIR ?= /usr/local/bin

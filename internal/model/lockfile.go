@@ -74,6 +74,14 @@ type LockEntry struct {
 	// (the whole target tree is the skill).
 	Path string `json:"path,omitempty"`
 
+	// Canonical is the registry-side skill name when the user installed
+	// under an alias via `qvr add <skill> --as <alias>`. Empty when the
+	// lock key already matches the canonical name (the common case).
+	// Lookups against the upstream index (e.g. `qvr upgrade` checking
+	// for new tags) consult Canonical when set so the alias still resolves
+	// back to the skill it points at.
+	Canonical string `json:"canonical,omitempty"`
+
 	// Ref is the human label requested at install time (branch, tag, or
 	// "local" for link installs). The version identifier.
 	Ref string `json:"ref"`
