@@ -642,3 +642,141 @@ func addTagToBareRemote(t *testing.T, barePath, tag string) {
 		t.Fatalf("set tag: %v", err)
 	}
 }
+
+// TestInstall_SkipsTagWhoseCommitMissesSkillPath is the regression for
+// issue #100: a fork registry frequently carries an older tag (e.g., v0.2.0)
+// that points at a commit BEFORE the skill was added. The cached skill
+// `path` reflects the current HEAD's tree, but the version resolver was
+// preferring the latest semver tag — so `qvr add <skill>` checked out the
+// older tag, sparse-checkout found nothing under the cached path, and the
+// install failed with "load staged skill: stat skill dir: no such file or
+// directory" while the staging worktree dir got created and immediately
+// cleaned up.
+//
+// The fix walks semver tags newest-first and skips any whose commit doesn't
+// contain `<path>/SKILL.md`. The test seeds a bare remote whose HEAD adds
+// `skills/code-review/SKILL.md` AFTER the v0.2.0 tag was already planted at
+// an earlier commit. Pre-fix: install errors out with the staging-dir stat
+// failure. Post-fix: install picks the default branch (main) and succeeds.
+func TestInstall_SkipsTagWhoseCommitMissesSkillPath(t *testing.T) {
+	h := newHarness(t)
+
+	// Seed a bare remote with: C0 = empty (just a README) tagged v0.2.0;
+	// C1 = adds skills/code-review/SKILL.md on main. Mirrors a fork that
+	// got tagged before its first skill was published.
+	remote := seedRemoteWithTaggedAndPostTagSkill(t, "v0.2.0", "code-review", codeReviewSkill)
+	h.addRegistry(t, "fork", remote)
+
+	result, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+	})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// Resolver should have skipped v0.2.0 (commit lacks skills/code-review)
+	// and fallen through to the default branch.
+	if result.Version != "main" {
+		t.Errorf("version = %q, want main (v0.2.0's commit doesn't contain the skill)", result.Version)
+	}
+	// And the worktree must actually hold the SKILL.md the resolver promised.
+	if _, statErr := os.Stat(filepath.Join(result.Worktree, "skills", "code-review", "SKILL.md")); statErr != nil {
+		t.Errorf("worktree missing skill after install: %v", statErr)
+	}
+}
+
+// seedRemoteWithTaggedAndPostTagSkill builds a bare remote with two commits:
+//
+//	C0 — empty fork (only a README), tagged with tagName.
+//	C1 — adds skills/<skillName>/SKILL.md on main.
+//
+// Returns the remote (bare repo) path. The tag stays pinned at C0 even
+// though main advanced — exactly the shape that triggered #100 for users
+// who tagged a fork before publishing into it.
+func seedRemoteWithTaggedAndPostTagSkill(t *testing.T, tagName, skillName, skillContent string) string {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := gogit.PlainInit(remote, true); err != nil {
+		t.Fatalf("init remote: %v", err)
+	}
+
+	seed := t.TempDir()
+	sr, err := gogit.PlainInit(seed, false)
+	if err != nil {
+		t.Fatalf("init seed: %v", err)
+	}
+	if _, err := sr.CreateRemote(&gogitcfg.RemoteConfig{
+		Name: "origin",
+		URLs: []string{remote},
+	}); err != nil {
+		t.Fatalf("create remote: %v", err)
+	}
+	wt, err := sr.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	// C0: README only. The tag will live here.
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# fork\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	if _, err := wt.Add("README.md"); err != nil {
+		t.Fatalf("add readme: %v", err)
+	}
+	c0, err := wt.Commit("init fork", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("commit C0: %v", err)
+	}
+	if err := sr.Storer.SetReference(plumbing.NewHashReference(
+		plumbing.NewTagReferenceName(tagName), c0,
+	)); err != nil {
+		t.Fatalf("set tag at C0: %v", err)
+	}
+
+	// C1: add the skill. Main advances; tag stays at C0.
+	skillDir := filepath.Join(seed, "skills", skillName)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	if _, err := wt.Add(filepath.Join("skills", skillName, "SKILL.md")); err != nil {
+		t.Fatalf("add skill: %v", err)
+	}
+	c1, err := wt.Commit("add "+skillName, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("commit C1: %v", err)
+	}
+	if err := sr.Storer.SetReference(plumbing.NewHashReference(
+		plumbing.NewBranchReferenceName("main"), c1,
+	)); err != nil {
+		t.Fatalf("set main at C1: %v", err)
+	}
+
+	if err := sr.Push(&gogit.PushOptions{
+		RemoteName: "origin",
+		RefSpecs: []gogitcfg.RefSpec{
+			"refs/heads/main:refs/heads/main",
+			gogitcfg.RefSpec("refs/tags/" + tagName + ":refs/tags/" + tagName),
+		},
+	}); err != nil {
+		t.Fatalf("push seed: %v", err)
+	}
+
+	rr, err := gogit.PlainOpen(remote)
+	if err != nil {
+		t.Fatalf("open remote: %v", err)
+	}
+	if err := rr.Storer.SetReference(plumbing.NewSymbolicReference(
+		plumbing.HEAD, plumbing.NewBranchReferenceName("main"),
+	)); err != nil {
+		t.Fatalf("set remote HEAD: %v", err)
+	}
+	return remote
+}

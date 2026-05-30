@@ -338,3 +338,84 @@ func TestResolveRef_Tag(t *testing.T) {
 		t.Error("expected content via tag ref")
 	}
 }
+
+// TestRemoteDefaultBranch_ReturnsSymrefHeadBranch covers issue #95:
+// publish needs the remote's authoritative default branch (what `git
+// ls-remote --symref <url> HEAD` reports) rather than the stale
+// entry.Ref fallback. setupBareRegistry already wires HEAD →
+// refs/heads/main, so the helper should return "main".
+func TestRemoteDefaultBranch_ReturnsSymrefHeadBranch(t *testing.T) {
+	bare := setupBareRegistry(t, testSkills)
+
+	client := git.NewGoGitClient()
+	got, err := client.RemoteDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("RemoteDefaultBranch: %v", err)
+	}
+	if got != "main" {
+		t.Errorf("RemoteDefaultBranch = %q, want %q (issue #95 — sanity check that --symref is parsed)", got, "main")
+	}
+}
+
+// TestRemoteDefaultBranch_HonoursCustomDefault is the load-bearing
+// regression for issue #95: when upstream has been renamed (e.g.
+// trunk-based development), publish must follow what the remote
+// currently considers its default — not the cached entry.Ref label
+// from the original install.
+func TestRemoteDefaultBranch_HonoursCustomDefault(t *testing.T) {
+	bare := setupBareRegistry(t, testSkills)
+	repo, err := gogit.PlainOpen(bare)
+	if err != nil {
+		t.Fatalf("open bare: %v", err)
+	}
+	// Mirror what `git branch -m main trunk && git symbolic-ref HEAD refs/heads/trunk`
+	// does — copy the main hash onto a trunk ref, repoint HEAD to it, drop the
+	// old main ref. setupBareRegistry created HEAD → refs/heads/main; this
+	// renames it on-disk so the symref helper sees "trunk".
+	mainRef, err := repo.Reference(plumbing.NewBranchReferenceName("main"), false)
+	if err != nil {
+		t.Fatalf("read main: %v", err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(
+		plumbing.NewBranchReferenceName("trunk"), mainRef.Hash(),
+	)); err != nil {
+		t.Fatalf("set trunk: %v", err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(
+		plumbing.HEAD, plumbing.NewBranchReferenceName("trunk"),
+	)); err != nil {
+		t.Fatalf("repoint HEAD: %v", err)
+	}
+	if err := repo.Storer.RemoveReference(plumbing.NewBranchReferenceName("main")); err != nil {
+		t.Fatalf("remove main: %v", err)
+	}
+
+	client := git.NewGoGitClient()
+	got, err := client.RemoteDefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("RemoteDefaultBranch: %v", err)
+	}
+	if got != "trunk" {
+		t.Errorf("RemoteDefaultBranch = %q, want %q — publish would otherwise pick a stale entry.Ref (issue #95)", got, "trunk")
+	}
+}
+
+// TestParseSymrefHead_HandlesEmptyAndNonBranchHEAD documents the two
+// "no signal" paths the parser must return "" for: a remote with no
+// symref header at all (empty repo), and a HEAD that points at a
+// non-branch (detached or tag). Both leave the caller to fall through
+// to entry.Ref / "main" rather than seeding a nonsense branch.
+func TestRemoteDefaultBranch_EmptyRepo(t *testing.T) {
+	bareDir := filepath.Join(t.TempDir(), "empty.git")
+	if _, err := gogit.PlainInit(bareDir, true); err != nil {
+		t.Fatalf("init empty bare: %v", err)
+	}
+	client := git.NewGoGitClient()
+	got, err := client.RemoteDefaultBranch(context.Background(), bareDir)
+	if err != nil {
+		t.Fatalf("RemoteDefaultBranch on empty repo: %v — want (\"\", nil) so caller falls through", err)
+	}
+	if got != "" {
+		t.Errorf("RemoteDefaultBranch on empty repo = %q, want empty", got)
+	}
+}

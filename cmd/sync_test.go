@@ -1,47 +1,93 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/raks097/quiver/internal/canonical"
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/model"
+	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/skill"
 )
 
-// Issue #65 unit slice: driftExpected pulls the recorded SubtreeHash out
-// of the VerifyEntryResult's structured Drift list so the rendered
-// warning can show "expected X, on disk Y". A bug here means users see
-// only the on-disk hash with no anchor, which is exactly the post-fix
-// regression we want to guard.
-func TestDriftExpected_PullsSubtreeHashFromDrift(t *testing.T) {
-	r := skill.VerifyEntryResult{
-		Name:        "demo",
-		Status:      skill.VerifyStatusDrift,
-		SubtreeHash: "sha256:on-disk",
-		Drift: []skill.VerifyDriftItem{
-			{Field: "subtreeHash", Expected: "sha256:expected", Actual: "sha256:on-disk"},
-		},
-	}
-	got := driftExpected(r)
-	if got != "sha256:expected" {
-		t.Errorf("driftExpected = %q, want %q", got, "sha256:expected")
-	}
+// captureSyncStderr swaps the package printer for one with a stderr buffer
+// so a test can assert on warning/error lines (which Printer.Warning and
+// Printer.Error route to Err). Restores the previous printer on cleanup.
+// Used here instead of withCapturingPrinter because that helper discards
+// the stderr buffer and these tests need to assert on warnings.
+func captureSyncStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	stderr := &bytes.Buffer{}
+	prev := printer
+	printer = &output.Printer{Out: &bytes.Buffer{}, Err: stderr, Format: output.FormatText}
+	t.Cleanup(func() { printer = prev })
+	fn()
+	return stderr.String()
 }
 
-func TestDriftExpected_EmptyOnNoSubtreeHashDrift(t *testing.T) {
-	// A drift result with no subtreeHash field — defensive: function
-	// should return "" rather than the first arbitrary drift entry.
-	r := skill.VerifyEntryResult{
-		Name:   "demo",
-		Status: skill.VerifyStatusDrift,
-		Drift: []skill.VerifyDriftItem{
-			{Field: "commitSHA", Expected: "abc", Actual: "def"},
+// TestRenderDriftReport_CommitDriftDistinguishedFromSubtreeHash is the
+// surfacing guard for issue #73: when VerifySingleEntry packs a commit-
+// only tamper into the Drift slice, sync must render a dedicated "commit
+// drift" line that cites issue #73 — not the generic "subtreeHash drift
+// — recorded , on disk …" line that the pre-fix render emitted (which
+// hid the commit-only drift from the user even though the verifier had
+// flagged it).
+func TestRenderDriftReport_CommitDriftDistinguishedFromSubtreeHash(t *testing.T) {
+	cases := []struct {
+		name      string
+		report    skill.VerifyEntryResult
+		wantInErr []string
+	}{
+		{
+			name: "commit-only drift cites issue #73 and shows both hashes",
+			report: skill.VerifyEntryResult{
+				Name:   "ghost",
+				Status: skill.VerifyStatusDrift,
+				Drift: []skill.VerifyDriftItem{
+					{Field: "commit", Expected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", Actual: "0123456789abcdef0123456789abcdef01234567"},
+				},
+			},
+			wantInErr: []string{"ghost", "commit drift", "issue #73", "deadbee", "0123456"},
+		},
+		{
+			name: "subtreeHash drift keeps the actionable repair tip",
+			report: skill.VerifyEntryResult{
+				Name:   "demo",
+				Status: skill.VerifyStatusDrift,
+				Drift: []skill.VerifyDriftItem{
+					{Field: "subtreeHash", Expected: "sha256:expected", Actual: "sha256:actual"},
+				},
+			},
+			wantInErr: []string{"demo", "subtreeHash drift", "qvr lock verify --repair"},
+		},
+		{
+			name: "mixed drift surfaces both lines so neither is hidden",
+			report: skill.VerifyEntryResult{
+				Name:   "both",
+				Status: skill.VerifyStatusDrift,
+				Drift: []skill.VerifyDriftItem{
+					{Field: "subtreeHash", Expected: "sha256:expected", Actual: "sha256:actual"},
+					{Field: "commit", Expected: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", Actual: "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"},
+				},
+			},
+			wantInErr: []string{"subtreeHash drift", "commit drift", "issue #73"},
 		},
 	}
-	if got := driftExpected(r); got != "" {
-		t.Errorf("driftExpected with no subtreeHash drift = %q, want empty", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := captureSyncStderr(t, func() { renderDriftReport(tc.report) })
+			for _, want := range tc.wantInErr {
+				if !strings.Contains(err, want) {
+					t.Errorf("renderDriftReport stderr missing %q\nfull output:\n%s", want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -91,6 +137,158 @@ func TestAutoRegisterRegistriesFromLock_DryRunDoesNotWriteConfig(t *testing.T) {
 	}
 	if _, ok := loaded.Registries["raks"]; ok {
 		t.Errorf("dry-run leaked raks into the persisted config: %+v", loaded.Registries)
+	}
+}
+
+// TestRunSync_NoOpRerun_StdoutIsSingleLine is the user-facing guard for
+// issue #79: a second `qvr sync` against a steady-state lockfile must
+// emit exactly one line, "✓ Already in sync." (and nothing else) — no
+// repeat scan banners, no re-linked symlink chatter, no auto-register
+// notices. Matches the `uv sync` / `npm install` quiet idiom.
+//
+// We drive an edit-mode entry whose EditPath dir + SKILL.md are present
+// so reconcile finds nothing to do — the only output should be the
+// terminal success line.
+func TestRunSync_NoOpRerun_StdoutIsSingleLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+	if err := config.Save(&config.Config{}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	project := t.TempDir()
+	t.Chdir(project)
+
+	// Seed an edit-mode skill at its canonical EditPath so the reconciler
+	// has nothing to repair. .claude/skills/demo doubles as both EditPath
+	// (the canonical real dir) and the target for "claude" — reconciler
+	// recognises this self-reference and skips the symlink pass.
+	editRel := filepath.Join(".claude", "skills", "demo")
+	editAbs := filepath.Join(project, editRel)
+	if err := os.MkdirAll(editAbs, 0o755); err != nil {
+		t.Fatalf("mkdir edit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(editAbs, "SKILL.md"),
+		[]byte("---\nname: demo\ndescription: noop test\n---\n# demo\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	// Real subtreeHash matching the on-disk content so VerifySingleEntry
+	// reports OK (not Drift/Unverified) — otherwise sync's drift loop
+	// suppresses "Already in sync." regardless of state.
+	subtreeHash, err := canonical.HashSubtreeFromDisk(editAbs)
+	if err != nil {
+		t.Fatalf("hash subtree: %v", err)
+	}
+
+	lockPath := filepath.Join(project, model.LockFileName)
+	lock := model.NewLockFile(lockPath)
+	lock.Put(&model.LockEntry{
+		Name:     "demo",
+		Mode:     model.ModeEdit,
+		EditPath: editRel,
+		Source:   "https://example.com/demo.git",
+		Ref:      "main",
+		// Commit left empty so the verifier's commit-cross-check (issue #73)
+		// is skipped — the edit dir has no .git/ in this fixture.
+		SubtreeHash: subtreeHash,
+		Targets:     []string{"claude"},
+		InstalledAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	// Reset package-level sync flags so a prior test's --strict / --dry-run
+	// state doesn't bleed into this run.
+	t.Cleanup(func() {
+		syncGlobal = false
+		syncDryRun = false
+		syncKeepUntracked = false
+		syncNoScan = false
+		syncStrict = false
+	})
+	syncGlobal = false
+	syncDryRun = false
+	syncNoScan = true // sidestep the security scan path; it's silent on clean anyway but avoids any test-env oddity
+
+	// First run: prime any state (config writes, scan attestation, etc.).
+	withCapturingPrinter(t, "text")
+	if err := runSync(syncCmd, nil); err != nil {
+		t.Fatalf("first runSync: %v", err)
+	}
+
+	// Second run: capture stdout and assert it's exactly the no-op line.
+	// The "✓ " prefix is added by Printer.Success.
+	stdout := withCapturingPrinter(t, "text")
+	if err := runSync(syncCmd, nil); err != nil {
+		t.Fatalf("second runSync: %v", err)
+	}
+	got := stdout.String()
+	want := "✓ Already in sync.\n"
+	if got != want {
+		t.Errorf("no-op sync stdout = %q, want %q — issue #79: a steady-state rerun should emit one line, nothing else", got, want)
+	}
+}
+
+// TestRunSync_ReconcilerErrors_NonZeroExit is the cmd-boundary guard for
+// issue #94: when the reconciler accumulates per-entry failures into
+// result.Errors (printed individually via printer.Error), runSync must
+// still return a non-nil error so cobra exits non-zero. Pre-fix runSync
+// returned nil unconditionally and CI scripts ran the next step on a
+// half-applied sync.
+//
+// We drive the failure through an edit-mode entry whose EditPath points
+// at a directory that doesn't exist on disk — reconciler.restoreFromLock
+// (internal/skill/reconciler.go:113) appends that to res.Errors without
+// aborting the run. errTextHandled is the right return: the per-entry
+// failure was already printed, the sentinel just promotes the exit code.
+func TestRunSync_ReconcilerErrors_NonZeroExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+	if err := config.Save(&config.Config{}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	project := t.TempDir()
+	t.Chdir(project)
+	withCapturingPrinter(t, "text")
+
+	// Reset package-level sync flags so a prior test's --strict/--dry-run
+	// state doesn't bleed into this run.
+	t.Cleanup(func() {
+		syncGlobal = false
+		syncDryRun = false
+		syncKeepUntracked = false
+		syncNoScan = false
+		syncStrict = false
+	})
+	syncGlobal = false
+	syncDryRun = false
+	syncNoScan = true // skip the network-touching scan pass
+
+	lockPath := filepath.Join(project, model.LockFileName)
+	lock := model.NewLockFile(lockPath)
+	lock.Put(&model.LockEntry{
+		Name:        "ghost",
+		Mode:        model.ModeEdit,
+		EditPath:    ".claude/skills/ghost", // deliberately missing on disk
+		Source:      "https://example.invalid/ghost.git",
+		Ref:         "main",
+		Commit:      "0000000000000000000000000000000000000000",
+		Targets:     []string{"claude"},
+		InstalledAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	err := runSync(syncCmd, nil)
+	if err == nil {
+		t.Fatal("runSync returned nil despite reconciler errors — issue #94 regression")
+	}
+	if !errors.Is(err, errTextHandled) {
+		t.Errorf("runSync returned %v, want errTextHandled (so Execute() exits 1 without duplicating the per-entry lines into a trailing Error envelope)", err)
 	}
 }
 

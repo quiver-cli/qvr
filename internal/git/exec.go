@@ -179,3 +179,39 @@ func runGit(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	return stdout.Bytes(), nil
 }
+
+// IsAncestor reports whether ancestorSHA is an ancestor of (or equal to)
+// descendantSHA in the repo at repoPath, using `git merge-base --is-ancestor`.
+// Returns (true, nil) on exit 0, (false, nil) on exit 1, and (false, err) on
+// any other failure mode (missing repo, unknown SHA, git binary missing).
+//
+// Used by the publish-time silent-heal and the lock-verify drift check
+// (issues #73, #74, #99). System git is more reliable than go-git's
+// CommitObject.IsAncestor on freshly-init'd repos — the eject dir is a
+// fresh `git init` whose commit graph go-git sometimes misreads.
+func IsAncestor(ctx context.Context, repoPath, ancestorSHA, descendantSHA string) (bool, error) {
+	if err := ensureGit(); err != nil {
+		return false, err
+	}
+	cmd := gitCommand(ctx, "-C", repoPath, "merge-base", "--is-ancestor", ancestorSHA, descendantSHA)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// merge-base --is-ancestor exits 1 specifically to say "not an
+		// ancestor". Any other non-zero exit is a real error (bad ref,
+		// missing repo, etc.) and we surface it.
+		if exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" {
+		msg = err.Error()
+	}
+	return false, fmt.Errorf("merge-base: %s", redactCreds(msg))
+}

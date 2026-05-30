@@ -184,7 +184,7 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 			if gerr != nil {
 				printer.Warning(fmt.Sprintf("publish: scan failed (%v); proceeding — rerun `qvr scan %s` to retry", gerr, name))
 			} else if gate.Blocked {
-				return fmt.Errorf("publish: scan blocked (max severity %s ≥ threshold %s); upstream not touched — see findings above or pass --no-scan to override",
+				return fmt.Errorf("publish: scan blocked (max severity %s ≥ threshold %s); upstream not touched — see findings above or pass --no-scan to override (issue #74)",
 					gate.Result.Summary.MaxSeverity(), gate.Threshold)
 			} else {
 				publishGate = gate

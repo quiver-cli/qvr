@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -125,9 +127,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if !syncDryRun {
 			cfg, cerr := config.Load()
 			if cerr == nil {
+				// Snapshot the lock's current on-disk bytes so we can
+				// skip the write when reconcile + scan changed nothing
+				// (issue #79: sync should be idempotent — no rewrite on
+				// no-state-change reruns). Snapshot taken before the scan
+				// pass because that's the last in-memory mutation source.
+				priorBytes, _ := os.ReadFile(lockPath)
 				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg, projectRoot)
-				if werr := lock.Write(); werr != nil {
-					return fmt.Errorf("persist scan results: %w", werr)
+				if needsLockWrite(lock, priorBytes) {
+					if werr := lock.Write(); werr != nil {
+						return fmt.Errorf("persist scan results: %w", werr)
+					}
 				}
 			}
 
@@ -200,20 +210,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 		printer.Warning(fmt.Sprintf("%d skill(s) raised findings at or above block_severity: %s — review and `qvr remove <name>` or `qvr switch <name> <safer-ref>` if needed",
 			len(names), strings.Join(names, ", ")))
 	}
-	// Drift findings — issue #65. Surfaced after the reconcile summary so
-	// the user sees what was restored before what looks suspect. Under
-	// --strict, any non-OK entry flips the command to a non-zero exit;
-	// otherwise these are warnings and sync still returns success.
+	// Drift findings — issue #65 (subtreeHash) + issue #73 (commit SHA).
+	// Surfaced after the reconcile summary so the user sees what was restored
+	// before what looks suspect. Under --strict, any non-OK entry flips the
+	// command to a non-zero exit; otherwise these are warnings and sync still
+	// returns success.
 	for _, d := range driftReports {
-		switch d.Status {
-		case skill.VerifyStatusDrift:
-			printer.Warning(fmt.Sprintf("%s: subtreeHash drift — recorded %s, on disk %s; run `qvr lock verify --repair` to seal the current content or `qvr remove %s --force && qvr add %s` to restore from upstream",
-				d.Name, shortHashLabel(driftExpected(d)), shortHashLabel(d.SubtreeHash), d.Name, d.Name))
-		case skill.VerifyStatusUnverified:
-			printer.Warning(fmt.Sprintf("%s: %s", d.Name, d.Message))
-		case skill.VerifyStatusFailed:
-			printer.Error(fmt.Sprintf("%s: hash check failed — %s", d.Name, d.Message))
-		}
+		renderDriftReport(d)
 	}
 
 	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(atOrAboveThreshold) == 0 && len(driftReports) == 0 {
@@ -222,19 +225,68 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if syncStrict && len(driftReports) > 0 {
 		return fmt.Errorf("sync --strict: %d entr(y/ies) failed integrity check", len(driftReports))
 	}
+	// Reconciler-collected per-entry failures (install, symlink, checkout)
+	// are printed individually above via printer.Error. Without this guard,
+	// sync's overall exit code stayed 0 even when an install or checkout
+	// failed (issue #94). Use errTextHandled so Execute() exits 1 without
+	// duplicating the per-entry lines into a trailing `Error: …` envelope —
+	// same pattern as batch `qvr add` partial-failure semantics.
+	if len(result.Errors) > 0 {
+		return errTextHandled
+	}
 	return nil
 }
 
-// driftExpected returns the recorded SubtreeHash that the drift entry
-// disagreed with. Pulled from the structured Drift slice the verifier
-// emits so the render shows the *expected* hash alongside the on-disk one.
-func driftExpected(r skill.VerifyEntryResult) string {
-	for _, d := range r.Drift {
-		if d.Field == "subtreeHash" {
-			return d.Expected
-		}
+// needsLockWrite reports whether the in-memory lock would serialise to
+// bytes different from what's already on disk. Used to make `qvr sync`
+// idempotent: a no-state-change rerun should leave qvr.lock byte-identical
+// (issue #79). Marshalling-only equivalent of `lock.Write` — no temp
+// file, no rename.
+//
+// Returns true (write) on any marshal failure or empty prior — fail
+// open. The only "stable no-op" path is when both serialisations succeed
+// and produce the same bytes.
+func needsLockWrite(lock *model.LockFile, priorBytes []byte) bool {
+	if len(priorBytes) == 0 {
+		return true
 	}
-	return ""
+	// Mirror lockfile.Write: same indent, trailing newline.
+	data, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return true
+	}
+	data = append(data, '\n')
+	return !bytes.Equal(data, priorBytes)
+}
+
+// renderDriftReport prints a single VerifyEntryResult to the package
+// printer. VerifySingleEntry packs both subtreeHash and commit drift into
+// the same Drift slice (issue #65 + issue #73), so we iterate per-item and
+// pick a kind-specific message rather than a one-size template — a
+// commit-only tamper used to render as "subtreeHash drift — recorded ,
+// on disk <hash>" which hid the commit drift from the user even though
+// the verifier caught it.
+func renderDriftReport(d skill.VerifyEntryResult) {
+	switch d.Status {
+	case skill.VerifyStatusDrift:
+		for _, item := range d.Drift {
+			switch item.Field {
+			case "subtreeHash":
+				printer.Warning(fmt.Sprintf("%s: subtreeHash drift — recorded %s, on disk %s; run `qvr lock verify --repair` to seal the current content or `qvr remove %s --force && qvr add %s` to restore from upstream",
+					d.Name, shortHashLabel(item.Expected), shortHashLabel(item.Actual), d.Name, d.Name))
+			case "commit":
+				printer.Warning(fmt.Sprintf("%s: commit drift — lockfile %s not reachable from worktree HEAD %s — tampered or detached (issue #73); run `qvr doctor` for the full integrity report",
+					d.Name, shortHashLabel(item.Expected), shortHashLabel(item.Actual)))
+			default:
+				printer.Warning(fmt.Sprintf("%s: %s drift — recorded %s, on disk %s",
+					d.Name, item.Field, shortHashLabel(item.Expected), shortHashLabel(item.Actual)))
+			}
+		}
+	case skill.VerifyStatusUnverified:
+		printer.Warning(fmt.Sprintf("%s: %s", d.Name, d.Message))
+	case skill.VerifyStatusFailed:
+		printer.Error(fmt.Sprintf("%s: hash check failed — %s", d.Name, d.Message))
+	}
 }
 
 // scanRestoredSkillsAfterSync runs the standard scan gate against every

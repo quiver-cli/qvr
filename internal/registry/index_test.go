@@ -55,6 +55,10 @@ func (m *mockGitClient) LsRemote(ctx context.Context, url string) (*git.RemoteRe
 	return &git.RemoteRefInfo{Refs: map[string]string{}}, nil
 }
 
+func (m *mockGitClient) RemoteDefaultBranch(ctx context.Context, url string) (string, error) {
+	return m.defaultBranch, nil
+}
+
 func (m *mockGitClient) HeadCommit(repoPath string) (string, error) {
 	return m.headCommit, nil
 }

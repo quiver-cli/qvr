@@ -147,11 +147,23 @@ func (g *GoGitClient) FetchWorktree(ctx context.Context, worktreePath string) er
 // Push pushes the given refspecs from repoPath to the named remote. Used by
 // the publisher and syncer; routed through the GitClient so the user's
 // credential helper handles auth for private registries.
+//
+// When more than one refspec is supplied, the push is sent atomically
+// (`git push --atomic`) so a partial failure (e.g. branch accepted, tag
+// rejected — or vice versa) leaves neither ref landed on the remote
+// instead of an orphan pair (issue #75). Single-refspec pushes go through
+// unchanged so the `git protocol v0` happy path for older receive-packs
+// isn't disturbed.
 func (g *GoGitClient) Push(ctx context.Context, repoPath, remote string, refSpecs []string) error {
 	if remote == "" {
 		remote = "origin"
 	}
-	args := append([]string{"-C", repoPath, "push", remote}, refSpecs...)
+	args := []string{"-C", repoPath, "push"}
+	if len(refSpecs) > 1 {
+		args = append(args, "--atomic")
+	}
+	args = append(args, remote)
+	args = append(args, refSpecs...)
 	if _, err := runGit(ctx, args...); err != nil {
 		return classifyNetworkErr(err, ErrPushFailed)
 	}
@@ -246,6 +258,52 @@ func (g *GoGitClient) LsRemote(ctx context.Context, url string) (*RemoteRefInfo,
 		return nil, classifyNetworkErr(err, ErrFetchFailed)
 	}
 	return parseLsRemote(bytes.NewReader(out))
+}
+
+// RemoteDefaultBranch queries the remote's HEAD symref via
+// `git ls-remote --symref <url> HEAD`. The output's first line is
+// "ref: refs/heads/<name>\tHEAD" when the remote has a default branch.
+// Returns "" (no error) for empty repos / hosts that omit the symref so
+// the caller can fall through to the next fallback (issue #95).
+func (g *GoGitClient) RemoteDefaultBranch(ctx context.Context, url string) (string, error) {
+	out, err := runGit(ctx, "ls-remote", "--symref", "--", url, "HEAD")
+	if err != nil {
+		return "", classifyNetworkErr(err, ErrFetchFailed)
+	}
+	return parseSymrefHead(bytes.NewReader(out)), nil
+}
+
+// parseSymrefHead pulls the branch name out of `git ls-remote --symref`
+// output. The first line of a populated remote looks like
+// "ref: refs/heads/main\tHEAD"; we trim the prefix and the trailing
+// "\tHEAD". Returns "" when no such line is present (empty repos, or
+// hosts that don't include the symref header at all).
+func parseSymrefHead(r io.Reader) string {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 4*1024), 64*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		const prefix = "ref: "
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		body := strings.TrimPrefix(line, prefix)
+		// Body is "refs/heads/<name>\tHEAD". Drop the trailing target —
+		// we only care that HEAD is the one being resolved (callers ask
+		// specifically for HEAD), and the branch name lives in the ref.
+		if tab := strings.IndexByte(body, '\t'); tab >= 0 {
+			body = body[:tab]
+		}
+		body = strings.TrimSpace(body)
+		const headsPrefix = "refs/heads/"
+		if strings.HasPrefix(body, headsPrefix) {
+			return strings.TrimPrefix(body, headsPrefix)
+		}
+		// Non-branch HEAD (e.g. detached, tag symref) — caller treats
+		// as "no signal" and falls through.
+		return ""
+	}
+	return ""
 }
 
 // parseLsRemote parses the output of `git ls-remote`. Each line is

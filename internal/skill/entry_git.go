@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 
+	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 )
 
@@ -87,6 +89,14 @@ func ResolveEntryHeadCommit(entry *model.LockEntry, projectRoot string) (string,
 // Returns (false, nil) if either commit is missing from the repo or the
 // repo isn't openable — callers treat that as "no signal, fall back to
 // the strict equality check".
+//
+// Implementation: shells out to `git merge-base --is-ancestor` because go-git's
+// CommitObject.IsAncestor was returning false-negatives on freshly-init'd eject
+// repos (the synthetic eject commit + user-added commits via system git),
+// forcing users to pass --allow-lockfile-heal on every publish (issue #99).
+// System git is the same binary the user used to make the commit in the first
+// place — answers stay consistent by construction. Falls back to the go-git
+// path only when the git binary isn't available.
 func EntryCommitIsAncestorOfHead(entry *model.LockEntry, projectRoot string) (bool, error) {
 	if entry == nil || entry.Commit == "" {
 		return false, nil
@@ -101,6 +111,16 @@ func EntryCommitIsAncestorOfHead(entry *model.LockEntry, projectRoot string) (bo
 	if _, err := os.Stat(repoPath); err != nil {
 		return false, nil
 	}
+	// Primary path: shell out to system git. Exit 0 → ancestor; exit 1 →
+	// not an ancestor (also covers "entry.Commit isn't a known object" —
+	// the #74 case). Any other failure (no git binary, no repo) falls
+	// through to go-git below so the function stays usable in mock-driven
+	// tests that don't have a real git installed.
+	ancestor, err := git.IsAncestor(context.Background(), repoPath, entry.Commit, "HEAD")
+	if err == nil {
+		return ancestor, nil
+	}
+	// Fallback path: go-git, kept for environments without a git binary.
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return false, nil
@@ -114,10 +134,6 @@ func EntryCommitIsAncestorOfHead(entry *model.LockEntry, projectRoot string) (bo
 		return false, nil
 	}
 	entryHash := plumbing.NewHash(entry.Commit)
-	// plumbing.NewHash accepts any 40-char hex; if entry.Commit is
-	// "deadbeef..." it returns that literal hash, which won't resolve
-	// to an object in the repo. CommitObject fails → ancestor=false,
-	// which correctly routes the caller into the #74 refusal path.
 	entryCommit, err := repo.CommitObject(entryHash)
 	if err != nil {
 		return false, nil
@@ -125,8 +141,5 @@ func EntryCommitIsAncestorOfHead(entry *model.LockEntry, projectRoot string) (bo
 	if headCommit.Hash == entryCommit.Hash {
 		return true, nil
 	}
-	// IsAncestor(target) reports whether the receiver is an ancestor of
-	// `target` — i.e. whether `target` descends from the receiver. We
-	// want: does HEAD descend from entry.Commit?
 	return entryCommit.IsAncestor(headCommit)
 }

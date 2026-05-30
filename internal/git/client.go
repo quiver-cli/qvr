@@ -55,6 +55,18 @@ type GitClient interface {
 	// LsRemote lists refs from a remote URL without cloning.
 	LsRemote(ctx context.Context, url string) (*RemoteRefInfo, error)
 
+	// RemoteDefaultBranch returns the branch name the remote considers its
+	// default — what `git ls-remote --symref <url> HEAD` reports in the
+	// "ref: refs/heads/<name>\tHEAD" header. Used by `qvr publish` to pick
+	// the right target branch when the user didn't pass --branch and the
+	// local stage's HEAD isn't authoritative (issue #95: prevents falling
+	// back to a stale entry.Ref when upstream renamed master → main).
+	//
+	// Returns ("", nil) when the remote returns no symref line (empty
+	// repos, or hosts that don't include the symref). Returns an error
+	// only on transport failures — caller decides whether to fall through.
+	RemoteDefaultBranch(ctx context.Context, url string) (string, error)
+
 	// HeadCommit returns the commit hash of HEAD.
 	HeadCommit(repoPath string) (string, error)
 

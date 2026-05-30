@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	gogitcfg "github.com/go-git/go-git/v5/config"
 	plumbingPkg "github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
@@ -63,11 +66,129 @@ func TestPublishInstalled_DryRun_ReportsRemote(t *testing.T) {
 	}
 }
 
+// TestPublishInstalled_DryRun_AgreesWithRealPublishOnBranch covers the
+// user-reported divergence in dry-run branch reporting: pre-fix, the
+// dry-run path resolved branch as `--branch → entry.Ref → "main"` while
+// the real path (post-#95) resolved as `--branch → stage HEAD → remote
+// symref → entry.Ref → "main"`. With entry.Ref = "v0.2.0" and the
+// remote's HEAD symref = main, dry-run printed "would publish ...@v0.2.0"
+// but the real publish landed on @main — silently misleading.
+//
+// Fix: dry-run now also consults remote symref (one cheap ls-remote
+// --symref round-trip; still no clone). This test pins that dry-run and
+// real-run return the same Branch for a fork-to-populated-remote whose
+// HEAD differs from entry.Ref.
+func TestPublishInstalled_DryRun_AgreesWithRealPublishOnBranch(t *testing.T) {
+	entry, projectRoot, _ := ejectedFixture(t, "demo")
+	// Stale ref label — what the lock would carry after a tagged install
+	// that pinned to v0.2.0; the remote's HEAD points elsewhere.
+	entry.Ref = "v0.2.0"
+
+	// Stand up a populated bare with HEAD → refs/heads/main, then snapshot
+	// the dry-run branch BEFORE running the real publish (which mutates
+	// the entry, advances commits, etc.).
+	forkURL := setupBareForkWithHEAD(t, "main")
+
+	p := skill.NewPublisher(git.NewGoGitClient())
+	dryRes, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+		Entry:       entry,
+		ProjectRoot: projectRoot,
+		ForkURL:     forkURL,
+		DryRun:      true,
+	})
+	if err != nil {
+		t.Fatalf("PublishInstalled dry-run: %v", err)
+	}
+	if dryRes.Branch == "v0.2.0" {
+		t.Fatalf("dry-run reported Branch=%q (entry.Ref) — should consult remote symref (issue: dry-run vs real-run divergence)", dryRes.Branch)
+	}
+	if dryRes.Branch != "main" {
+		t.Errorf("dry-run Branch = %q, want %q (from remote HEAD symref)", dryRes.Branch, "main")
+	}
+
+	realRes, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+		Entry:       entry,
+		ProjectRoot: projectRoot,
+		ForkURL:     forkURL,
+		Message:     "real publish after dry-run",
+	})
+	if err != nil {
+		t.Fatalf("PublishInstalled real: %v", err)
+	}
+	if dryRes.Branch != realRes.Branch {
+		t.Errorf("dry-run vs real-run branch divergence: dry=%q real=%q — dry-run misleads the user about what real publish will do",
+			dryRes.Branch, realRes.Branch)
+	}
+}
+
+// setupBareForkWithHEAD seeds a bare repo at a tempdir with one commit
+// on branch <name> and HEAD → refs/heads/<name>. Used as a populated
+// fork destination for branch-resolution tests where we need a non-empty
+// remote with a known symref.
+func setupBareForkWithHEAD(t *testing.T, branch string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "fork.git")
+	bareRepo, err := gogit.PlainInit(bare, true)
+	if err != nil {
+		t.Fatalf("init bare: %v", err)
+	}
+
+	seed := t.TempDir()
+	seedRepo, err := gogit.PlainInit(seed, false)
+	if err != nil {
+		t.Fatalf("init seed: %v", err)
+	}
+	if _, err := seedRepo.CreateRemote(&gogitcfg.RemoteConfig{
+		Name: "origin",
+		URLs: []string{bare},
+	}); err != nil {
+		t.Fatalf("set origin: %v", err)
+	}
+	seedWt, err := seedRepo.Worktree()
+	if err != nil {
+		t.Fatalf("seed worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# fork seed\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if _, err := seedWt.Add("README.md"); err != nil {
+		t.Fatalf("seed add: %v", err)
+	}
+	if _, err := seedWt.Commit("init", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "T", Email: "t@t", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	// Rename local branch to <branch> before pushing so the pushed ref
+	// matches what we want as HEAD on the bare.
+	head, err := seedRepo.Head()
+	if err != nil {
+		t.Fatalf("seed head: %v", err)
+	}
+	if err := seedRepo.Storer.SetReference(plumbingPkg.NewHashReference(
+		plumbingPkg.NewBranchReferenceName(branch), head.Hash(),
+	)); err != nil {
+		t.Fatalf("set %s ref: %v", branch, err)
+	}
+	if err := seedRepo.Push(&gogit.PushOptions{
+		RemoteName: "origin",
+		RefSpecs:   []gogitcfg.RefSpec{gogitcfg.RefSpec("refs/heads/" + branch + ":refs/heads/" + branch)},
+	}); err != nil {
+		t.Fatalf("push seed → bare: %v", err)
+	}
+	if err := bareRepo.Storer.SetReference(plumbingPkg.NewSymbolicReference(
+		plumbingPkg.HEAD, plumbingPkg.NewBranchReferenceName(branch),
+	)); err != nil {
+		t.Fatalf("set bare HEAD symref: %v", err)
+	}
+	return bare
+}
+
 // TestPublishInstalled_Fork_StampsForkedFrom verifies that --fork writes
-// `forked-from: <upstream>@<sha>` into SKILL.md before the commit. We use
-// a real bare-repo remote so the push step actually runs end-to-end —
-// regression check that the publish loop doesn't choke when a brand-new
-// origin gets set just before the push.
+// `forked-from: <upstream>@<sha>` into the SKILL.md that lands on the fork
+// remote. Post-#98 the stamp lives in the stage clone, never in the user's
+// eject dir — so we verify the *published* artifact carries it, and
+// separately assert the eject dir stays clean.
 func TestPublishInstalled_Fork_StampsForkedFrom(t *testing.T) {
 	entry, projectRoot, editDir := ejectedFixture(t, "demo")
 	originalSource := entry.SourceUpstream // captured at eject time
@@ -78,36 +199,91 @@ func TestPublishInstalled_Fork_StampsForkedFrom(t *testing.T) {
 		t.Fatalf("init fork bare: %v", err)
 	}
 
+	// Snapshot the eject dir's SKILL.md BEFORE publish so we can assert
+	// publish didn't touch it (#98 regression guard).
+	editSKILLBefore, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read eject SKILL.md (before): %v", err)
+	}
+
 	p := skill.NewPublisher(git.NewGoGitClient())
-	_, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+	_, err = p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
 		Entry:       entry,
 		ProjectRoot: projectRoot,
 		ForkURL:     forkURL,
 		Migrate:     false,
 		Tag:         "v0.1.0",
 		Message:     "first fork",
-		AutoCommit:  true, // forked-from stamping dirties SKILL.md; explicit opt-in (issue #83)
 	})
 	if err != nil {
 		t.Fatalf("PublishInstalled: %v", err)
 	}
 
-	// SKILL.md should now have forked-from stamped pointing at the original.
-	skillBytes, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
+	// #98: eject dir's SKILL.md must NOT have been mutated by qvr's stamp.
+	editSKILLAfter, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
 	if err != nil {
-		t.Fatalf("read SKILL.md: %v", err)
+		t.Fatalf("read eject SKILL.md (after): %v", err)
 	}
-	if !strings.Contains(string(skillBytes), "forked-from:") {
-		t.Errorf("SKILL.md missing forked-from stamp: %q", string(skillBytes))
+	if string(editSKILLBefore) != string(editSKILLAfter) {
+		t.Errorf("publish mutated eject SKILL.md (issue #98): before=%q after=%q", editSKILLBefore, editSKILLAfter)
 	}
-	if !strings.Contains(string(skillBytes), originalSource) {
-		t.Errorf("forked-from missing original upstream %q: %q", originalSource, string(skillBytes))
+
+	// The fork's SKILL.md must carry the stamp — that's where the published
+	// artifact actually lives.
+	forkSKILL := readSKILLFromBareRepo(t, forkURL, "v0.1.0", "SKILL.md")
+	if !strings.Contains(forkSKILL, "forked-from:") {
+		t.Errorf("fork SKILL.md missing forked-from stamp: %q", forkSKILL)
+	}
+	if !strings.Contains(forkSKILL, originalSource) {
+		t.Errorf("forked-from missing original upstream %q: %q", originalSource, forkSKILL)
 	}
 
 	// Without --migrate, the lock entry's Source must NOT have flipped.
 	if entry.Source != originalSource {
 		t.Errorf("entry.Source = %q, want unchanged %q (Migrate=false)", entry.Source, originalSource)
 	}
+}
+
+// readSKILLFromBareRepo reads a file from a bare repo at the given tag-or-branch.
+// Used to assert what actually landed on the fork after publish, without
+// shelling out to `git show`.
+func readSKILLFromBareRepo(t *testing.T, bareRepoPath, ref, file string) string {
+	t.Helper()
+	repo, err := gogit.PlainOpen(bareRepoPath)
+	if err != nil {
+		t.Fatalf("open bare %s: %v", bareRepoPath, err)
+	}
+	// Try as a tag first (handles annotated tags), then as a branch.
+	var hash plumbingPkg.Hash
+	if tagRef, err := repo.Reference(plumbingPkg.NewTagReferenceName(ref), true); err == nil {
+		hash = tagRef.Hash()
+		if tagObj, err := repo.TagObject(hash); err == nil {
+			if commit, err := tagObj.Commit(); err == nil {
+				hash = commit.Hash
+			}
+		}
+	} else if branchRef, err := repo.Reference(plumbingPkg.NewBranchReferenceName(ref), true); err == nil {
+		hash = branchRef.Hash()
+	} else {
+		t.Fatalf("ref %q not found in %s", ref, bareRepoPath)
+	}
+	commit, err := repo.CommitObject(hash)
+	if err != nil {
+		t.Fatalf("commit %s: %v", hash, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("tree: %v", err)
+	}
+	f, err := tree.File(file)
+	if err != nil {
+		t.Fatalf("file %s in commit %s: %v", file, hash, err)
+	}
+	body, err := f.Contents()
+	if err != nil {
+		t.Fatalf("contents: %v", err)
+	}
+	return body
 }
 
 // TestPublishInstalled_ForkMigrate_RewritesSource covers the same --fork
@@ -209,10 +385,10 @@ func TestPublishInstalled_MigrateClearsRegistry(t *testing.T) {
 
 // TestPublishInstalled_Fork_CleanWD_NoAutoCommit covers issue #98: when the
 // user's eject dir is clean and they pass --fork without --auto-commit, the
-// publish must succeed. qvr's own forked-from stamp dirties the working tree,
-// but that's qvr's bookkeeping — it should not trip the guard meant for the
-// user's WIP. The stamp lands in the publish commit; the eject dir is clean
-// before the call and clean after it.
+// publish must succeed. qvr's own forked-from stamp lands in the stage
+// clone — never in the user's eject dir — so the guard meant for user WIP
+// has nothing to complain about. The stamp ships in the publish commit on
+// the fork; the eject dir's SKILL.md stays byte-identical.
 func TestPublishInstalled_Fork_CleanWD_NoAutoCommit(t *testing.T) {
 	entry, projectRoot, editDir := ejectedFixture(t, "demo")
 	forkURL := filepath.Join(t.TempDir(), "fork.git")
@@ -220,25 +396,35 @@ func TestPublishInstalled_Fork_CleanWD_NoAutoCommit(t *testing.T) {
 		t.Fatalf("init fork bare: %v", err)
 	}
 
+	editSKILLBefore, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read eject SKILL.md (before): %v", err)
+	}
+
 	p := skill.NewPublisher(git.NewGoGitClient())
-	_, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+	res, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
 		Entry:       entry,
 		ProjectRoot: projectRoot,
 		ForkURL:     forkURL,
 		Message:     "first fork",
-		// AutoCommit deliberately false — WD is clean; qvr's stamp is its problem.
+		// AutoCommit deliberately false — WD is clean and stays that way.
 	})
 	if err != nil {
 		t.Fatalf("PublishInstalled with clean WD and no --auto-commit: %v", err)
 	}
 
-	// Sanity: the stamp landed in the committed SKILL.md.
-	skillBytes, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
+	editSKILLAfter, err := os.ReadFile(filepath.Join(editDir, "SKILL.md"))
 	if err != nil {
-		t.Fatalf("read SKILL.md: %v", err)
+		t.Fatalf("read eject SKILL.md (after): %v", err)
 	}
-	if !strings.Contains(string(skillBytes), "forked-from:") {
-		t.Errorf("SKILL.md missing forked-from stamp after publish: %q", string(skillBytes))
+	if string(editSKILLBefore) != string(editSKILLAfter) {
+		t.Errorf("publish mutated eject SKILL.md (issue #98): before=%q after=%q", editSKILLBefore, editSKILLAfter)
+	}
+
+	// The stamp lives on the fork. Read the just-pushed branch and confirm.
+	forkSKILL := readSKILLFromBareRepo(t, forkURL, res.Branch, "SKILL.md")
+	if !strings.Contains(forkSKILL, "forked-from:") {
+		t.Errorf("fork SKILL.md missing forked-from stamp after publish: %q", forkSKILL)
 	}
 }
 

@@ -98,7 +98,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		return nil, fmt.Errorf("%w: %s", ErrSkillNotFound, name)
 	}
 	if version == "" {
-		version = resolveDefaultRef(loc)
+		version = resolveDefaultRef(loc, in.Git)
 	}
 
 	// --frozen pins to the lockfile: the entry must exist and its recorded
@@ -600,12 +600,24 @@ func ApplySwitch(entry *model.LockEntry, projectRoot string, global bool) error 
 	return nil
 }
 
-// resolveDefaultRef picks the latest semver tag when any exist, else the
+// resolveDefaultRef picks the latest semver tag whose commit still holds the
+// cached skill path; if no semver tag qualifies, it falls back to the
 // registry's default branch. Non-semver tags are ignored so "bare install"
 // rewards tag-using registries without surprising users with arbitrary
 // moving labels like `latest` or `stable`.
-func resolveDefaultRef(loc *registry.SkillLocation) string {
-	if tag := LatestSemverTag(loc.Entry.Versions.Tags); tag != "" {
+//
+// gc is consulted to confirm the candidate tag's commit actually contains the
+// indexed skill path (issue #100): a fork registry will commonly have older
+// tags pointing at commits where the skill didn't exist yet (or lived at a
+// different layout), and silently checking those out would produce an empty
+// sparse worktree that fails validation with "load staged skill: no such
+// file or directory". Tag-existence is checked via ReadBlob on `<path>/SKILL.md`,
+// so the same call already costs one tree walk for the path we'd sparse-check
+// out anyway. A nil gc skips the validation (callers that just want "which
+// label" without I/O — currently none in the install path, but kept ergonomic
+// for callers like `qvr outdated` that may want the unfiltered answer).
+func resolveDefaultRef(loc *registry.SkillLocation, gc git.GitClient) string {
+	if tag := latestValidSemverTag(loc, gc); tag != "" {
 		return tag
 	}
 	return loc.DefaultBranch
@@ -614,6 +626,10 @@ func resolveDefaultRef(loc *registry.SkillLocation) string {
 // LatestSemverTag returns the highest-sorted semver tag from the given list,
 // or "" when none qualify. Reuses model.SortVersions so precedence matches
 // `qvr version list`.
+//
+// Path-agnostic: doesn't verify the tag's commit contains a specific skill —
+// use latestValidSemverTag for that. Callers that want "what is the marketing
+// version" (qvr outdated, qvr upgrade prompts) should keep using this.
 func LatestSemverTag(tags []string) string {
 	vl := &model.VersionList{}
 	for _, t := range tags {
@@ -626,6 +642,51 @@ func LatestSemverTag(tags []string) string {
 	}
 	model.SortVersions(vl, "")
 	return vl.Tags[0].Ref
+}
+
+// latestValidSemverTag walks loc.Entry.Versions.Tags newest-first and returns
+// the first semver tag whose commit still contains loc.Entry.Path (i.e., the
+// skill exists at that tag). Returns "" when no semver tag qualifies — either
+// none are semver, or every semver tag predates the skill being added to the
+// repo.
+//
+// When gc is nil, falls back to LatestSemverTag (no I/O, no validation) so
+// the function stays usable in tests / callers that explicitly want the
+// unchecked behaviour.
+func latestValidSemverTag(loc *registry.SkillLocation, gc git.GitClient) string {
+	if gc == nil {
+		return LatestSemverTag(loc.Entry.Versions.Tags)
+	}
+	vl := &model.VersionList{}
+	for _, t := range loc.Entry.Versions.Tags {
+		if model.IsSemverTag(t) {
+			vl.Tags = append(vl.Tags, model.Version{Ref: t, IsSemver: true})
+		}
+	}
+	if len(vl.Tags) == 0 {
+		return ""
+	}
+	model.SortVersions(vl, "")
+	for _, v := range vl.Tags {
+		if tagContainsSkillPath(gc, loc.RepoPath, v.Ref, loc.Entry.Path) {
+			return v.Ref
+		}
+	}
+	return ""
+}
+
+// tagContainsSkillPath reports whether the tree at `ref` in the bare repo at
+// repoPath contains an SKILL.md under `path`. For root-layout entries (path
+// is "" or "."), SKILL.md is looked up directly at the root. Errors from
+// ReadBlob — missing blob, missing path, unknown ref — all collapse to
+// false: any failure to confirm means we shouldn't trust the tag.
+func tagContainsSkillPath(gc git.GitClient, repoPath, ref, path string) bool {
+	target := "SKILL.md"
+	if path != "" && path != "." {
+		target = path + "/SKILL.md"
+	}
+	_, err := gc.ReadBlob(repoPath, ref, target)
+	return err == nil
 }
 
 // quiverHome resolves the QUIVER_HOME override or falls back to ~/.quiver.

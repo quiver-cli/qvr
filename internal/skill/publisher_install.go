@@ -91,7 +91,14 @@ type PublishInstalledResult struct {
 // --migrate is also set, the lock entry's Source is updated post-push so
 // subsequent `qvr publish` calls track the fork.
 //
-// The entry is mutated in place on success (Commit advances, Source and
+// Both root and nested layouts stage through a temp clone of the upstream
+// (issue #86, #95, #98): the user's eject dir is never modified, the
+// publish-time commit is one clean cherry-pick on top of the upstream's
+// branch (no history graft from the eject dir's synthetic-init repo), and
+// the forked-from stamp lands in the stage, never in the eject WD.
+//
+// The entry is mutated in place on success (Commit advances to the eject
+// dir's HEAD — the snapshot the user just published — and Source/
 // SourceUpstream may flip for --fork --migrate).
 func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRequest) (*PublishInstalledResult, error) {
 	e := req.Entry
@@ -102,9 +109,6 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, errors.New("cannot publish a link install — edit the source directly and push with raw git")
 	}
 	if !e.IsEdit() {
-		// Without an edit dir there's no local git state to push from.
-		// We could in principle push a `qvr edit` automatically, but
-		// that's a surprising mutation; require explicit edit.
 		return nil, ErrPublishNoEdit
 	}
 	if e.EditPath == "" {
@@ -119,7 +123,6 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, fmt.Errorf("publish %s: edit dir %s has no SKILL.md: %w", e.Name, editAbs, err)
 	}
 
-	// Determine remote URL.
 	remoteURL := e.Source
 	if req.ForkURL != "" {
 		remoteURL = req.ForkURL
@@ -128,16 +131,8 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, ErrPublishNoSource
 	}
 
-	// Determine target branch. For edit-mode entries the local git repo's
-	// HEAD branch is authoritative (set by `qvr edit`'s initial commit and
-	// whatever branch the user has checked out since). entry.Ref records
-	// the original upstream ref label, not the local branch, so it's only
-	// a fallback when HEAD lookup fails. `--branch` overrides everything.
-	branch := req.Branch
-
-	// Validate the staged skill before touching the upstream — same
-	// philosophy as `qvr publish` path mode: scan/validation must pass
-	// before any remote is contacted.
+	// Validate the eject dir before any remote is touched — same gate as
+	// the path-mode publisher.
 	loaded, err := LoadFromPath(editAbs)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidSkillPath, err)
@@ -150,11 +145,9 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, fmt.Errorf("skill validation failed:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
-	// For --fork, compute provenance value now (so dry-run can report it),
-	// but DEFER the actual SKILL.md write until after the dirty-WD guard
-	// below. Otherwise qvr's own stamp dirties the working tree and trips
-	// the guard that's meant to catch *user* WIP — chicken/egg with #83
-	// (issue #98).
+	// Compute provenance value once for both dry-run reporting and the
+	// stamp-into-stage step below. Built from the eject entry's source
+	// info, never read from the stage.
 	forkedFromValue := ""
 	if req.ForkURL != "" {
 		upstream := e.SourceUpstream
@@ -170,51 +163,6 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		}
 	}
 
-	// Open the edit-dir repo. `qvr edit` initialised it with one commit;
-	// subsequent edits to files in editAbs are uncommitted dirt we'll stage.
-	repo, err := gogit.PlainOpen(editAbs)
-	if err != nil {
-		return nil, fmt.Errorf("open edit repo: %w", err)
-	}
-
-	// Resolve target branch. Precedence (issue #95):
-	//  1. --branch <X>   (explicit)
-	//  2. Remote's default branch (ls-remote HEAD → matching refs/heads/*)
-	//  3. Local eject HEAD's branch name
-	//  4. entry.Ref
-	//  5. "main"
-	// The remote-default lookup matters because the local eject repo is
-	// initialised by `git init` and always sits on "master" — without it,
-	// we'd default to "master" even when the upstream uses "main".
-	// Skip the network round-trip in dry-run mode: we don't want
-	// `--dry-run` to hang on a fake URL.
-	if branch == "" && !req.DryRun {
-		if remote, lerr := p.Git.LsRemote(ctx, remoteURL); lerr == nil && remote != nil {
-			if headHash, ok := remote.Refs["HEAD"]; ok {
-				for name, hash := range remote.Refs {
-					if hash == headHash && strings.HasPrefix(name, "refs/heads/") {
-						branch = strings.TrimPrefix(name, "refs/heads/")
-						break
-					}
-				}
-			}
-		}
-	}
-	if branch == "" {
-		if head, hErr := repo.Head(); hErr == nil && head.Name().IsBranch() {
-			branch = head.Name().Short()
-		}
-	}
-	if branch == "" && e.Ref != "" {
-		branch = e.Ref
-	}
-	if branch == "" {
-		branch = "main"
-	}
-
-	// Resolve effective layout (issue #70). Default: "root" for --fork
-	// (single-skill repo case), "nested" otherwise (push back to a
-	// multi-skill registry). Explicit req.Layout overrides.
 	layout := req.Layout
 	if layout == "" {
 		if req.ForkURL != "" {
@@ -227,7 +175,40 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, fmt.Errorf("publish: invalid --layout %q (want root|nested)", layout)
 	}
 
+	// Dirty-WD guard (issue #83). Refuse to silently absorb uncommitted
+	// edits in the eject dir unless --auto-commit. Runs BEFORE any stage
+	// work so the user's WIP isn't picked up mid-publish.
+	editStatus, err := readDirtyStatus(editAbs)
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	if !editStatus.IsClean() && !req.AutoCommit {
+		dirty := dirtyFilesShortList(editStatus)
+		return nil, fmt.Errorf("publish %s: refuse to silently auto-commit dirty changes — pass --auto-commit to override, or `git -C %s commit` first (issue #74).\n  Dirty files: %s",
+			e.Name, editAbs, dirty)
+	}
+
 	if req.DryRun {
+		// Dry-run: mirror the real publish's branch precedence so the
+		// reported target matches what the next real publish will do. We
+		// skip the clone (that's what "dry-run" buys you) but DO call
+		// ls-remote --symref — it's a refs-metadata round-trip, no blobs,
+		// and without it dry-run prints entry.Ref while the real publish
+		// goes to the symref-resolved branch (the user-reported divergence
+		// for issue #95). Precedence here matches the real path minus the
+		// stage-HEAD step (which requires the clone we're avoiding).
+		branch := req.Branch
+		if branch == "" {
+			if def, dErr := p.Git.RemoteDefaultBranch(ctx, remoteURL); dErr == nil && def != "" {
+				branch = def
+			}
+		}
+		if branch == "" && e.Ref != "" {
+			branch = e.Ref
+		}
+		if branch == "" {
+			branch = "main"
+		}
 		return &PublishInstalledResult{
 			Skill:        e.Name,
 			Remote:       remoteURL,
@@ -241,95 +222,113 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		}, nil
 	}
 
-	// Dirty-WD guard (issue #83): refuse a silent auto-commit unless the
-	// caller passed AutoCommit=true. Default behavior used to stage and
-	// commit any uncommitted edits, which surprised users whose WIP debug
-	// notes / secrets ended up on the remote.
-	statusBeforeStage, err := readDirtyStatus(editAbs)
-	if err != nil {
-		return nil, fmt.Errorf("status: %w", err)
+	// Stage clone. Both layouts now go through here (issue #86: eject dir
+	// is never mutated; issue #95: branch comes from the stage's clone,
+	// not the eject's `git init` default of "master"; issue #98: the
+	// forked-from stamp lives in the stage, not the user's WD).
+	tmp, terr := os.MkdirTemp("", "quiver-publish-installed-*")
+	if terr != nil {
+		return nil, fmt.Errorf("temp dir: %w", terr)
 	}
-	if !statusBeforeStage.IsClean() && !req.AutoCommit {
-		dirty := dirtyFilesShortList(statusBeforeStage)
-		return nil, fmt.Errorf("publish %s: refuse to silently auto-commit dirty changes — pass --auto-commit to override, or `git -C %s commit` first.\n  Dirty files: %s",
-			e.Name, editAbs, dirty)
+	defer os.RemoveAll(tmp)
+	stageDir := filepath.Join(tmp, "stage")
+
+	stagedRepo, emptyOrNew, cloneErr := openOrInitStage(ctx, p.Git, remoteURL, stageDir)
+	if cloneErr != nil {
+		return nil, cloneErr
+	}
+	stagedWt, err := stagedRepo.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("stage worktree: %w", err)
 	}
 
-	// Dirty check passed — NOW it's safe to stamp the forked-from line.
-	// The stamp dirties the WD; the subsequent stage+commit below absorbs
-	// it into the publish commit (issue #98).
+	// Branch resolution (issue #95).
+	//  1. --branch <X> explicit.
+	//  2. Stage clone's HEAD branch (== upstream's default by
+	//     construction — `git clone` checks it out). Cheap; already loaded.
+	//  3. Remote HEAD symref via `git ls-remote --symref` — authoritative
+	//     when the stage's HEAD is missing or detached (which happens on
+	//     emptyOrNew, fork-to-new-remote, and any host that doesn't include
+	//     a symref header in clone). One extra network round-trip but
+	//     correct under upstream renames (master → main).
+	//  4. entry.Ref (last-published label) — fallback only; stale by
+	//     construction once the upstream renames.
+	//  5. "main".
+	branch := req.Branch
+	if branch == "" && !emptyOrNew {
+		if head, hErr := stagedRepo.Head(); hErr == nil && head.Name().IsBranch() {
+			branch = head.Name().Short()
+		}
+	}
+	if branch == "" {
+		if def, dErr := p.Git.RemoteDefaultBranch(ctx, remoteURL); dErr == nil && def != "" {
+			branch = def
+		}
+	}
+	if branch == "" && e.Ref != "" {
+		branch = e.Ref
+	}
+	if branch == "" {
+		branch = "main"
+	}
+
+	// Position the stage on `branch`. Empty upstreams get HEAD pointed at
+	// the future branch so the first commit creates it; populated
+	// upstreams get a checkout (auto-creating from current HEAD if the
+	// requested branch doesn't exist on the remote yet — same semantics
+	// as the path-mode greenfield publish for new branches).
+	if emptyOrNew {
+		symRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(branch))
+		if err := stagedRepo.Storer.SetReference(symRef); err != nil {
+			return nil, fmt.Errorf("set HEAD on empty stage: %w", err)
+		}
+	} else {
+		if err := checkoutPublishBranch(stagedRepo, stagedWt, branch, "HEAD"); err != nil {
+			return nil, fmt.Errorf("checkout %s in stage: %w", branch, err)
+		}
+	}
+
+	// Resolve content destination inside the stage.
+	contentDest := stageDir
+	if layout == "nested" {
+		nestedSub := e.Path
+		if nestedSub == "" {
+			nestedSub = filepath.Join("skills", e.Name)
+		}
+		contentDest = filepath.Join(stageDir, nestedSub)
+	}
+
+	// Wipe the destination so deletions in the eject dir propagate as
+	// deletions on the remote. For root layout, preserve `.git/`; for
+	// nested, rm -rf the subdir entirely.
+	if layout == "root" {
+		if err := wipeStageContents(stageDir); err != nil {
+			return nil, fmt.Errorf("wipe stage: %w", err)
+		}
+	} else {
+		if err := os.RemoveAll(contentDest); err != nil {
+			return nil, fmt.Errorf("clean nested dest: %w", err)
+		}
+	}
+
+	if err := copyDir(editAbs, contentDest); err != nil {
+		return nil, fmt.Errorf("copy skill into stage: %w", err)
+	}
+
+	// Stamp forked-from in the stage (never in eject dir — issue #98).
 	if forkedFromValue != "" {
-		if err := stampForkedFrom(filepath.Join(editAbs, "SKILL.md"), forkedFromValue); err != nil {
+		if err := stampForkedFrom(filepath.Join(contentDest, "SKILL.md"), forkedFromValue); err != nil {
 			return nil, fmt.Errorf("stamp forked-from: %w", err)
 		}
 	}
 
-	// Push-flow: pick the right repo to commit-and-push from. Root layout
-	// pushes from the edit dir itself (single-skill repo). Nested layout
-	// clones the upstream into a temp dir, copies the edit dir contents
-	// into <stage>/<entry.Path>/, and pushes from there.
-	pushFromAbs := editAbs
-	pushRepo := repo
-	cleanupTmp := func() {}
-	if layout == "nested" {
-		nestedDir := e.Path
-		if nestedDir == "" {
-			nestedDir = filepath.Join("skills", e.Name)
-		}
-		tmp, terr := os.MkdirTemp("", "quiver-publish-installed-*")
-		if terr != nil {
-			return nil, fmt.Errorf("temp dir: %w", terr)
-		}
-		cleanupTmp = func() { _ = os.RemoveAll(tmp) }
-		stageDir := filepath.Join(tmp, "stage")
-		if err := p.Git.Clone(ctx, remoteURL, stageDir); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("clone remote for nested publish: %w", err)
-		}
-		stagedRepo, err := gogit.PlainOpen(stageDir)
-		if err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("open stage repo: %w", err)
-		}
-		stagedWt, err := stagedRepo.Worktree()
-		if err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("stage worktree: %w", err)
-		}
-		// Best-effort: switch to the target branch in the stage. New
-		// branches aren't auto-created here — installed-mode publish is
-		// "update the existing skill", not "branch from a default".
-		if err := checkoutPublishBranch(stagedRepo, stagedWt, branch, ""); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("checkout %s in stage: %w", branch, err)
-		}
-		dest := filepath.Join(stageDir, nestedDir)
-		// Wipe any existing copy so deletions in the edit dir flow through
-		// to the registry side (a removed file in the edit copy should
-		// land as a deletion on the remote).
-		if err := os.RemoveAll(dest); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("clean nested dest: %w", err)
-		}
-		if err := copyDir(editAbs, dest); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("copy skill into nested layout: %w", err)
-		}
-		pushFromAbs = stageDir
-		pushRepo = stagedRepo
-	}
-	defer cleanupTmp()
-
-	wt, err := pushRepo.Worktree()
-	if err != nil {
-		return nil, fmt.Errorf("worktree handle: %w", err)
-	}
-	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+	// Stage + commit.
+	if err := stagedWt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
 		return nil, fmt.Errorf("stage: %w", err)
 	}
-	status, err := wt.Status()
+	stageStatus, err := stagedWt.Status()
 	if err != nil {
-		return nil, fmt.Errorf("status: %w", err)
+		return nil, fmt.Errorf("stage status: %w", err)
 	}
 
 	author := req.Author
@@ -348,133 +347,103 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		}
 	}
 
-	// Capture pre-commit HEAD so a push failure can rewind the local commit
-	// (issue #86). Empty when the repo has no prior HEAD (impossible after
-	// `qvr edit` and after a registry clone, but defensive).
-	var preCommitHead plumbing.Hash
-	if head, hErr := pushRepo.Head(); hErr == nil {
-		preCommitHead = head.Hash()
-	}
-
 	commitHash := plumbing.ZeroHash
-	if !status.IsClean() {
-		h, cerr := wt.Commit(message, &gogit.CommitOptions{
+	switch {
+	case !stageStatus.IsClean():
+		h, cerr := stagedWt.Commit(message, &gogit.CommitOptions{
 			Author: &object.Signature{Name: author, Email: email, When: time.Now()},
 		})
 		if cerr != nil {
 			return nil, fmt.Errorf("commit: %w", cerr)
 		}
 		commitHash = h
-	} else if head, hErr := pushRepo.Head(); hErr == nil {
-		commitHash = head.Hash()
-	}
-
-	// For root layout, set origin on the edit repo so future raw-git work
-	// on the edit dir tracks the right remote. Nested layout uses a temp
-	// clone whose origin is already set by Clone.
-	if layout == "root" {
-		if err := setRepoOriginURL(pushRepo, remoteURL); err != nil {
-			return nil, fmt.Errorf("set origin: %w", err)
+	case emptyOrNew:
+		// Empty upstream + identical content to a freshly-initialised
+		// stage shouldn't reach a clean status, but defensively allow
+		// an empty initial commit so the branch exists on push.
+		h, cerr := stagedWt.Commit(message, &gogit.CommitOptions{
+			Author:            &object.Signature{Name: author, Email: email, When: time.Now()},
+			AllowEmptyCommits: true,
+		})
+		if cerr != nil {
+			return nil, fmt.Errorf("commit (empty init): %w", cerr)
+		}
+		commitHash = h
+	default:
+		if head, hErr := stagedRepo.Head(); hErr == nil {
+			commitHash = head.Hash()
 		}
 	}
 
-	// Decide nothing-to-publish by asking the REMOTE, not by inspecting the
-	// local WD. WD-cleanliness only tells us "the user hasn't made uncommitted
-	// edits since the last commit"; it says nothing about whether the
-	// committed history has been pushed. For a brand-new --fork remote that
-	// doesn't have the branch at all, we MUST push (issue #97).
+	// Nothing-to-publish: stage's HEAD already matches remote branch.
+	// Always re-check via ls-remote because the stage was cloned moments
+	// ago but a concurrent push could have advanced things. Tag publishes
+	// proceed past this check — the tag is the unit of work.
 	nothingToPublish := false
 	if req.Tag == "" {
 		remoteRefs, lerr := p.Git.LsRemote(ctx, remoteURL)
 		if lerr == nil && remoteRefs != nil {
-			remoteHead, ok := remoteRefs.Refs["refs/heads/"+branch]
-			if ok && remoteHead == commitHash.String() {
+			if remoteHead, ok := remoteRefs.Refs["refs/heads/"+branch]; ok && remoteHead == commitHash.String() {
 				nothingToPublish = true
 			}
 		}
-		// LsRemote errors are non-fatal here — we just don't short-circuit,
-		// and the regular push path handles the upstream reality.
 	}
-
 	if nothingToPublish {
-		// True no-op publish: bail before touching the remote. Tag-cutting
-		// reruns still proceed below so `qvr publish --tag vN` is valid on
-		// a clean tree (the tag is the unit of work).
 		return &PublishInstalledResult{
 			Skill:            e.Name,
 			Remote:           remoteURL,
 			Branch:           branch,
 			Commit:           commitHash.String(),
 			ForkedFrom:       forkedFromValue,
-			UpstreamPath:     pushFromAbs,
+			UpstreamPath:     stageDir,
 			Layout:           layout,
 			NothingToPublish: true,
 		}, nil
 	}
 
-	// Push branch first; if it succeeds, push the tag in a separate call.
-	// This avoids the orphan-tag-on-remote case (issue #75) where today's
-	// non-atomic combined push could leave the tag on origin pointing at
-	// a commit not reachable from the released branch.
-	//
-	// For root layout we use HEAD as the source side of the refspec so a
-	// local branch name mismatch (eject dir is on "master", target is
-	// "main") doesn't blow up the push (issue #95). For nested layout the
-	// staged clone was just put on the target branch by checkoutPublishBranch,
-	// so the local branch name and the target match.
-	srcRef := "HEAD"
-	if layout == "nested" {
-		srcRef = "refs/heads/" + branch
-	}
-	branchSpec := []string{fmt.Sprintf("%s:refs/heads/%s", srcRef, branch)}
-	if err := p.Git.Push(ctx, pushFromAbs, "origin", branchSpec); err != nil {
-		// Roll back the local commit so a retry sees the same starting
-		// state — without this, a failed push leaves a phantom commit on
-		// top of the edit dir's history that the next successful publish
-		// would ship (issue #86). Best-effort: failure to rewind is logged
-		// upstream, not a separate error.
-		if commitHash != plumbing.ZeroHash && preCommitHead != plumbing.ZeroHash {
-			_ = rewindToHead(pushRepo, preCommitHead)
-		}
-		return nil, fmt.Errorf("push branch: %w", err)
-	}
-
+	// Push. Atomic for tag publishes (issue #75 — branch and tag either
+	// both land or neither). For branch-only, single-refspec push goes
+	// through the older non-atomic protocol for compatibility.
+	refSpecs := []string{fmt.Sprintf("refs/heads/%s:refs/heads/%s", branch, branch)}
+	var tagCreated bool
 	if req.Tag != "" {
 		tagRef := plumbing.NewTagReferenceName(req.Tag)
-		if _, err := pushRepo.Reference(tagRef, false); err == nil {
-			return nil, fmt.Errorf("tag %s already exists locally", req.Tag)
+		if _, err := stagedRepo.Reference(tagRef, false); err == nil {
+			return nil, fmt.Errorf("tag %s already exists on remote", req.Tag)
 		}
-		if _, err := pushRepo.CreateTag(req.Tag, commitHash, &gogit.CreateTagOptions{
+		if _, err := stagedRepo.CreateTag(req.Tag, commitHash, &gogit.CreateTagOptions{
 			Tagger:  &object.Signature{Name: author, Email: email, When: time.Now()},
 			Message: fmt.Sprintf("Release %s", req.Tag),
 		}); err != nil {
 			return nil, fmt.Errorf("create tag: %w", err)
 		}
-		tagSpec := []string{fmt.Sprintf("refs/tags/%s:refs/tags/%s", req.Tag, req.Tag)}
-		if err := p.Git.Push(ctx, pushFromAbs, "origin", tagSpec); err != nil {
-			// Tag push failed but branch already landed. Roll back the
-			// local tag (the remote one was never created) so the retry
-			// flow is clean. Branch is intentionally left advanced — we
-			// achieved the publish, just not the release tag.
-			_ = pushRepo.DeleteTag(req.Tag)
-			return nil, fmt.Errorf("push tag: %w", err)
+		tagCreated = true
+		refSpecs = append(refSpecs, fmt.Sprintf("refs/tags/%s:refs/tags/%s", req.Tag, req.Tag))
+	}
+	if err := p.Git.Push(ctx, stageDir, "origin", refSpecs); err != nil {
+		if tagCreated {
+			_ = stagedRepo.DeleteTag(req.Tag)
 		}
+		return nil, fmt.Errorf("push: %w", err)
 	}
 
-	// Update the entry on success.
-	e.Commit = commitHash.String()
+	// Update entry on success. e.Commit tracks the eject dir's HEAD —
+	// the user-committed snapshot that we just published — NOT the
+	// stage's publish commit (which is a clean cherry-pick on top of the
+	// upstream and has no relation to the eject dir's git history). This
+	// keeps `qvr doctor` / `qvr lock verify` integrity checks honest:
+	// they compare against the eject dir's repo, which doesn't know
+	// about the stage's commit.
+	if head, hErr := readRepoHead(editAbs); hErr == nil && head != "" {
+		e.Commit = head
+	}
 	if req.ForkURL != "" && req.Migrate {
-		// SourceUpstream may already be set (the original upstream from
-		// the eject step). Preserve it; only fill it on first migrate.
 		if e.SourceUpstream == "" {
 			e.SourceUpstream = e.Source
 		}
 		e.Source = req.ForkURL
-		// Clear Registry so future qvr add/info doesn't think the fork
-		// belongs to the now-stale registry name. Issue #85.
 		e.Registry = ""
 	}
-	// Refresh subtree hash against the post-publish dir.
 	if h, hErr := canonical.HashSubtreeFromDisk(editAbs); hErr == nil {
 		e.SubtreeHash = h
 	}
@@ -486,11 +455,69 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		Tag:              req.Tag,
 		Commit:           commitHash.String(),
 		ForkedFrom:       forkedFromValue,
-		UpstreamPath:     pushFromAbs,
+		UpstreamPath:     stageDir,
 		Migrated:         req.ForkURL != "" && req.Migrate,
 		Layout:           layout,
-		NothingToPublish: nothingToPublish,
+		NothingToPublish: false,
 	}, nil
+}
+
+// openOrInitStage clones remoteURL into stageDir. If the remote returns
+// "not found" (the fork URL points at an empty/new repo on the host), it
+// falls back to `git init` + `origin = remoteURL` so the publish can
+// still seed the first commit. Returns (repo, emptyOrNew, err) where
+// emptyOrNew is true only on the init path.
+func openOrInitStage(ctx context.Context, gc git.GitClient, remoteURL, stageDir string) (*gogit.Repository, bool, error) {
+	err := gc.Clone(ctx, remoteURL, stageDir)
+	if err == nil {
+		repo, oerr := gogit.PlainOpen(stageDir)
+		if oerr != nil {
+			return nil, false, fmt.Errorf("open stage: %w", oerr)
+		}
+		// A `git clone` of an empty repo leaves the local clone with no
+		// HEAD branch. Detect that and switch into the empty-stage flow
+		// (HEAD set to a symbolic ref on the requested branch, first
+		// commit creates it).
+		if _, headErr := repo.Head(); headErr != nil {
+			return repo, true, nil
+		}
+		return repo, false, nil
+	}
+	if !errors.Is(err, git.ErrRepoNotFound) {
+		return nil, false, fmt.Errorf("clone remote: %w", err)
+	}
+	// Remote refused with "not found" — treat as a freshly-created empty
+	// repo on the host (the common case for `qvr publish --fork <new-url>`).
+	if mkErr := os.MkdirAll(stageDir, 0o755); mkErr != nil {
+		return nil, false, fmt.Errorf("create stage dir: %w", mkErr)
+	}
+	repo, ierr := gogit.PlainInit(stageDir, false)
+	if ierr != nil {
+		return nil, false, fmt.Errorf("init stage: %w", ierr)
+	}
+	if oerr := setRepoOriginURL(repo, remoteURL); oerr != nil {
+		return nil, false, fmt.Errorf("set stage origin: %w", oerr)
+	}
+	return repo, true, nil
+}
+
+// wipeStageContents removes every top-level entry from dir except `.git/`,
+// used before copying the eject tree into a root-layout stage so deletions
+// in the eject dir propagate as removals on the upstream.
+func wipeStageContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read stage: %w", err)
+	}
+	for _, ent := range entries {
+		if ent.Name() == ".git" {
+			continue
+		}
+		if rerr := os.RemoveAll(filepath.Join(dir, ent.Name())); rerr != nil {
+			return fmt.Errorf("remove %s: %w", ent.Name(), rerr)
+		}
+	}
+	return nil
 }
 
 // readDirtyStatus opens the repo at dir and returns its uncommitted-changes
@@ -522,23 +549,6 @@ func dirtyFilesShortList(status gogit.Status) string {
 		return strings.Join(names, ", ")
 	}
 	return fmt.Sprintf("%s (+%d more)", strings.Join(names[:limit], ", "), len(names)-limit)
-}
-
-// rewindToHead force-resets the working copy to the given commit. Used to
-// roll back a local commit when the subsequent push fails (issue #86) so a
-// retry sees the same starting state. Best-effort: errors are returned but
-// callers treat the rewind as advisory — the user can still recover with
-// raw git.
-func rewindToHead(repo *gogit.Repository, target plumbing.Hash) error {
-	headRef := plumbing.NewHashReference(plumbing.HEAD, target)
-	if err := repo.Storer.SetReference(headRef); err != nil {
-		return fmt.Errorf("set HEAD: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("worktree: %w", err)
-	}
-	return wt.Reset(&gogit.ResetOptions{Mode: gogit.MixedReset, Commit: target})
 }
 
 // setRepoOriginURL is a local helper mirroring git.setOriginURL (which
