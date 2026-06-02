@@ -77,6 +77,15 @@ type Store interface {
 	// (empty agent = all agents).
 	CountSessions(ctx context.Context, agent string) (int64, error)
 
+	// CountEvents returns the number of recorded events for an agent
+	// (empty agent = all agents).
+	CountEvents(ctx context.Context, agent string) (int64, error)
+
+	// CountSelfAuditErrors returns the number of self_audit rows with an
+	// error result for an agent (matched on the actor column; empty agent =
+	// all agents). Surfaces hook parse/ingest failures in `qvr audit status`.
+	CountSelfAuditErrors(ctx context.Context, agent string) (int64, error)
+
 	// AppendSelfAudit records an internal-state event (hook_error,
 	// unattributed_drop, purge, config_change). Returns nil on success
 	// or the underlying DB/context error; callers that treat self-audit

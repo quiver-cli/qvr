@@ -456,6 +456,41 @@ func (s *sqliteStore) CountSessions(ctx context.Context, agent string) (int64, e
 	return n, nil
 }
 
+func (s *sqliteStore) CountEvents(ctx context.Context, agent string) (int64, error) {
+	var n int64
+	var err error
+	if agent == "" {
+		err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&n)
+	} else {
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM audit_events WHERE agent_name = ?`, agent,
+		).Scan(&n)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: count events: %w", err)
+	}
+	return n, nil
+}
+
+func (s *sqliteStore) CountSelfAuditErrors(ctx context.Context, agent string) (int64, error) {
+	var n int64
+	var err error
+	if agent == "" {
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM self_audits WHERE result = ?`, ResultAudit_Error,
+		).Scan(&n)
+	} else {
+		err = s.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM self_audits WHERE result = ? AND actor = ?`,
+			ResultAudit_Error, agent,
+		).Scan(&n)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: count self-audit errors: %w", err)
+	}
+	return n, nil
+}
+
 const appendSelfAuditSQL = `INSERT INTO self_audits(
   id, timestamp, action, actor, result, error_msg, details
 ) VALUES (?,?,?,?,?,?,?)`

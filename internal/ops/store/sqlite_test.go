@@ -734,6 +734,64 @@ func TestAppendSelfAudit_AllKnownActions(t *testing.T) {
 	}
 }
 
+// --- Per-agent counts for `qvr audit status` (issue #137) ---
+
+func TestCountEventsAndSelfAuditErrors_ByAgent(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+
+	// codex: 2 events; claude: 1 event — each event under its own session.
+	seq := 0
+	save := func(agent string) {
+		seq++
+		sess := ops.NewSession(agent, fmt.Sprintf("%s-%d", agent, seq), time.Now().UTC())
+		if err := s.UpsertSession(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+		e := mkEvent(t, sess, ops.ActionCommandExec, "foo")
+		e.Sequence = seq
+		if err := s.SaveEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("codex")
+	save("codex")
+	save("claude")
+
+	// hook errors: 2 codex, 1 claude, 1 untagged; plus a success that must NOT count.
+	for _, actor := range []string{"codex", "codex", "claude", ""} {
+		if err := s.AppendSelfAudit(ctx, &SelfAudit{Action: ActionHookError, Actor: actor, Result: ResultAudit_Error}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AppendSelfAudit(ctx, &SelfAudit{Action: ActionAdapterInstall, Actor: "codex", Result: ResultAudit_Success}); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(label string, got int64, gErr error, want int64) {
+		t.Helper()
+		if gErr != nil {
+			t.Fatalf("%s: %v", label, gErr)
+		}
+		if got != want {
+			t.Errorf("%s = %d, want %d", label, got, want)
+		}
+	}
+	n, err := s.CountEvents(ctx, "codex")
+	check("CountEvents codex", n, err, 2)
+	n, err = s.CountEvents(ctx, "claude")
+	check("CountEvents claude", n, err, 1)
+	n, err = s.CountEvents(ctx, "")
+	check("CountEvents all", n, err, 3)
+
+	n, err = s.CountSelfAuditErrors(ctx, "codex")
+	check("CountSelfAuditErrors codex", n, err, 2)
+	n, err = s.CountSelfAuditErrors(ctx, "claude")
+	check("CountSelfAuditErrors claude", n, err, 1)
+	n, err = s.CountSelfAuditErrors(ctx, "")
+	check("CountSelfAuditErrors all", n, err, 4)
+}
+
 // --- Stats ---
 
 func TestStats_Accuracy(t *testing.T) {

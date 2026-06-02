@@ -299,10 +299,17 @@ func (f *Funnel) notify(msg string) {
 // audit itself failed — in which case we bubble the error up so the
 // caller can at least log it.
 func (f *Funnel) recordHookError(ctx context.Context, msg string, details map[string]any) error {
+	// Tag the row with the agent (the adapter's name) so `qvr audit status`
+	// can count errors per agent. Unknown when no adapter is configured.
+	actor := ""
+	if f.deps.Adapter != nil {
+		actor = f.deps.Adapter.Name()
+	}
 	entry := &SelfAuditEntry{
 		ID:        uuid.New(),
 		Timestamp: f.deps.Clock(),
 		Action:    SelfAuditHookError,
+		Actor:     actor,
 		Result:    SelfAuditResultError,
 		ErrorMsg:  msg,
 		Details:   details,

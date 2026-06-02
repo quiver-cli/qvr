@@ -15,8 +15,13 @@ var auditStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show per-agent hook + capture status",
 	Long: `Reports, for every installable agent: whether it's detected on this
-machine, whether Quiver's hooks are installed and valid, and when the last
-event for that agent was recorded.`,
+machine, whether Quiver's hooks are installed and valid, how many events and
+sessions have been recorded, how many hook errors were logged, and when the
+last event for that agent was recorded. RECORDED counts individual events
+(tool calls, file ops, …); SESSIONS counts the runs they group into, so
+RECORDED is normally several times SESSIONS. ERRORS counts hook parse/ingest
+failures — a non-zero value means events are reaching qvr but failing to
+record.`,
 	Args: cobra.NoArgs,
 	RunE: runAuditStatus,
 }
@@ -33,7 +38,9 @@ type agentStatus struct {
 	Version     string   `json:"version,omitempty"`
 	Installed   bool     `json:"installed"`
 	Valid       bool     `json:"valid"`
+	Recorded    int64    `json:"recorded"`
 	Sessions    int64    `json:"sessions"`
+	Errors      int64    `json:"errors"`
 	LastEvent   string   `json:"last_event,omitempty"`
 	Issues      []string `json:"issues,omitempty"`
 }
@@ -77,6 +84,12 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 			if n, cErr := s.CountSessions(cmd.Context(), inst.Name()); cErr == nil {
 				as.Sessions = n
 			}
+			if n, cErr := s.CountEvents(cmd.Context(), inst.Name()); cErr == nil {
+				as.Recorded = n
+			}
+			if n, cErr := s.CountSelfAuditErrors(cmd.Context(), inst.Name()); cErr == nil {
+				as.Errors = n
+			}
 		}
 		statuses = append(statuses, as)
 	}
@@ -95,7 +108,7 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 		printer.Info("Audit pipeline: DISABLED — hooks are wired but no events are recorded")
 		printer.Warning("run 'qvr audit enable' to start recording")
 	}
-	headers := []string{"AGENT", "DETECTED", "INSTALLED", "VALID", "SESSIONS", "LAST EVENT"}
+	headers := []string{"AGENT", "DETECTED", "INSTALLED", "VALID", "RECORDED", "SESSIONS", "ERRORS", "LAST EVENT"}
 	rows := make([][]string, 0, len(statuses))
 	for _, as := range statuses {
 		rows = append(rows, []string{
@@ -103,7 +116,9 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 			yesNo(as.Detected),
 			yesNo(as.Installed),
 			yesNo(as.Valid),
+			fmt.Sprintf("%d", as.Recorded),
 			fmt.Sprintf("%d", as.Sessions),
+			fmt.Sprintf("%d", as.Errors),
 			orDash(as.LastEvent),
 		})
 	}
