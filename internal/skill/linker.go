@@ -112,40 +112,6 @@ func RemoveSymlink(linkPath string) error {
 	return nil
 }
 
-// VerifySymlink returns nil if linkPath is a symlink to an existing directory
-// that contains SKILL.md. Callers use this during `qvr status` / `qvr list` to
-// surface broken installs without performing any git operations.
-func VerifySymlink(linkPath string) error {
-	info, err := os.Lstat(linkPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%w: %s", ErrSymlinkNotFound, linkPath)
-		}
-		return fmt.Errorf("stat symlink: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("%w: %s is not a symlink", ErrSymlinkExists, linkPath)
-	}
-	// Resolve the target relative to the symlink's own location so that
-	// symlinks storing a relative path (as created by some tools) don't get
-	// (mis)interpreted against the process's CWD.
-	resolved, err := filepath.EvalSymlinks(linkPath)
-	if err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrTargetNotExist, linkPath, err)
-	}
-	st, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("%w: %s -> %s: %v", ErrTargetNotExist, linkPath, resolved, err)
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("symlink target is not a directory: %s", resolved)
-	}
-	if _, err := os.Stat(filepath.Join(resolved, "SKILL.md")); err != nil {
-		return fmt.Errorf("%w: %s", ErrTargetNotASkill, resolved)
-	}
-	return nil
-}
-
 // EffectiveTarget returns the absolute directory that a target symlink should
 // point at for entry. Agent tools expect `.../skills/<name>/SKILL.md` directly
 // under the symlinked directory, so the effective target is the worktree root

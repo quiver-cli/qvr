@@ -269,15 +269,6 @@ func latestSemverRemoteTag(refs *git.RemoteRefInfo, skillName string) (string, s
 	return latest, refs.Refs["refs/tags/"+latest]
 }
 
-// lookupRemoteRef resolves a ref name (`main`, `v1.2.0`, …) against the
-// ls-remote map. Tries refs/heads/<name> first, then refs/tags/<name>, so
-// branch-pinned and tag-pinned installs both work without the caller having
-// to know which it is.
-func lookupRemoteRef(refs *git.RemoteRefInfo, name string) (string, bool) {
-	h, _, ok := lookupRemoteRefKind(refs, name)
-	return h, ok
-}
-
 // lookupRemoteRefKind is the kind-aware variant: returns "branch" or "tag"
 // alongside the hash so callers can treat tag-pinned installs differently.
 func lookupRemoteRefKind(refs *git.RemoteRefInfo, name string) (string, string, bool) {

@@ -1,0 +1,31 @@
+version = 5
+
+[skills]
+[skills.frontend-design]
+registry = 'anthropics/skills'
+source = 'https://github.com/anthropics/skills.git'
+path = 'skills/frontend-design'
+ref = 'main'
+commit = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'
+installCommit = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'
+subtreeHash = 'sha256:21dce9699042cfdbff0ba122d1ecf9fe95583e53c7d42b790c550ca9279f0d43'
+treeOID = '928950704df8a8b885c03de5da626331e6f29cf8'
+targets = ['claude']
+installedAt = 2026-06-03T13:03:00.652324Z
+
+[skills.frontend-design.verification]
+[skills.frontend-design.verification.scan]
+reportSHA = 'sha256:7c2ab91df883d443d31b0702a060981c1b471e56a37ef433343c5423b697f94c'
+scannerVersion = '0.7.0'
+decision = 'allowed'
+
+[skills.frontend-design.verification.scan.counts]
+critical = 0
+high = 0
+medium = 0
+low = 0
+info = 0
+
+[skills.frontend-design.verification.provenance]
+provider = 'git'
+signatureStatus = 'none'

@@ -140,33 +140,6 @@ func TestComputeOutdated_LinkInstall(t *testing.T) {
 	}
 }
 
-func TestLookupRemoteRef_PrefersHeadsOverTags(t *testing.T) {
-	refs := newRefs(map[string]string{
-		"refs/heads/main": "branchhash",
-		"refs/tags/main":  "taghash",
-	})
-	got, ok := lookupRemoteRef(refs, "main")
-	if !ok || got != "branchhash" {
-		t.Errorf("expected branchhash, got %q ok=%v", got, ok)
-	}
-}
-
-func TestLookupRemoteRef_FallsBackToTags(t *testing.T) {
-	refs := newRefs(map[string]string{
-		"refs/tags/v1": "taghash",
-	})
-	got, ok := lookupRemoteRef(refs, "v1")
-	if !ok || got != "taghash" {
-		t.Errorf("expected taghash, got %q ok=%v", got, ok)
-	}
-}
-
-func TestLookupRemoteRef_Empty(t *testing.T) {
-	if _, ok := lookupRemoteRef(newRefs(map[string]string{}), ""); ok {
-		t.Error("empty name should not match")
-	}
-}
-
 // TestRemoteURLFor pins the resolution rules used by qvr outdated:
 //   - "registry" entries look the URL up in cfg.Registries
 //   - "subdir" entries (qvr add) read RepoURL off the lock entry directly

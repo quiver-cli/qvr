@@ -46,6 +46,7 @@ var (
 	lockVerifyStrict bool
 	lockVerifyRepair bool
 	lockVerifyGlobal bool
+	lockVerifyFailOn string
 
 	lockUpgradeDryRun bool
 	lockUpgradeGlobal bool
@@ -63,9 +64,15 @@ from the on-disk worktree, and compare against the recorded value. Reports
 per-skill status: ok, drift, unverified (no hash on file), missing (worktree
 gone), link (no upstream), or failed (hash computation errored).
 
---frozen makes any drift, missing-worktree, or failed-hash status a
-non-zero exit.
---strict implies --frozen and also fails on unverified entries.
+Exit code reflects detected drift so CI can gate on it (issue #156): by
+default any drift, missing-worktree, or failed-hash entry exits non-zero.
+Tune which states are fatal with --fail-on:
+  --fail-on drift       (default) drift / missing / failed are fatal
+  --fail-on unverified  also fail on unverified entries (no recorded hash)
+  --fail-on none        always exit 0 (report only — the old behavior)
+
+--frozen is a shorthand for --fail-on drift, --strict for --fail-on
+unverified; both are kept for compatibility and win over a weaker --fail-on.
 --repair rewrites Verification blocks for drifting entries using current
 disk state (use only when you trust the current worktree).`,
 	RunE: runLockVerify,
@@ -83,10 +90,12 @@ that lacks a Verification block, and write the result back. Safe to re-run
 }
 
 func init() {
+	lockVerifyCmd.Flags().StringVar(&lockVerifyFailOn, "fail-on", "drift",
+		"which states exit non-zero: none | drift (drift/missing/failed) | unverified (+ no recorded hash)")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyFrozen, "frozen", false,
-		"exit non-zero on any drift, missing-worktree, or failed-hash entry")
+		"shorthand for --fail-on drift (kept for compatibility)")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyStrict, "strict", false,
-		"imply --frozen and also fail on unverified entries (no recorded hash)")
+		"shorthand for --fail-on unverified (kept for compatibility)")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyRepair, "repair", false,
 		"rewrite drifting Verification blocks using current worktree state")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyGlobal, "global", false,
@@ -472,19 +481,54 @@ func lockVerifyInternal(lock *model.LockFile, projectRoot string) (*VerifyOutput
 	// envelope can carry it as a sibling field. Two top-level documents
 	// on stdout would break `jq` / `JSON.parse` and was the v0.4.4 doctor
 	// regression pattern repeating itself in the supply-chain commands.
-	// --strict implies --frozen plus unverified: a CI gate that runs
-	// `--strict` is asking for "every entry is verifiably the recorded
-	// state." Without folding the --frozen failure modes into --strict, a
-	// missing worktree would slip through with exit 0 — the regression that
-	// motivated this rule (audit, OSS-readiness pass).
-	var failure string
-	switch {
-	case lockVerifyStrict && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0 || out.Summary.Unverified > 0):
-		failure = fmt.Sprintf("lock verify: --strict failed (%s)", strictFailureCategories(out.Summary))
-	case lockVerifyFrozen && (out.Summary.Drift > 0 || out.Summary.Missing > 0 || out.Summary.Failed > 0):
-		failure = fmt.Sprintf("lock verify: --frozen failed (%s)", failureCategories(out.Summary))
+	failure, ferr := lockVerifyFailure(out.Summary)
+	if ferr != nil {
+		return nil, "", ferr
 	}
 	return out, failure, nil
+}
+
+// lockVerifyFailLevel ranks the --fail-on vocabulary so --frozen/--strict can
+// raise (never lower) the effective threshold. Higher = stricter.
+//
+//	none(0)        — report only, always exit 0
+//	drift(1)       — drift / missing / failed are fatal (the CI-gate default)
+//	unverified(2)  — also fail on entries with no recorded hash
+func lockVerifyFailLevel(name string) (int, bool) {
+	switch name {
+	case "none":
+		return 0, true
+	case "drift":
+		return 1, true
+	case "unverified":
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+// lockVerifyFailure decides whether the run is a non-zero exit (issue #156:
+// verify must gate CI on drift, not silently exit 0). The effective level is
+// --fail-on, raised by the legacy --frozen (≥ drift) and --strict
+// (= unverified) shorthands so neither can be weakened by a stale default.
+func lockVerifyFailure(s VerifySummary) (string, error) {
+	level, ok := lockVerifyFailLevel(lockVerifyFailOn)
+	if !ok {
+		return "", fmt.Errorf("lock verify: invalid --fail-on %q (want none|drift|unverified)", lockVerifyFailOn)
+	}
+	if lockVerifyFrozen && level < 1 {
+		level = 1
+	}
+	if lockVerifyStrict {
+		level = 2
+	}
+	switch {
+	case level >= 2 && (s.Drift > 0 || s.Missing > 0 || s.Failed > 0 || s.Unverified > 0):
+		return fmt.Sprintf("lock verify failed (%s)", strictFailureCategories(s)), nil
+	case level >= 1 && (s.Drift > 0 || s.Missing > 0 || s.Failed > 0):
+		return fmt.Sprintf("lock verify failed (%s)", failureCategories(s)), nil
+	}
+	return "", nil
 }
 
 // failureCategories renders only the non-zero failing counts so the error

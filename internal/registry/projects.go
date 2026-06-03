@@ -205,10 +205,14 @@ func addLockWorktrees(lockPath string, set map[string]struct{}) {
 		return
 	}
 	for _, e := range lock.Entries() {
-		if e.IsLink() || e.Registry == "" || e.Commit == "" {
+		if e.IsLink() || e.Registry == "" {
 			continue
 		}
-		path := WorktreePath(e.Registry, e.Name, ShortSHA(e.Commit))
+		// WorktreePathForEntry honors --as aliases (canonical name) and the
+		// install-commit pin — using e.Name/e.Commit directly here treated every
+		// aliased multi-version worktree as an orphan, so `qvr cache prune`
+		// deleted referenced installs (issue #158).
+		path := WorktreePathForEntry(e)
 		if path != "" {
 			set[path] = struct{}{}
 		}

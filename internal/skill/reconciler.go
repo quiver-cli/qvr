@@ -128,9 +128,22 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			}
 		}
 		if needsRestore && r.Installer != nil && !opts.DryRun {
-			ref := entry.Name
+			// Aliased entries (`qvr add <skill> --as <alias>`) key the lock on
+			// the alias but resolve their registry source by the canonical name;
+			// preserve the alias via As so the restored lock key stays the alias.
+			// Without this swap the resolver is handed the alias key (e.g.
+			// "careful-v1") as a registry skill name and fails ErrSkillNotFound,
+			// so sync — the documented repair path — can't restore a missing
+			// aliased worktree (issue #159). Mirrors Installer.RestoreAll.
+			canonicalName := entry.Name
+			aliasFlag := ""
+			if entry.Canonical != "" {
+				canonicalName = entry.Canonical
+				aliasFlag = entry.Name
+			}
+			ref := canonicalName
 			if entry.Ref != "" {
-				ref = entry.Name + "@" + entry.Ref
+				ref = canonicalName + "@" + entry.Ref
 			}
 			// uv reproducibility contract: restore the lock's recorded commit,
 			// not whatever the ref label resolves to now. A teammate cloning
@@ -148,6 +161,7 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 				Global:      global,
 				ProjectRoot: projectRoot,
 				PinCommit:   pin,
+				As:          aliasFlag,
 			}); err != nil {
 				res.Errors = append(res.Errors, fmt.Sprintf("install %s: %v", entry.Name, err))
 				continue

@@ -162,15 +162,6 @@ func NewWithChecks(checks ...Check) *Scanner {
 	return &Scanner{checks: out}
 }
 
-// Add appends a check to the pipeline. Returns the scanner for
-// chaining.
-func (s *Scanner) Add(c Check) *Scanner {
-	if c != nil {
-		s.checks = append(s.checks, c)
-	}
-	return s
-}
-
 // AddLLM appends a semantic [LLMCheck] to the pipeline. The check
 // runs only when the scanner has an LLMProvider configured (see
 // [Scanner.WithLLMProvider]); otherwise it is a no-op.

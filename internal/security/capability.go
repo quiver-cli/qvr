@@ -58,37 +58,6 @@ var capabilityPatterns = []capabilityPattern{
 	{CapExec, regexp.MustCompile(`(?i)\b(?:eval|exec|compile)\s*\(`)},
 }
 
-// DetectCapabilities walks the file set and returns the unique
-// capabilities exercised by code files. Documentation files are
-// skipped so a skill that talks about subprocess in prose doesn't get
-// flagged as exercising shell.
-//
-// The returned slice is sorted for stable output, since downstream
-// findings include capability lists verbatim.
-func DetectCapabilities(files []FileEntry) []Capability {
-	hit := make(map[Capability]bool, 6)
-	for _, f := range files {
-		if !isCodeFile(f.Path) || f.Content == "" {
-			continue
-		}
-		for _, pat := range capabilityPatterns {
-			if hit[pat.cap] {
-				continue
-			}
-			if pat.re.MatchString(f.Content) {
-				hit[pat.cap] = true
-			}
-		}
-	}
-	out := make([]Capability, 0, len(hit))
-	for _, c := range []Capability{CapShell, CapNetwork, CapFileRead, CapFileWrite, CapEnvAccess, CapExec} {
-		if hit[c] {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // DetectCapabilityLocations returns a map from capability to one
 // representative (file, line) where it was detected. Used by the MCP
 // least-privilege check to attribute findings to a concrete line of

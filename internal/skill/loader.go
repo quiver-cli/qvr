@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/pkg/skillspec"
@@ -81,14 +80,4 @@ func listFiles(dir string) ([]string, error) {
 		return nil, err
 	}
 	return files, nil
-}
-
-// HasFile checks if a skill contains a file at the given relative path.
-func HasFile(s *model.Skill, relPath string) bool {
-	for _, f := range s.Files {
-		if strings.EqualFold(f, relPath) {
-			return true
-		}
-	}
-	return false
 }

@@ -90,21 +90,3 @@ func TestLoadFromPath_NonexistentPath(t *testing.T) {
 		t.Error("expected error for nonexistent path")
 	}
 }
-
-func TestHasFile(t *testing.T) {
-	dir := filepath.Join("..", "..", "testdata", "valid-skill")
-	s, err := skill.LoadFromPath(dir)
-	if err != nil {
-		t.Fatalf("load error: %v", err)
-	}
-
-	if !skill.HasFile(s, "SKILL.md") {
-		t.Error("should have SKILL.md")
-	}
-	if !skill.HasFile(s, "scripts/example.sh") {
-		t.Error("should have scripts/example.sh")
-	}
-	if skill.HasFile(s, "nonexistent.txt") {
-		t.Error("should not have nonexistent.txt")
-	}
-}

@@ -111,10 +111,17 @@ func installTagPinned(t *testing.T, name, tag string) {
 	}
 }
 
+// resetPullFlags drives the consolidated `switch` command in --tip mode (the
+// former `pull`, issue #160). A direct RunE call has no CalledAs(), so the tip
+// mode is selected by the flag rather than the alias name.
 func resetPullFlags(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() { pullGlobal = false })
-	pullGlobal = false
+	t.Cleanup(func() {
+		repointGlobal = false
+		repointTip = false
+	})
+	repointGlobal = false
+	repointTip = true
 }
 
 // TestRunPull_TagPinned_ErrorsToStderr is the #129 / AC-LIFE-4 guard: a pull
@@ -136,7 +143,7 @@ func TestRunPull_TagPinned_ErrorsToStderr(t *testing.T) {
 	printer = &output.Printer{Out: stdout, Err: stderr, Format: output.FormatText}
 	t.Cleanup(func() { printer = prev })
 
-	err := runPull(pullCmd, []string{"demo"})
+	err := runSwitch(switchCmd, []string{"demo"})
 	if err == nil {
 		t.Fatal("pull of a tag-pinned skill returned nil; want non-zero exit (#129)")
 	}
@@ -163,7 +170,7 @@ func TestRunPull_TagPinned_JSONExitsNonZero(t *testing.T) {
 	installTagPinned(t, "demo", "v1.0.0")
 
 	stdout := withCapturingPrinter(t, "json")
-	err := runPull(pullCmd, []string{"demo"})
+	err := runSwitch(switchCmd, []string{"demo"})
 	if !errors.Is(err, errJSONHandled) {
 		t.Fatalf("pull --output json error = %v, want errJSONHandled (#129)", err)
 	}

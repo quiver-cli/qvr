@@ -1,7 +1,6 @@
 package model_test
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/raks097/quiver/internal/model"
@@ -71,96 +70,5 @@ func TestSortVersions(t *testing.T) {
 		if branch.Ref != expectedBranches[i] {
 			t.Errorf("Branches[%d] = %q, want %q", i, branch.Ref, expectedBranches[i])
 		}
-	}
-}
-
-func TestResolveVersion_ExactTag(t *testing.T) {
-	vl := &model.VersionList{
-		Tags:     []model.Version{{Ref: "v1.0.0", Kind: model.VersionKindTag, Commit: "aaa"}},
-		Branches: []model.Version{{Ref: "main", Kind: model.VersionKindBranch, Commit: "bbb"}},
-	}
-
-	v, err := model.ResolveVersion(vl, "v1.0.0", "main")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Ref != "v1.0.0" || v.Kind != model.VersionKindTag {
-		t.Errorf("got %+v, want tag v1.0.0", v)
-	}
-}
-
-func TestResolveVersion_ExactBranch(t *testing.T) {
-	vl := &model.VersionList{
-		Tags:     []model.Version{{Ref: "v1.0.0", Kind: model.VersionKindTag, Commit: "aaa"}},
-		Branches: []model.Version{{Ref: "develop", Kind: model.VersionKindBranch, Commit: "bbb"}},
-	}
-
-	v, err := model.ResolveVersion(vl, "develop", "main")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Ref != "develop" || v.Kind != model.VersionKindBranch {
-		t.Errorf("got %+v, want branch develop", v)
-	}
-}
-
-func TestResolveVersion_Latest(t *testing.T) {
-	vl := &model.VersionList{
-		Branches: []model.Version{
-			{Ref: "main", Kind: model.VersionKindBranch, Commit: "aaa"},
-			{Ref: "develop", Kind: model.VersionKindBranch, Commit: "bbb"},
-		},
-	}
-
-	for _, ref := range []string{"", "latest"} {
-		v, err := model.ResolveVersion(vl, ref, "main")
-		if err != nil {
-			t.Fatalf("ResolveVersion(%q): unexpected error: %v", ref, err)
-		}
-		if v.Ref != "main" {
-			t.Errorf("ResolveVersion(%q) = %q, want main", ref, v.Ref)
-		}
-	}
-}
-
-func TestResolveVersion_TagPrecedence(t *testing.T) {
-	// When a tag and branch share the same name, tag wins.
-	vl := &model.VersionList{
-		Tags:     []model.Version{{Ref: "release", Kind: model.VersionKindTag, Commit: "tag-hash"}},
-		Branches: []model.Version{{Ref: "release", Kind: model.VersionKindBranch, Commit: "branch-hash"}},
-	}
-
-	v, err := model.ResolveVersion(vl, "release", "main")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if v.Kind != model.VersionKindTag {
-		t.Errorf("expected tag, got %s", v.Kind)
-	}
-	if v.Commit != "tag-hash" {
-		t.Errorf("expected tag-hash, got %s", v.Commit)
-	}
-}
-
-func TestResolveVersion_NotFound(t *testing.T) {
-	vl := &model.VersionList{
-		Tags:     []model.Version{{Ref: "v1.0.0"}},
-		Branches: []model.Version{{Ref: "main"}},
-	}
-
-	_, err := model.ResolveVersion(vl, "nonexistent", "main")
-	if !errors.Is(err, model.ErrVersionNotFound) {
-		t.Errorf("expected ErrVersionNotFound, got %v", err)
-	}
-}
-
-func TestResolveVersion_LatestNoDefaultBranch(t *testing.T) {
-	vl := &model.VersionList{
-		Branches: []model.Version{{Ref: "develop"}},
-	}
-
-	_, err := model.ResolveVersion(vl, "latest", "main")
-	if !errors.Is(err, model.ErrVersionNotFound) {
-		t.Errorf("expected ErrVersionNotFound, got %v", err)
 	}
 }

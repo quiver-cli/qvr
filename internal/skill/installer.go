@@ -625,52 +625,6 @@ func tagsForSummary(tags []string) []string {
 	return out
 }
 
-// RestoreAll reinstalls every skill recorded in the lock file. Used by
-// `qvr install` with no arguments to bring a fresh checkout up to state.
-func (in *Installer) RestoreAll(req InstallRequest) ([]*InstallResult, error) {
-	lockPath := req.LockPath
-	if lockPath == "" {
-		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-	}
-	lock, err := model.ReadLockFile(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("read lock file: %w", err)
-	}
-	if len(lock.Skills) == 0 {
-		return nil, nil
-	}
-	var out []*InstallResult
-	for _, entry := range lock.Entries() {
-		// Aliased entries resolve their registry source by the canonical
-		// name; preserve the alias via As so the restored lock key stays
-		// the local alias, not the canonical name.
-		canonicalName := entry.Name
-		aliasFlag := ""
-		if entry.Canonical != "" {
-			canonicalName = entry.Canonical
-			aliasFlag = entry.Name
-		}
-		skillRef := canonicalName
-		if entry.Ref != "" {
-			skillRef = canonicalName + "@" + entry.Ref
-		}
-		result, err := in.Install(InstallRequest{
-			Skill:       skillRef,
-			Targets:     entry.Targets,
-			Global:      lock.IsGlobal(quiverHome()),
-			ProjectRoot: req.ProjectRoot,
-			LockPath:    lockPath,
-			Frozen:      req.Frozen,
-			As:          aliasFlag,
-		})
-		if err != nil {
-			return out, fmt.Errorf("restore %s: %w", entry.Name, err)
-		}
-		out = append(out, result)
-	}
-	return out, nil
-}
-
 // Remove tears down a skill: remove symlinks, worktree, and lock entry.
 //
 // Ordering invariant (issue #93): the filesystem teardown happens FIRST.
@@ -913,41 +867,6 @@ func mergeTargets(existing, add []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// ApplySwitch refreshes the agent-target symlinks and verification record
-// for an entry whose ref label changed in place. Used by `qvr edit` after
-// CreateEditBranch mutates the worktree's HEAD onto a new branch at the same
-// commit — same SHA, same on-disk path, just a new label in the lockfile.
-//
-// `qvr switch` / `qvr upgrade` no longer call this — they re-run Install with
-// Force=true, which creates (or reuses) a fresh worktree at the new SHA's
-// path and leaves the previous worktree in place for the shared-cache
-// invariant to hold across projects (issue #52).
-//
-// global picks between project-local (`<project>/.claude/skills/`) and
-// user-global (`~/.claude/skills/`) symlink targets — derive from the
-// lock file's location via LockFile.IsGlobal.
-func ApplySwitch(entry *model.LockEntry, projectRoot string, global bool) error {
-	skillDir, err := MaterializeAgentView(entry, projectRoot)
-	if err != nil {
-		return fmt.Errorf("agent view: %w", err)
-	}
-	for _, target := range entry.Targets {
-		linkPath, err := ResolveTargetPath(target, entry.Name, projectRoot, global)
-		if err != nil {
-			return fmt.Errorf("resolve target %s: %w", target, err)
-		}
-		if err := CreateSymlink(linkPath, skillDir); err != nil {
-			return fmt.Errorf("refresh symlink %s: %w", target, err)
-		}
-	}
-	// Ref label or branch tip changed; the recorded subtree hash may no
-	// longer match reality. Refresh it so the lockfile reflects the new
-	// state. Failure is non-fatal — the post-switch symlinks are usable,
-	// only the seal is stale until the next install/repair.
-	_ = RefreshSubtreeHash(entry)
-	return nil
 }
 
 // resolveDefaultRef picks the latest semver tag whose commit still holds the

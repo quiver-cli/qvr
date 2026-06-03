@@ -241,12 +241,6 @@ func NewSignatureCheck() Check {
 	return &signatureCheck{sigs: builtinSignatures}
 }
 
-// NewSignatureCheckWith returns a signature check running exactly the
-// supplied set. Used by tests to validate one signature at a time.
-func NewSignatureCheckWith(sigs ...Signature) Check {
-	return &signatureCheck{sigs: sigs}
-}
-
 func (*signatureCheck) Name() string { return SignatureCheckName }
 
 func (c *signatureCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry) []Finding {

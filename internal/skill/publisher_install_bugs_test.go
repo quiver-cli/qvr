@@ -98,6 +98,116 @@ func TestPublishInstalled_UserCommitInEjectDir_NoHealFlagNeeded(t *testing.T) {
 	}
 }
 
+// TestPublishInstalled_SecondReleaseOnMigratedFork_RootLayoutPreserved is the
+// regression guard for issue #155: the iterate-and-release loop on a migrated
+// fork (`qvr edit` → edit → `qvr publish --tag vN`) died on the SECOND release
+// with "commit: reference not found".
+//
+// Root cause: the first publish used --fork → layout "root", so the fork
+// stores the skill at the repo root and the lock entry's Path is ".". The
+// second publish omits --fork, so layout defaulted to "nested"; the nested
+// destination then resolved to stageDir + "." == stageDir, and the nested
+// cleanup `os.RemoveAll(contentDest)` deleted the stage clone's .git/, so the
+// follow-up commit failed against a bricked repo. The fix defaults a
+// root-layout entry (Path "." / "") back to "root".
+func TestPublishInstalled_SecondReleaseOnMigratedFork_RootLayoutPreserved(t *testing.T) {
+	entry, projectRoot, editDir := ejectedFixture(t, "demo")
+
+	editRepo, err := gogit.PlainOpen(editDir)
+	if err != nil {
+		t.Fatalf("open edit repo: %v", err)
+	}
+	if head, herr := editRepo.Head(); herr == nil {
+		entry.Commit = head.Hash().String()
+	}
+
+	// A real (non-empty after first push) bare fork to release against.
+	forkURL := filepath.Join(t.TempDir(), "fork.git")
+	if _, err := gogit.PlainInit(forkURL, true); err != nil {
+		t.Fatalf("init fork bare: %v", err)
+	}
+
+	p := skill.NewPublisher(git.NewGoGitClient())
+
+	// First release: --fork --migrate cuts v0.1.0 at root layout and flips
+	// the entry to track the fork (Source → fork, Registry cleared).
+	if _, perr := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+		Entry:       entry,
+		ProjectRoot: projectRoot,
+		ForkURL:     forkURL,
+		Migrate:     true,
+		Tag:         "v0.1.0",
+		Message:     "v0.1.0",
+	}); perr != nil {
+		t.Fatalf("first publish (--fork --migrate): %v", perr)
+	}
+
+	// Mirror the consume-mode reinstall that auto-uneject performs: a
+	// root-layout fork install records Path ".". (PublishInstalled itself
+	// doesn't un-eject — that's the cmd layer — so set it explicitly.)
+	entry.Path = "."
+
+	// Make a real edit so the second release has content to commit (the
+	// stage goes dirty, exercising the commit path that pre-fix hit the
+	// nuked .git).
+	if err := os.WriteFile(filepath.Join(editDir, "NEW.md"), []byte("second release\n"), 0o644); err != nil {
+		t.Fatalf("write NEW.md: %v", err)
+	}
+	wt, err := editRepo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+		t.Fatalf("stage edit: %v", err)
+	}
+	if _, err := wt.Commit("second release edit", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "u", Email: "u@e", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("commit edit: %v", err)
+	}
+
+	// Second release: NO --fork, NO --layout. Pre-fix this exited with
+	// "commit: reference not found"; post-fix it must default to root and
+	// cut v0.2.0 cleanly.
+	res, perr := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
+		Entry:       entry,
+		ProjectRoot: projectRoot,
+		Tag:         "v0.2.0",
+		Message:     "v0.2.0",
+	})
+	if perr != nil {
+		t.Fatalf("second publish on migrated fork: %v — issue #155 regression", perr)
+	}
+	if res.Layout != "root" {
+		t.Errorf("second publish layout = %q, want \"root\" (a Path \".\" entry must stay root-layout)", res.Layout)
+	}
+
+	// The v0.2.0 tag must exist on the fork at root layout (SKILL.md + NEW.md
+	// at the repo root, not under skills/<name>/).
+	fork, err := gogit.PlainOpen(forkURL)
+	if err != nil {
+		t.Fatalf("open fork: %v", err)
+	}
+	tagRef, err := fork.Tag("v0.2.0")
+	if err != nil {
+		t.Fatalf("v0.2.0 not on fork: %v", err)
+	}
+	tagObj, err := fork.TagObject(tagRef.Hash())
+	if err != nil {
+		t.Fatalf("resolve tag object: %v", err)
+	}
+	tree, err := tagObj.Tree()
+	if err != nil {
+		t.Fatalf("tag tree: %v", err)
+	}
+	if _, err := tree.File("SKILL.md"); err != nil {
+		t.Errorf("SKILL.md not at fork root in v0.2.0 (root layout broken): %v", err)
+	}
+	if _, err := tree.File("NEW.md"); err != nil {
+		t.Errorf("second-release edit (NEW.md) missing from v0.2.0: %v", err)
+	}
+}
+
 // TestPublishInstalled_TamperedCommit_RefusesAtCmdLayer is the
 // end-to-end guard for issue #74 at the publisher level. Because the
 // cmd/publish.go integrity check sits outside the publisher, we exercise

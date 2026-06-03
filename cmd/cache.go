@@ -398,7 +398,14 @@ func runCacheClean(cmd *cobra.Command, args []string) error {
 	if cacheCleanRegistries {
 		registriesRoot = filepath.Join(config.Dir(), "registries")
 		if dirExists(registriesRoot) {
-			size, _ := dirSize(registriesRoot)
+			// Full size, not the hardlink-discounted dirSize: the bare clones
+			// ARE the canonical copy of every object the worktrees hardlink.
+			// Once --registries removes them (and clean removes the worktrees
+			// too), those blocks are genuinely freed, so they belong in the
+			// total. The worktree targets already counted their shared objects
+			// as 0, so this attributes each shared block to the bare exactly
+			// once — no double count (issue #158).
+			size, _ := fullDirSize(registriesRoot)
 			targets = append(targets, cleanTarget{path: registriesRoot, label: "registries", bytes: size})
 		}
 	}
@@ -583,9 +590,37 @@ func collectCacheEntries() ([]CacheEntry, []string, error) {
 	return entries, reach.MissingProjects, nil
 }
 
-// dirSize sums the on-disk size of every regular file under dir. Best-effort
-// — unreadable files contribute 0 rather than aborting.
+// dirSize sums the on-disk size that deleting dir would actually reclaim:
+// every regular file under it, counting hardlinked-and-shared object files
+// (which a `git clone --local` worktree shares with the bare registry) as 0
+// since removing the worktree won't free them. See reclaimableFileSize for
+// the per-file rule and issue #158 for why a naive Size() sum lied by a large
+// multiple. Best-effort — unreadable files contribute 0 rather than aborting.
 func dirSize(dir string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += reclaimableFileSize(info)
+		return nil
+	})
+	return total, err
+}
+
+// fullDirSize sums the on-disk size of every regular file under dir WITHOUT
+// the hardlink discount dirSize applies. Used for the bare-registry target in
+// `qvr cache clean --registries`, where the bare holds the canonical copy of
+// the shared object blocks and removing it genuinely frees them. Best-effort —
+// unreadable files contribute 0 rather than aborting.
+func fullDirSize(dir string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

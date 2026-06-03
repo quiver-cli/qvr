@@ -510,7 +510,7 @@ func TestSubstringSearch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.query, func(t *testing.T) {
-			results := registry.SubstringSearch(tt.query, entries)
+			results := registry.Search(registry.SearchFilter{Query: tt.query}, entries)
 			if len(results) != tt.wantCount {
 				t.Errorf("Search(%q) returned %d results, want %d", tt.query, len(results), tt.wantCount)
 			}
@@ -527,7 +527,7 @@ func TestSubstringSearch_Scoring(t *testing.T) {
 		{Name: "other", Description: "Contains test in description.", Metadata: map[string]string{"tag": "test"}},
 	}
 
-	results := registry.SubstringSearch("test", entries)
+	results := registry.Search(registry.SearchFilter{Query: "test"}, entries)
 
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
@@ -640,7 +640,7 @@ description: Reviews code in pull requests.
 	}
 
 	mgr := registry.NewManager(mock)
-	results, err := mgr.Search("review")
+	results, err := mgr.SearchWithFilter(registry.SearchFilter{Query: "review"})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

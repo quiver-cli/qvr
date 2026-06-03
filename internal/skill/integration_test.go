@@ -1,7 +1,6 @@
 package skill_test
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,15 +53,9 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("modify via symlink: %v", err)
 	}
 
-	// 3. Push — must pick up the edit and send to origin.
-	syncer := skill.NewSyncer(git.NewGoGitWorktree(), git.NewGoGitClient())
-	hash, err := syncer.Push(context.Background(), entry, skill.PushOptions{
-		Message: "end-to-end edit",
-		Author:  "Test",
-	})
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
+	// 3. Commit + push the edit to origin. Production `qvr publish` pushes via
+	//    git.Push directly; the helper mirrors that to seed the upstream commit.
+	hash := commitAndPushWorktree(t, skill.EntryWorktreePath(entry), entry.Ref, "end-to-end edit")
 	if len(hash) != 40 {
 		t.Fatalf("push hash: %q", hash)
 	}

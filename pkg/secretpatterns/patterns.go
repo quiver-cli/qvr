@@ -34,20 +34,6 @@ func (p Pattern) Compile() (*regexp.Regexp, error) {
 	return regexp.Compile(p.Regex)
 }
 
-// Default returns every built-in pattern: the high-precision credential
-// prefixes plus the looser assignment-shape family.
-//
-// Use this when you want exhaustive coverage and can tolerate false
-// positives — for example a redactor that hides matched text. Callers
-// that surface findings to users (e.g. the security scanner) should
-// prefer [CredentialPrefixes] to keep the false-positive rate low.
-func Default() []Pattern {
-	out := make([]Pattern, 0, len(credentialPrefixes)+len(assignmentShapes))
-	out = append(out, credentialPrefixes...)
-	out = append(out, assignmentShapes...)
-	return out
-}
-
 // CredentialPrefixes returns only the high-precision subset: patterns
 // anchored on vendor-specific prefixes (AKIA, ghp_, eyJ, xox*, sk_live_,
 // etc.) and well-defined formats (PEM headers, JWT shape). False

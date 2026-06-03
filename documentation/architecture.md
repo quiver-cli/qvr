@@ -92,7 +92,7 @@ a whole org can be wiped or browsed at once.
 ### Warm Path (Local-Only)
 
 `qvr status`, `qvr list`:
-- Read lock file (single JSON file) or run `git status` per worktree
+- Read lock file (single TOML file) or run `git status` per worktree
 - No network I/O
 - Latency: milliseconds
 
@@ -145,4 +145,3 @@ pkg/skillspec/           (public, no internal deps)
 #   internal/ui/ + ui/                      (embedded React dashboard, v0.9)
 #   internal/doctor/                        (environment diagnostics, v1.0)
 ```
-

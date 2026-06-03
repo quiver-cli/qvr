@@ -29,10 +29,11 @@ var registryAddCmd = &cobra.Command{
 	Long: `Register a Git repository as a source of skills. The repo can hold one
 skill or many — the indexer walks it on first clone.
 
-The name is inferred from the URL and stored flat at
-~/.quiver/registries/<name>.git/ — no nested <org>/<repo>/ subdirectories
-(corrected in issue #89). Override with --name when two repos share the
-same inferred name, or when the URL doesn't carry a usable last segment.
+The name is inferred from the URL as <org>/<repo> and the bare clone lives at
+~/.quiver/registries/<name>.git/ — so the on-disk path is nested by
+construction (e.g. ~/.quiver/registries/anthropics/skills.git/). Override with
+--name when two repos share the same inferred name, or when the URL doesn't
+carry a usable last segment.
 
   qvr registry add https://github.com/acme-labs/agent-skills
   qvr registry add git@github.com:org/repo.git --name internal-tools

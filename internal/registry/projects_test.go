@@ -155,6 +155,50 @@ func TestReachable_AlwaysIncludesGlobalLock(t *testing.T) {
 	}
 }
 
+// TestReachable_CountsAliasedMultiVersionWorktrees pins issue #158: when the
+// same skill is installed at several commits via `--as`, every alias entry's
+// worktree must be reachable. The worktree dir is keyed by the canonical name
+// (Canonical) and the install commit, NOT by the alias lock key — prune used
+// to key on (Name, Commit) and so treated the alias worktrees as orphans and
+// deleted referenced installs.
+func TestReachable_CountsAliasedMultiVersionWorktrees(t *testing.T) {
+	setHome(t)
+
+	proj := filepath.Join(t.TempDir(), "proj")
+	// Primary entry: keyed on its own name.
+	primaryWt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("c43c850abcdef"))
+	// Alias entries: keyed on the CANONICAL name + their install commit, even
+	// though the lock key is the alias.
+	v1Wt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("49cc4ff9c99e9b2"))
+	v2Wt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("22f8c7f4aaaaaaa"))
+
+	writeLock(t, filepath.Join(proj, "qvr.lock"),
+		&model.LockEntry{
+			Name: "careful", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Path: "careful", Ref: "main", Commit: "c43c850abcdef", InstallCommit: "c43c850abcdef",
+		},
+		&model.LockEntry{
+			Name: "careful-v1", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Path: "careful", Canonical: "careful", Ref: "49cc4ff9", Commit: "49cc4ff9c99e9b2", InstallCommit: "49cc4ff9c99e9b2",
+		},
+		&model.LockEntry{
+			Name: "careful-v2", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Path: "careful", Canonical: "careful", Ref: "22f8c7f4", Commit: "22f8c7f4aaaaaaa", InstallCommit: "22f8c7f4aaaaaaa",
+		},
+	)
+	registry.TouchProject(filepath.Join(proj, "qvr.lock"))
+
+	res, err := registry.Reachable()
+	if err != nil {
+		t.Fatalf("reachable: %v", err)
+	}
+	for _, w := range []string{primaryWt, v1Wt, v2Wt} {
+		if _, ok := res.Worktrees[w]; !ok {
+			t.Errorf("aliased worktree missing from reachability set (would be pruned): %s\ngot %v", w, res.Worktrees)
+		}
+	}
+}
+
 func TestForgetProject_RemovesRecord(t *testing.T) {
 	setHome(t)
 

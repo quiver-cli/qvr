@@ -16,6 +16,65 @@ import (
 // remembering to group it surfaces it in --help rather than hiding it.
 const flagGroupAnnotationKey = "qvr.flag.group"
 
+// Command-group IDs for the top-level `qvr --help` layout (issue #161). The
+// everyday install / version / publish loop lives under "Primary"; authoring,
+// maintenance, and introspection helpers — which are rarely run standalone and
+// inflate a 30-plus command list — are demoted to "Advanced / Authoring".
+const (
+	groupPrimary  = "primary"
+	groupAdvanced = "advanced"
+)
+
+// advancedCommands are demoted out of the primary help list. Each is either an
+// authoring-time check (validate), a side effect of an everyday verb (docs runs
+// inside sync), or a maintenance/introspection helper most users never invoke
+// directly. Behavior is unchanged — only their placement in `qvr --help` moves.
+var advancedCommands = map[string]bool{
+	"validate":   true, // runs implicitly inside init/add/publish/scan
+	"docs":       true, // runs as a side effect of `qvr sync`
+	"doctor":     true,
+	"provenance": true,
+	"resolve":    true,
+	"import":     true,
+	"export":     true,
+	"hook":       true,
+	"audit":      true,
+	"scan":       true,
+	"ui":         true,
+	"diff":       true,
+	"tree":       true,
+	"locks":      true,
+	"version":    true,
+}
+
+// assignCommandGroups buckets every top-level command into the Primary or
+// Advanced group so `qvr --help` reads as the ~dozen verbs that matter, with
+// the rest tucked under an advanced heading instead of one flat wall (#161).
+// Called from Execute() after every init() has run AddCommand, so the command
+// set is complete.
+func assignCommandGroups(root *cobra.Command) {
+	root.AddGroup(
+		&cobra.Group{ID: groupPrimary, Title: "Primary Commands:"},
+		&cobra.Group{ID: groupAdvanced, Title: "Advanced / Authoring:"},
+	)
+	for _, c := range root.Commands() {
+		switch c.Name() {
+		case "help", "completion":
+			c.GroupID = groupAdvanced
+		default:
+			if advancedCommands[c.Name()] {
+				c.GroupID = groupAdvanced
+			} else {
+				c.GroupID = groupPrimary
+			}
+		}
+	}
+	// Cobra's auto-generated help/completion commands need an explicit group or
+	// they render under a stray "Additional Commands" heading.
+	root.SetHelpCommandGroupID(groupAdvanced)
+	root.SetCompletionCommandGroupID(groupAdvanced)
+}
+
 // markFlagGroup tags a flag with a group name for grouped --help
 // rendering. Safe to call before or after the flag is registered.
 func markFlagGroup(fs *pflag.FlagSet, flagName, group string) {

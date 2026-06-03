@@ -1,14 +1,10 @@
 package model
 
 import (
-	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 )
-
-var ErrVersionNotFound = errors.New("version not found")
 
 // VersionKind distinguishes tags from branches.
 type VersionKind string
@@ -61,34 +57,6 @@ func SortVersions(vl *VersionList, defaultBranch string) {
 		}
 		return vl.Branches[i].Ref < vl.Branches[j].Ref
 	})
-}
-
-// ResolveVersion finds a version by name.
-// Resolution order: exact tag → exact branch → error.
-// Empty string or "latest" resolves to the default branch HEAD.
-func ResolveVersion(vl *VersionList, ref string, defaultBranch string) (*Version, error) {
-	if ref == "" || ref == "latest" {
-		for i := range vl.Branches {
-			if vl.Branches[i].Ref == defaultBranch {
-				return &vl.Branches[i], nil
-			}
-		}
-		return nil, fmt.Errorf("%w: default branch %q not found", ErrVersionNotFound, defaultBranch)
-	}
-
-	for i := range vl.Tags {
-		if vl.Tags[i].Ref == ref {
-			return &vl.Tags[i], nil
-		}
-	}
-
-	for i := range vl.Branches {
-		if vl.Branches[i].Ref == ref {
-			return &vl.Branches[i], nil
-		}
-	}
-
-	return nil, fmt.Errorf("%w: %q", ErrVersionNotFound, ref)
 }
 
 // SkillTagSep separates the per-skill namespace from the version in a

@@ -88,6 +88,80 @@ func TestInstall_AsAlias_EntryWorktreePathPointsAtRealDir(t *testing.T) {
 	}
 }
 
+// TestReconcile_RestoresAliasedWorktree pins issue #159: when an `--as`
+// aliased entry's worktree goes missing (e.g. after `qvr cache prune`),
+// `qvr sync` must re-materialize it from the entry's canonical/source/ref —
+// exactly as `qvr add <canonical>@<ref> --as <alias> --force` does. The bug
+// was that the reconciler fed the alias lock key ("review-old") to the
+// resolver as a registry skill name and failed `skill not found`.
+func TestReconcile_RestoresAliasedWorktree(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
+	h.addRegistry(t, "acme", remote)
+
+	if _, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+		As:          "review-old",
+	}); err != nil {
+		t.Fatalf("install --as: %v", err)
+	}
+
+	lockPath := filepath.Join(h.project, model.LockFileName)
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	entry, err := lock.Get("review-old")
+	if err != nil {
+		t.Fatalf("lock get: %v", err)
+	}
+
+	// Simulate `qvr cache prune` deleting the referenced worktree.
+	worktree := skill.EntryWorktreePath(entry)
+	if worktree == "" {
+		t.Fatal("EntryWorktreePath returned empty")
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree should be gone, stat err=%v", err)
+	}
+
+	// Reconcile (the `qvr sync` core) must restore it, keyed by the alias.
+	rec := skill.NewReconciler(h.installer)
+	res, err := rec.Reconcile(lock, h.project, h.home, skill.ReconcileOptions{})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(res.Errors) != 0 {
+		t.Fatalf("reconcile reported errors (should restore cleanly): %v", res.Errors)
+	}
+	if len(res.Installed) != 1 || res.Installed[0] != "review-old" {
+		t.Errorf("Installed = %v, want [review-old]", res.Installed)
+	}
+
+	// The worktree must be back, with SKILL.md reachable through the
+	// (unchanged) alias entry.
+	if _, err := os.Stat(filepath.Join(worktree, entry.Path, "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md not restored at %s: %v", worktree, err)
+	}
+	// The lock must still key the entry on the alias with Canonical preserved.
+	relock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("re-read lock: %v", err)
+	}
+	restored, err := relock.Get("review-old")
+	if err != nil {
+		t.Fatalf("alias key lost after restore: %v", err)
+	}
+	if restored.Canonical != "code-review" {
+		t.Errorf("Canonical = %q, want code-review", restored.Canonical)
+	}
+}
+
 // TestInstall_Frozen_SuppressesAmbiguityWarning is the #105 regression:
 // when --frozen is set, the lockfile's recorded registry is authoritative
 // for the install, so resolveSkill must be scoped to that registry. The

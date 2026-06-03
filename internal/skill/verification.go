@@ -63,19 +63,6 @@ func ComputeSubtreeHash(worktreePath, subpath string) (string, error) {
 	return id.SubtreeHash, nil
 }
 
-// ComputeSubtreeIdentity returns the full canonical identity of a skill
-// subtree — the load-bearing SubtreeHash plus the native git TreeSHA and
-// HEAD commit. Installer uses this to record both LockEntry.SubtreeHash
-// (the integrity anchor) and LockEntry.TreeOID (the informational
-// git-native identity) from a single tree walk.
-func ComputeSubtreeIdentity(worktreePath, subpath string) (*canonical.SubtreeIdentity, error) {
-	id, err := canonical.HashSubtree(worktreePath, subpath)
-	if err != nil {
-		return nil, fmt.Errorf("canonical hash: %w", err)
-	}
-	return id, nil
-}
-
 // ComputeEntryIdentity computes the canonical identity of a lock entry's
 // content from the git tree at worktreePath's HEAD, honoring root-coexist
 // scoping. A rootCoexists entry (path ".", sharing its repo with sibling
@@ -137,24 +124,11 @@ func ComputeEntryIdentityAtCommit(repoPath, commit, path string, rootCoexists bo
 // looking at .../reg/<alias>/<sha> while the real dir lives at
 // .../reg/<canonical>/<sha>. Issue #102.
 func EntryWorktreePath(entry *model.LockEntry) string {
-	if entry == nil {
-		return ""
-	}
-	if entry.IsLink() {
-		return entry.Source
-	}
-	key := entry.InstallCommit
-	if key == "" {
-		key = entry.Commit
-	}
-	if key == "" {
-		return ""
-	}
-	name := entry.Name
-	if entry.Canonical != "" {
-		name = entry.Canonical
-	}
-	return registry.WorktreePath(entry.Registry, name, registry.ShortSHA(key))
+	// Delegates to registry.WorktreePathForEntry — the single source of truth
+	// for the alias/install-commit derivation. Keeping the logic here too is
+	// what let registry.Reachable drift and delete referenced alias worktrees
+	// (issue #158); this wrapper stays only for the established call sites.
+	return registry.WorktreePathForEntry(entry)
 }
 
 // RefreshSubtreeHash recomputes entry.SubtreeHash from the on-disk worktree.

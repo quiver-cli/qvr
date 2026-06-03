@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -17,9 +16,8 @@ import (
 )
 
 var (
-	ErrPushNoChanges = errors.New("no local changes to push")
-	ErrDivergence    = errors.New("local and upstream histories have diverged; resolve manually")
-	ErrPinnedToTag   = errors.New("skill is pinned to a tag; use 'qvr upgrade' or 'qvr switch' to move it")
+	ErrDivergence  = errors.New("local and upstream histories have diverged; resolve manually")
+	ErrPinnedToTag = errors.New("skill is pinned to a tag; use 'qvr switch' (or its 'upgrade'/'pull' aliases) to move it")
 )
 
 // SyncStatus summarises one installed skill's git state for `qvr status`.
@@ -34,15 +32,7 @@ type SyncStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// PushOptions controls the behaviour of Syncer.Push.
-type PushOptions struct {
-	Message     string
-	Author      string
-	AuthorEmail string
-	AllowEmpty  bool
-}
-
-// Syncer implements pull/push/status/switch for installed skills.
+// Syncer implements pull/status for installed skills.
 type Syncer struct {
 	Worktree git.WorktreeManager
 	Git      git.GitClient
@@ -115,75 +105,6 @@ func (s *Syncer) Status(entry *model.LockEntry, projectRoot string) (*SyncStatus
 	st.Ahead = ahead
 	st.Behind = behind
 	return st, nil
-}
-
-// Push stages all changes in the worktree, commits with the caller's message
-// (when there's anything to commit), and pushes to origin. Returns the new
-// commit hash on success.
-//
-// A push on a clean tree without AllowEmpty returns ErrPushNoChanges — we
-// treat "nothing to do" as a distinct, non-fatal state callers can report.
-func (s *Syncer) Push(ctx context.Context, entry *model.LockEntry, opts PushOptions) (string, error) {
-	if entry.IsLink() {
-		return "", errors.New("cannot push a link install — edit the source directly")
-	}
-	if opts.Message == "" {
-		opts.Message = fmt.Sprintf("qvr: update %s", entry.Name)
-	}
-	if opts.Author == "" {
-		opts.Author = "quiver"
-	}
-	if opts.AuthorEmail == "" {
-		opts.AuthorEmail = "quiver@localhost"
-	}
-
-	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
-	if err != nil {
-		return "", fmt.Errorf("open worktree: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("worktree handle: %w", err)
-	}
-	status, err := wt.Status()
-	if err != nil {
-		return "", fmt.Errorf("status: %w", err)
-	}
-	if status.IsClean() && !opts.AllowEmpty {
-		return "", ErrPushNoChanges
-	}
-
-	if !status.IsClean() {
-		if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
-			return "", fmt.Errorf("stage changes: %w", err)
-		}
-	}
-	commit, err := wt.Commit(opts.Message, &gogit.CommitOptions{
-		Author: &object.Signature{
-			Name:  opts.Author,
-			Email: opts.AuthorEmail,
-			When:  time.Now(),
-		},
-		AllowEmptyCommits: opts.AllowEmpty,
-	})
-	if err != nil {
-		return "", fmt.Errorf("commit: %w", err)
-	}
-
-	branch := entry.Ref
-	if branch == "" {
-		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
-			branch = head.Name().Short()
-		}
-	}
-	if branch == "" {
-		return "", fmt.Errorf("cannot push: branch is empty and HEAD is detached")
-	}
-	refspec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", branch, branch)
-	if err := s.Git.Push(ctx, EntryWorktreePath(entry), "origin", []string{refspec}); err != nil {
-		return "", fmt.Errorf("push: %w", err)
-	}
-	return commit.String(), nil
 }
 
 // Pull fetches origin and fast-forwards the worktree. When local history has
@@ -293,108 +214,6 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	return remoteRef.Hash().String(), nil
 }
 
-// CreateEditBranch creates a new local branch at the worktree and switches
-// onto it. If `newBranch` already exists on origin (e.g. from a prior
-// `qvr push` session), the local branch is planted at the remote tip rather
-// than the worktree's current HEAD — otherwise the local branch trails
-// origin and a later push is non-fast-forward, which tempts the user into
-// `git push --force` and silently loses upstream commits (bug #15).
-//
-// Returns the updated lock entry plus a human-readable warning string
-// (empty when the happy path applies). Callers own ApplySwitch +
-// lock.Put + lock.Write.
-func (s *Syncer) CreateEditBranch(ctx context.Context, entry *model.LockEntry, newBranch string) (*model.LockEntry, string, error) {
-	if entry.IsLink() {
-		return nil, "", errors.New("cannot edit a link install — modify the source directly")
-	}
-	// Entering edit mode: unlock the frozen install so the worktree can be
-	// branched and modified in place. Left writable — this is now a working
-	// copy under active edit.
-	setSubtreeWritable(filepath.Join(EntryWorktreePath(entry), entry.Path))
-
-	var warning string
-	fromOriginTip := false
-	localExists := branchExistsLocally(EntryWorktreePath(entry), newBranch)
-
-	// Fetch origin so we can tell whether the edit branch already exists
-	// upstream. Best-effort: an offline or credential-less run falls through
-	// to branching from local HEAD, with a soft warning so the user knows
-	// the upstream check was skipped.
-	if s.Git != nil {
-		if err := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); err != nil {
-			warning = fmt.Sprintf("could not fetch origin before edit (%s); branching from local HEAD", err)
-		} else if repo, err := gogit.PlainOpen(EntryWorktreePath(entry)); err == nil {
-			remoteRef := plumbing.NewRemoteReferenceName("origin", newBranch)
-			if rr, rerr := repo.Reference(remoteRef, true); rerr == nil {
-				fromOriginTip = true
-				warning = fmt.Sprintf("branch %q already exists on origin at %s; checked out origin tip (pass --branch for a fresh branch)", newBranch, shortHash(rr.Hash().String()))
-			}
-		}
-	}
-
-	switch {
-	case localExists:
-		// Local branch survived from a prior `qvr edit` session (usually
-		// followed by `qvr switch`/`upgrade` that moved HEAD away). Switch
-		// back onto it rather than hard-erroring from CreateBranch* with
-		// "branch already exists" (bug #21, regression of #15). Preserves
-		// any local-only commits; the user can `qvr pull` to fast-forward.
-		if err := s.Worktree.Checkout(EntryWorktreePath(entry), newBranch); err != nil {
-			return nil, warning, fmt.Errorf("checkout existing edit branch %s: %w", newBranch, err)
-		}
-		if !fromOriginTip {
-			warning = fmt.Sprintf("local branch %q already exists; switched onto it (pass --branch for a fresh branch)", newBranch)
-		}
-	case fromOriginTip:
-		if err := s.Worktree.CreateBranchFromRef(EntryWorktreePath(entry), newBranch, newBranch); err != nil {
-			return nil, warning, fmt.Errorf("create edit branch from origin/%s: %w", newBranch, err)
-		}
-	default:
-		if err := s.Worktree.CreateBranchFromHEAD(EntryWorktreePath(entry), newBranch); err != nil {
-			return nil, warning, fmt.Errorf("create edit branch: %w", err)
-		}
-	}
-	commit, err := s.Git.HeadCommit(EntryWorktreePath(entry))
-	if err != nil {
-		return nil, warning, fmt.Errorf("head commit: %w", err)
-	}
-	updated := *entry
-	updated.Ref = newBranch
-	updated.Commit = commit
-	return &updated, warning, nil
-}
-
-// Switch moves the worktree to a different ref. The lock entry is updated to
-// reflect the new branch and commit. The worktree directory is renamed to
-// match the new ref; callers must refresh symlinks via Installer.Install.
-// (In practice the cmd layer handles that orchestration.)
-//
-// If the ref isn't resolvable locally, Switch fetches origin once with tag
-// refs and retries — lets `qvr upgrade` pick up tags published since the
-// worktree was first cloned without forcing the user to run a separate fetch.
-func (s *Syncer) Switch(ctx context.Context, entry *model.LockEntry, newRef string) (*model.LockEntry, error) {
-	if entry.IsLink() {
-		return nil, errors.New("cannot switch a link install")
-	}
-	err := s.Worktree.Checkout(EntryWorktreePath(entry), newRef)
-	if err != nil && errors.Is(err, git.ErrRefNotFound) {
-		if fetchErr := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); fetchErr == nil {
-			err = s.Worktree.Checkout(EntryWorktreePath(entry), newRef)
-		}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("checkout %s: %w", newRef, err)
-	}
-	commit, err := s.Git.HeadCommit(EntryWorktreePath(entry))
-	if err != nil {
-		return nil, fmt.Errorf("head commit: %w", err)
-	}
-	updated := *entry
-	updated.Ref = newRef
-	updated.Commit = commit
-	return &updated, nil
-}
-
 // computeAheadBehind counts how many commits the local branch is ahead and
 // behind of refs/remotes/origin/<branch>. Returns zeros if the remote ref is
 // missing (e.g. never fetched).
@@ -485,16 +304,4 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:7]
-}
-
-// branchExistsLocally reports whether refs/heads/<branch> exists in the
-// worktree's git storage. Used by CreateEditBranch to choose between
-// "create new branch" and "re-adopt an existing one".
-func branchExistsLocally(worktreePath, branch string) bool {
-	repo, err := gogit.PlainOpen(worktreePath)
-	if err != nil {
-		return false
-	}
-	_, err = repo.Reference(plumbing.NewBranchReferenceName(branch), false)
-	return err == nil
 }

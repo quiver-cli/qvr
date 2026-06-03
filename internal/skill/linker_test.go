@@ -119,38 +119,6 @@ func TestRemoveSymlink_RefusesRegularFile(t *testing.T) {
 	}
 }
 
-func TestVerifySymlink_OK(t *testing.T) {
-	skillDir := makeSkillDir(t, "code-review")
-	linkPath := filepath.Join(t.TempDir(), "link")
-	_ = skill.CreateSymlink(linkPath, skillDir)
-	if err := skill.VerifySymlink(linkPath); err != nil {
-		t.Errorf("VerifySymlink: %v", err)
-	}
-}
-
-func TestVerifySymlink_Broken(t *testing.T) {
-	skillDir := makeSkillDir(t, "code-review")
-	linkPath := filepath.Join(t.TempDir(), "link")
-	_ = skill.CreateSymlink(linkPath, skillDir)
-	// Break the symlink by deleting the target.
-	_ = os.RemoveAll(skillDir)
-	err := skill.VerifySymlink(linkPath)
-	if !errors.Is(err, skill.ErrTargetNotExist) {
-		t.Errorf("expected ErrTargetNotExist, got %v", err)
-	}
-}
-
-func TestVerifySymlink_TargetMissingSkillMD(t *testing.T) {
-	skillDir := makeSkillDir(t, "code-review")
-	linkPath := filepath.Join(t.TempDir(), "link")
-	_ = skill.CreateSymlink(linkPath, skillDir)
-	_ = os.Remove(filepath.Join(skillDir, "SKILL.md"))
-	err := skill.VerifySymlink(linkPath)
-	if !errors.Is(err, skill.ErrTargetNotASkill) {
-		t.Errorf("expected ErrTargetNotASkill, got %v", err)
-	}
-}
-
 func TestVerifyTarget(t *testing.T) {
 	skillA := makeSkillDir(t, "code-review")
 	skillB := makeSkillDir(t, "code-review")

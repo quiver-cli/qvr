@@ -478,3 +478,57 @@ func initEmptyBareWithHEAD(t *testing.T, registryName, branch string) string {
 	}
 	return bare
 }
+
+// commitAndPushWorktree stages everything in a worktree, commits it, and pushes
+// the branch to origin, returning the new commit hash. It replicates exactly
+// what the former Syncer.Push did (go-git commit + GitClient.Push) and exists
+// so Pull tests can seed an upstream commit now that Syncer.Push has been
+// removed as dead code (#160 cleanup — production publish uses git.Push directly).
+func commitAndPushWorktree(t *testing.T, worktreePath, branch, message string) string {
+	t.Helper()
+	repo, err := gogit.PlainOpen(worktreePath)
+	if err != nil {
+		t.Fatalf("open worktree %s: %v", worktreePath, err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree handle: %v", err)
+	}
+	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	hash, err := wt.Commit(message, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	if err := git.NewGoGitClient().Push(context.Background(), worktreePath, "origin", []string{refspec}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	return hash.String()
+}
+
+// commitWorktreeLocal stages and commits everything in a worktree WITHOUT
+// pushing, manufacturing a local-only commit. Used to diverge a worktree from
+// origin in Pull tests.
+func commitWorktreeLocal(t *testing.T, worktreePath, message string) {
+	t.Helper()
+	repo, err := gogit.PlainOpen(worktreePath)
+	if err != nil {
+		t.Fatalf("open worktree %s: %v", worktreePath, err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree handle: %v", err)
+	}
+	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if _, err := wt.Commit(message, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}

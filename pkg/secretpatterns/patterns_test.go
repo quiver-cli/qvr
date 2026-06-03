@@ -9,8 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// allPatterns concatenates the two exported pattern families in their
+// canonical order (high-precision prefixes, then looser assignment shapes).
+func allPatterns() []secretpatterns.Pattern {
+	pre := secretpatterns.CredentialPrefixes()
+	post := secretpatterns.AssignmentShapes()
+	return append(append([]secretpatterns.Pattern{}, pre...), post...)
+}
+
 func TestAllPatternsCompile(t *testing.T) {
-	for _, p := range secretpatterns.Default() {
+	for _, p := range allPatterns() {
 		t.Run(p.Name, func(t *testing.T) {
 			_, err := p.Compile()
 			require.NoErrorf(t, err, "pattern %q failed to compile", p.Name)
@@ -20,29 +28,19 @@ func TestAllPatternsCompile(t *testing.T) {
 
 func TestNamesAreUnique(t *testing.T) {
 	seen := map[string]bool{}
-	for _, p := range secretpatterns.Default() {
+	for _, p := range allPatterns() {
 		assert.Falsef(t, seen[p.Name], "duplicate pattern name %q", p.Name)
 		seen[p.Name] = true
 	}
 }
 
-func TestDefaultSplit(t *testing.T) {
-	// Default() must equal CredentialPrefixes() ++ AssignmentShapes()
-	// in that order — privacy depends on this concatenation to keep its
-	// historical match order stable.
-	pre := secretpatterns.CredentialPrefixes()
-	post := secretpatterns.AssignmentShapes()
-	merged := append(append([]secretpatterns.Pattern{}, pre...), post...)
-	assert.Equal(t, merged, secretpatterns.Default())
-}
-
-func TestSlicesAreCopies(t *testing.T) {
+func TestPatternFamiliesAreCopies(t *testing.T) {
 	// Mutating returned slices must not affect subsequent calls.
-	a := secretpatterns.Default()
+	a := secretpatterns.CredentialPrefixes()
 	if len(a) > 0 {
 		a[0].Name = "mutated"
 	}
-	b := secretpatterns.Default()
+	b := secretpatterns.CredentialPrefixes()
 	assert.NotEqual(t, "mutated", b[0].Name)
 }
 

@@ -8,17 +8,13 @@ import (
 	"strings"
 
 	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/model"
 )
 
 // registryNameSegmentRe is the per-segment shape: lowercase alphanumeric
 // optionally followed by `[a-z0-9_-]*` and ending alphanumeric (single-char
 // segments are allowed by the leading-class match).
 var registryNameSegmentRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
-
-// slugRe matches slugs produced by URLToSlug: lowercase alphanumerics with
-// dots, dashes, and underscores. The "--" produced from "/" and ":" is
-// covered by the dash class.
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 // ValidateRegistryName checks that a registry name is safe for use as a
 // (possibly nested) directory name. v0.5 auto-naming produces `<org>/<repo>`
@@ -44,41 +40,11 @@ func ValidateRegistryName(name string) error {
 	return nil
 }
 
-// ValidateSlug rejects empty strings, traversal segments, and characters
-// outside the URLToSlug output alphabet so a hostile URL can't be turned into
-// a path that escapes its parent directory.
-func ValidateSlug(slug string) error {
-	if slug == "" {
-		return errors.New("slug cannot be empty")
-	}
-	if len(slug) > 256 {
-		return fmt.Errorf("slug exceeds 256 characters")
-	}
-	if strings.Contains(slug, "..") || strings.ContainsAny(slug, `/\`) {
-		return fmt.Errorf("slug %q contains path separators or traversal", slug)
-	}
-	if !slugRe.MatchString(slug) {
-		return fmt.Errorf("slug %q has disallowed characters", slug)
-	}
-	return nil
-}
-
 // RegistryPath returns the bare clone path for a named registry. Under the
 // v4 layout this is the single home for all bare clones — single-skill and
 // multi-skill repos alike. The legacy SubdirRoot/standalone roots are gone.
 func RegistryPath(name string) string {
 	return filepath.Join(config.Dir(), "registries", name+".git")
-}
-
-// URLToSlug converts a URL to a filesystem-safe slug.
-func URLToSlug(url string) string {
-	s := strings.TrimPrefix(url, "https://")
-	s = strings.TrimPrefix(s, "http://")
-	s = strings.TrimPrefix(s, "git@")
-	s = strings.TrimSuffix(s, ".git")
-	s = strings.ReplaceAll(s, "/", "--")
-	s = strings.ReplaceAll(s, ":", "--")
-	return s
 }
 
 // InferRegistryName produces the auto-name for `qvr registry add <url>` —
@@ -196,6 +162,48 @@ func ShortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// WorktreePathForEntry derives the on-disk worktree path for a lock entry,
+// honoring two things a naive WorktreePath(reg, name, commit) call gets wrong:
+//
+//   - --as aliases: an aliased entry's key (entry.Name, e.g. "careful-v1") is
+//     the local install name, but the worktree dir is keyed by the registry-side
+//     canonical name (entry.Canonical, e.g. "careful") — the installer builds
+//     finalPath with the canonical name so aliases at the same SHA share one
+//     worktree. Using entry.Name here points at a dir that never existed.
+//   - the install-time commit pin: the dir is keyed by entry.InstallCommit
+//     (falling back to entry.Commit for locks pre-dating that field) so Pull /
+//     Switch advancing entry.Commit doesn't move the dir out from under the
+//     symlinks.
+//
+// Link installs return their Source (an absolute local path, not a cache
+// worktree). Returns "" when there's no commit to key on.
+//
+// This is the single source of truth for that derivation: skill.EntryWorktreePath
+// delegates here, and registry.Reachable (→ `qvr cache prune`) uses it so prune,
+// doctor, and every read-side caller agree on where an aliased multi-version
+// worktree lives. Reimplementing it inline is exactly what let prune delete
+// referenced alias worktrees (issue #158).
+func WorktreePathForEntry(e *model.LockEntry) string {
+	if e == nil {
+		return ""
+	}
+	if e.IsLink() {
+		return e.Source
+	}
+	key := e.InstallCommit
+	if key == "" {
+		key = e.Commit
+	}
+	if key == "" {
+		return ""
+	}
+	name := e.Name
+	if e.Canonical != "" {
+		name = e.Canonical
+	}
+	return WorktreePath(e.Registry, name, ShortSHA(key))
 }
 
 func slugSegment(s string) string {

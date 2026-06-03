@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,19 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writeLock builds a minimal v3 lock file for tests. Hand-rolled JSON
-// (rather than going through model.LockFile.Write) so the test stays
-// independent of model-level serialization changes.
 func writeLock(t *testing.T, path string, entries map[string]*model.LockEntry) {
 	t.Helper()
-	body := map[string]any{
-		"version": model.LockFileVersion,
-		"skills":  entries,
-	}
-	raw, err := json.MarshalIndent(body, "", "  ")
-	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	require.NoError(t, os.WriteFile(path, raw, 0o644))
+	lock := model.NewLockFile(path)
+	for name, entry := range entries {
+		entry.Name = name
+		lock.Put(entry)
+	}
+	require.NoError(t, lock.Write())
 }
 
 func writeTestSkillMD(t *testing.T, dir, name string) {

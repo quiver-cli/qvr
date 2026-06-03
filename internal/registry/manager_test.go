@@ -622,26 +622,6 @@ func mustHead(t *testing.T, mgr *registry.Manager, repoPath string) string {
 	return h
 }
 
-func TestURLToSlug(t *testing.T) {
-	tests := []struct {
-		url  string
-		want string
-	}{
-		{"https://github.com/user/repo", "github.com--user--repo"},
-		{"https://github.com/user/repo.git", "github.com--user--repo"},
-		{"git@github.com:user/repo.git", "github.com--user--repo"},
-		{"http://example.com/skills", "example.com--skills"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.url, func(t *testing.T) {
-			got := registry.URLToSlug(tt.url)
-			if got != tt.want {
-				t.Errorf("URLToSlug(%q) = %q, want %q", tt.url, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestWorktreePath_RefHostility pins the "ref is never shelled out"
 // guarantee: go-git handles all clone/checkout work, so a hostile ref
 // containing newlines, semicolons, or other shell metachars never reaches

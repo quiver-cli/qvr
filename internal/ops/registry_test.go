@@ -74,15 +74,6 @@ func TestRegister_ReplacesExisting(t *testing.T) {
 	}
 }
 
-func TestUnregister(t *testing.T) {
-	t.Cleanup(snapshotInstallers(t))
-	Register(&fakeInstaller{name: "ephemeral"})
-	Unregister("ephemeral")
-	if _, ok := GetInstaller("ephemeral"); ok {
-		t.Error("expected installer to be gone after Unregister")
-	}
-}
-
 func TestListInstallers_SortedStable(t *testing.T) {
 	t.Cleanup(snapshotInstallers(t))
 	adapterMu.Lock()

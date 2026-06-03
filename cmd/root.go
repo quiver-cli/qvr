@@ -13,7 +13,7 @@ import (
 var (
 	outputFormat string
 	printer      *output.Printer
-	version      = "0.10.2"
+	version      = "0.10.3"
 )
 
 // errJSONHandled signals to Execute() that the command has already emitted a
@@ -62,6 +62,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	assignCommandGroups(rootCmd)
 	err := rootCmd.Execute()
 	if err == nil {
 		return

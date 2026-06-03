@@ -345,12 +345,6 @@ func (m *Manager) Check(ctx context.Context, name string) ([]model.RegistryStatu
 	return results, nil
 }
 
-// Search runs a substring search across every configured registry, pulling
-// each index through the cache. Results are merged and sorted by score.
-func (m *Manager) Search(query string) ([]SearchResult, error) {
-	return m.SearchWithFilter(SearchFilter{Query: query})
-}
-
 // SearchWithFilter is the filter-aware variant used by `qvr search --tag` and
 // `qvr search --author`. It walks every configured registry and applies the
 // filter per entry, merging results by score then name.

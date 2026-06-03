@@ -23,10 +23,3 @@ func Register(h HookInstaller) {
 	defer adapterMu.Unlock()
 	installers[h.Name()] = h
 }
-
-// Unregister removes an installer by name. Primarily for test cleanup.
-func Unregister(name string) {
-	adapterMu.Lock()
-	defer adapterMu.Unlock()
-	delete(installers, name)
-}

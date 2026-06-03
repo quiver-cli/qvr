@@ -1,7 +1,6 @@
 package skill_test
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -307,34 +306,6 @@ func TestRemove_ForceDeletesEditDir(t *testing.T) {
 	}
 }
 
-func TestRestoreAll(t *testing.T) {
-	h := newHarness(t)
-	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
-	h.addRegistry(t, "acme", remote)
-	if _, err := h.installer.Install(skill.InstallRequest{
-		Skill:       "code-review",
-		Targets:     []string{"claude"},
-		ProjectRoot: h.project,
-	}); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-
-	// Blow away the worktree + symlinks (simulate fresh checkout).
-	_ = os.RemoveAll(registry.WorktreesRoot())
-	_ = os.RemoveAll(filepath.Join(h.project, ".claude"))
-
-	results, err := h.installer.RestoreAll(skill.InstallRequest{ProjectRoot: h.project})
-	if err != nil {
-		t.Fatalf("RestoreAll: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("want 1 restored, got %d", len(results))
-	}
-	if _, err := os.Lstat(filepath.Join(h.project, ".claude/skills/code-review")); err != nil {
-		t.Errorf("symlink not restored: %v", err)
-	}
-}
-
 func TestLink(t *testing.T) {
 	h := newHarness(t)
 
@@ -375,23 +346,13 @@ description: local dev skill
 
 	// Lock file records "link" source.
 	lockPath := filepath.Join(h.project, model.LockFileName)
-	data, err := os.ReadFile(lockPath)
+	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		t.Fatalf("read lock: %v", err)
 	}
-	var lf struct {
-		Skills map[string]struct {
-			Source string `json:"source"`
-			Ref    string `json:"ref"`
-			Mode   string `json:"mode"`
-		} `json:"skills"`
-	}
-	if err := json.Unmarshal(data, &lf); err != nil {
-		t.Fatalf("parse lock: %v", err)
-	}
-	entry, ok := lf.Skills["my-skill"]
-	if !ok {
-		t.Fatal("my-skill missing from lock")
+	entry, err := lock.Get("my-skill")
+	if err != nil {
+		t.Fatalf("my-skill missing from lock: %v", err)
 	}
 	// v5: link installs carry the absolute path in Source and Ref="local".
 	if entry.Source != absLocal {

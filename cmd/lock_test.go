@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,62 @@ func TestFailureCategories_onlyNonZeroListed(t *testing.T) {
 			got := failureCategories(c.in)
 			if got != c.want {
 				t.Errorf("failureCategories(%+v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// Issue #156: `qvr lock verify` must exit non-zero on detected drift so CI
+// can gate on supply-chain drift. Pre-fix it only failed under --frozen/
+// --strict and exited 0 by default. Drives lockVerifyFailure across the
+// --fail-on vocabulary and the legacy shorthands.
+func TestLockVerifyFailure_ExitContract(t *testing.T) {
+	drift := VerifySummary{OK: 4, Drift: 1}
+	unver := VerifySummary{OK: 4, Unverified: 1}
+	missing := VerifySummary{OK: 4, Missing: 1}
+	clean := VerifySummary{OK: 5}
+
+	cases := []struct {
+		name             string
+		failOn           string
+		frozen, strict   bool
+		summary          VerifySummary
+		wantFail         bool
+		wantErr          bool
+		wantMsgSubstring string
+	}{
+		{"default fails on drift", "drift", false, false, drift, true, false, "drift=1"},
+		{"default fails on missing", "drift", false, false, missing, true, false, "missing=1"},
+		{"default ignores unverified", "drift", false, false, unver, false, false, ""},
+		{"default clean exits 0", "drift", false, false, clean, false, false, ""},
+		{"fail-on none ignores drift", "none", false, false, drift, false, false, ""},
+		{"fail-on unverified catches unverified", "unverified", false, false, unver, true, false, "unverified=1"},
+		{"frozen still fails on drift", "drift", true, false, drift, true, false, "drift=1"},
+		{"frozen raises none floor", "none", true, false, drift, true, false, "drift=1"},
+		{"strict catches unverified over none", "none", false, true, unver, true, false, "unverified=1"},
+		{"invalid fail-on errors", "bogus", false, false, clean, false, true, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			lockVerifyFailOn, lockVerifyFrozen, lockVerifyStrict = c.failOn, c.frozen, c.strict
+			t.Cleanup(func() {
+				lockVerifyFailOn, lockVerifyFrozen, lockVerifyStrict = "drift", false, false
+			})
+			msg, err := lockVerifyFailure(c.summary)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("want error for fail-on %q, got nil", c.failOn)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if (msg != "") != c.wantFail {
+				t.Fatalf("failure=%q (fail=%v), want fail=%v", msg, msg != "", c.wantFail)
+			}
+			if c.wantMsgSubstring != "" && !strings.Contains(msg, c.wantMsgSubstring) {
+				t.Errorf("failure %q missing %q", msg, c.wantMsgSubstring)
 			}
 		})
 	}

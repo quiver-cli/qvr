@@ -32,6 +32,16 @@ func TestLockFile_WriteRead(t *testing.T) {
 	if err := l.Write(); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
+		t.Fatalf("lockfile should be TOML, got JSON-like content: %s", raw)
+	}
+	if !strings.Contains(string(raw), "[skills.code-review]") {
+		t.Fatalf("lockfile missing TOML skill table: %s", raw)
+	}
 
 	loaded, err := model.ReadLockFile(path)
 	if err != nil {
@@ -117,7 +127,7 @@ func TestLockFile_NameNotSerialized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read raw: %v", err)
 	}
-	if strings.Contains(string(data), `"name"`) {
+	if strings.Contains(string(data), "name =") {
 		t.Errorf("v5 lock leaked `name` field on disk: %s", string(data))
 	}
 }
@@ -136,7 +146,7 @@ func TestLockFile_NoWorktreeOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read raw: %v", err)
 	}
-	if strings.Contains(string(data), `"worktree"`) {
+	if strings.Contains(string(data), "worktree") {
 		t.Errorf("v5 lock leaked `worktree` field on disk: %s", string(data))
 	}
 }
@@ -218,7 +228,7 @@ func TestLockFile_AtomicWrite(t *testing.T) {
 // Pre-Phase-6 hypothetical: a writer's tmp file could survive on the
 // filesystem if another writer raced past it. After this test, the
 // invariant is named: regardless of who wins, the final lock is well-formed
-// JSON and no `.lock-*.tmp` siblings linger.
+// TOML and no `.lock-*.tmp` siblings linger.
 func TestLockFile_ConcurrentWritesAreAtomic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)
@@ -242,7 +252,7 @@ func TestLockFile_ConcurrentWritesAreAtomic(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Final lock must parse cleanly under v4.
+	// Final lock must parse cleanly under the current schema.
 	final, err := model.ReadLockFile(path)
 	if err != nil {
 		t.Fatalf("read final lock: %v", err)
@@ -372,7 +382,7 @@ func TestLockFile_ForkedFromRoundTrip(t *testing.T) {
 		t.Errorf("ForkedFrom round-trip lost: %q", entry.ForkedFrom)
 	}
 
-	// Empty ForkedFrom must omit the JSON key entirely (omitempty).
+	// Empty ForkedFrom must omit the TOML key entirely (omitempty).
 	l2 := model.NewLockFile(filepath.Join(dir, "empty.lock"))
 	l2.Put(&model.LockEntry{
 		Name:    "plain",
@@ -402,12 +412,12 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 		body string
 		want string // substring expected in the error message
 	}{
-		{"missing version", `{"skills": {}}`, "missing"},
-		{"version=0", `{"version": 0, "skills": {}}`, "missing"},
-		{"version=2 legacy", `{"version": 2, "skills": {}}`, "delete qvr.lock"},
-		{"version=3 legacy", `{"version": 3, "skills": {}}`, "delete qvr.lock"},
-		{"version=4 legacy", `{"version": 4, "skills": {}}`, "delete qvr.lock"},
-		{"version=999 future", `{"version": 999, "skills": {}}`, "upgrade qvr"},
+		{"missing version", `[skills]`, "missing"},
+		{"version=0", "version = 0\n[skills]\n", "missing"},
+		{"version=2 legacy", "version = 2\n[skills]\n", "delete qvr.lock"},
+		{"version=3 legacy", "version = 3\n[skills]\n", "delete qvr.lock"},
+		{"version=4 legacy", "version = 4\n[skills]\n", "delete qvr.lock"},
+		{"version=999 future", "version = 999\n[skills]\n", "upgrade qvr"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -430,8 +440,7 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
-// Regression: a non-integer `version` field (string, bool, array) used to
-// surface as a raw Go json.UnmarshalTypeError. It should route through the
+// Regression: a non-integer `version` field (string, bool, array) should route through the
 // friendly ErrLockVersionUnsupported template so the user sees actionable
 // recovery advice — and the advice should now mention deleting the lock.
 func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
@@ -440,9 +449,9 @@ func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 		body        string
 		wantInError string
 	}{
-		{"string version", `{"version":"three","skills":{}}`, `"three"`},
-		{"bool version", `{"version":true,"skills":{}}`, "true"},
-		{"array version", `{"version":[3],"skills":{}}`, "[3]"},
+		{"string version", "version = \"three\"\n[skills]\n", `"three"`},
+		{"bool version", "version = true\n[skills]\n", "true"},
+		{"array version", "version = [3]\n[skills]\n", "[3]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -459,8 +468,8 @@ func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 				t.Errorf("expected ErrLockVersionUnsupported, got %v", err)
 			}
 			msg := err.Error()
-			if contains(msg, "Go struct field") || contains(msg, "json:") {
-				t.Errorf("raw json error leaked into message: %q", msg)
+			if contains(msg, "Go struct field") || contains(msg, "toml:") {
+				t.Errorf("raw TOML error leaked into message: %q", msg)
 			}
 			if !contains(msg, tc.wantInError) {
 				t.Errorf("error %q missing expected substring %q", msg, tc.wantInError)
@@ -484,7 +493,7 @@ func contains(haystack, needle string) bool {
 func TestLockFile_AcceptsCurrentVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)
-	body := []byte(`{"version": ` + itoa(model.LockFileVersion) + `, "skills": {}}`)
+	body := []byte("version = " + itoa(model.LockFileVersion) + "\n[skills]\n")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

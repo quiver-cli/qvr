@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -428,12 +427,11 @@ func needsLockWrite(lock *model.LockFile, priorBytes []byte) bool {
 	if len(priorBytes) == 0 {
 		return true
 	}
-	// Mirror lockfile.Write: same indent, trailing newline.
-	data, err := json.MarshalIndent(lock, "", "  ")
+	// Mirror lockfile.Write exactly: same TOML encoder and trailing newline.
+	data, err := model.MarshalLockFile(lock)
 	if err != nil {
 		return true
 	}
-	data = append(data, '\n')
 	return !bytes.Equal(data, priorBytes)
 }
 

@@ -175,9 +175,21 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 
 	layout := req.Layout
 	if layout == "" {
-		if req.ForkURL != "" {
+		switch {
+		case req.ForkURL != "":
+			// A fresh --fork target is a single-skill repo: push at root.
 			layout = "root"
-		} else {
+		case e.Path == ".":
+			// The entry already tracks a root-layout (single-skill) source —
+			// e.g. a fork migrated by an earlier `--fork --migrate`, whose
+			// lock Path is "." (an empty Path still defaults to nested for a
+			// multi-skill registry). Re-publishing must STAY at root.
+			// Defaulting to nested here computed contentDest == stageDir, and
+			// the nested cleanup `os.RemoveAll(contentDest)` wiped the stage
+			// clone's .git/, bricking the second release on a migrated fork
+			// (#155).
+			layout = "root"
+		default:
 			layout = "nested"
 		}
 	}
@@ -366,6 +378,14 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 			return nil, fmt.Errorf("wipe stage: %w", err)
 		}
 	} else {
+		// Guard: a nested subdir that resolves to the stage root (e.g. an
+		// entry whose Path is "." forced through --layout nested) would make
+		// the RemoveAll below delete the clone's .git/ and brick the publish
+		// (#155). That's a contradictory request — a root-layout entry must
+		// publish with --layout root. Refuse instead of corrupting the stage.
+		if filepath.Clean(contentDest) == filepath.Clean(stageDir) {
+			return nil, fmt.Errorf("publish %s: --layout nested with a root-layout entry (path %q) would wipe the stage repo — use --layout root", e.Name, e.Path)
+		}
 		if err := os.RemoveAll(contentDest); err != nil {
 			return nil, fmt.Errorf("clean nested dest: %w", err)
 		}

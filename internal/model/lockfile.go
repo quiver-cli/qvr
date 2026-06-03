@@ -1,13 +1,15 @@
 package model
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // RootSkillContentDirs are the directories (alongside SKILL.md) that make up a
@@ -79,24 +81,24 @@ const (
 // from disk — that's the integrity check; everything else is metadata.
 type LockEntry struct {
 	// Name is the in-memory map key (populated by ReadLockFile from the
-	// Skills map). Never serialised — `json:"-"` — the map key on disk is
+	// Skills map). Never serialised — the map key on disk is
 	// authoritative.
-	Name string `json:"-"`
+	Name string `json:"-" toml:"-"`
 
 	// Registry is the stable display name of the registry this skill came
 	// from (e.g. "raks"). Optional: ad-hoc URL installs and link installs
 	// have no named registry.
-	Registry string `json:"registry,omitempty"`
+	Registry string `json:"registry,omitempty" toml:"registry,omitempty"`
 
 	// Source is the actual fetch coordinate — a git URL for remote installs,
 	// or an absolute local path for link installs. Always present. Makes the
 	// lock self-contained: a fresh clone can resolve every skill without
 	// needing the original registry name pre-configured in user config.
-	Source string `json:"source"`
+	Source string `json:"source" toml:"source"`
 
 	// Path is the subpath inside the source repo. Empty for link installs
 	// (the whole target tree is the skill).
-	Path string `json:"path,omitempty"`
+	Path string `json:"path,omitempty" toml:"path,omitempty"`
 
 	// RootCoexists records that this is a root-layout skill (Path ".") that
 	// shared its repo with sibling skill directories at install time, so its
@@ -104,7 +106,7 @@ type LockEntry struct {
 	// the whole repo. Persisted so a reproducible restore (`qvr sync` at the
 	// pinned commit) re-applies the same scope even if the registry's current
 	// HEAD no longer reports the sibling layout. See SkillScopePaths.
-	RootCoexists bool `json:"rootCoexists,omitempty"`
+	RootCoexists bool `json:"rootCoexists,omitempty" toml:"rootCoexists,omitempty"`
 
 	// Canonical is the registry-side skill name when the user installed
 	// under an alias via `qvr add <skill> --as <alias>`. Empty when the
@@ -112,16 +114,16 @@ type LockEntry struct {
 	// Lookups against the upstream index (e.g. `qvr upgrade` checking
 	// for new tags) consult Canonical when set so the alias still resolves
 	// back to the skill it points at.
-	Canonical string `json:"canonical,omitempty"`
+	Canonical string `json:"canonical,omitempty" toml:"canonical,omitempty"`
 
 	// Ref is the human label requested at install time (branch, tag, or
 	// "local" for link installs). The version identifier.
-	Ref string `json:"ref"`
+	Ref string `json:"ref" toml:"ref"`
 
 	// Commit is the current git SHA at the entry's HEAD. Pull/Switch
 	// advance this as the worktree moves between commits. Empty for link
 	// installs.
-	Commit string `json:"commit,omitempty"`
+	Commit string `json:"commit,omitempty" toml:"commit,omitempty"`
 
 	// InstallCommit is the SHA that keyed the on-disk worktree directory
 	// at install time. The worktree path is computed as
@@ -130,12 +132,12 @@ type LockEntry struct {
 	// under the symlinks. Empty for link installs and for entries
 	// pre-dating this field, in which case EntryWorktreePath falls back
 	// to Commit.
-	InstallCommit string `json:"installCommit,omitempty"`
+	InstallCommit string `json:"installCommit,omitempty" toml:"installCommit,omitempty"`
 
 	// SubtreeHash is the canonical content hash of the installed skill
 	// subtree. Load-bearing — drift detection compares this to a fresh
 	// recomputation from disk.
-	SubtreeHash string `json:"subtreeHash"`
+	SubtreeHash string `json:"subtreeHash" toml:"subtreeHash"`
 
 	// TreeOID is the native git tree object ID of the installed subtree
 	// (e.g. `git rev-parse <commit>:<path>`). Informational only — the
@@ -143,14 +145,14 @@ type LockEntry struct {
 	// endings and works for non-git editable installs. TreeOID is recorded
 	// for uv-style git-native identity and future content dedup. Empty for
 	// link installs and entries whose hash computation failed.
-	TreeOID string `json:"treeOID,omitempty"`
+	TreeOID string `json:"treeOID,omitempty" toml:"treeOID,omitempty"`
 
 	// SourceUpstream records the original upstream URL when an entry has
 	// moved off its first source — set by `qvr edit` (mirrors Source at
 	// eject time) and preserved through `qvr publish --fork --migrate`
 	// (when Source flips to the fork URL). Empty for entries that never
 	// diverged. Provenance only — never used to drive pushes.
-	SourceUpstream string `json:"sourceUpstream,omitempty"`
+	SourceUpstream string `json:"sourceUpstream,omitempty" toml:"sourceUpstream,omitempty"`
 
 	// ForkedFrom records the upstream this skill was forked from when
 	// published via `qvr publish --fork --migrate`. Format:
@@ -160,32 +162,32 @@ type LockEntry struct {
 	// consumers don't carry this field unless they themselves migrate.
 	// Provenance only in v0.8; v0.9's trust layer will read this to
 	// verify fork policy.
-	ForkedFrom string `json:"forkedFrom,omitempty"`
+	ForkedFrom string `json:"forkedFrom,omitempty" toml:"forkedFrom,omitempty"`
 
 	// Mode is the install mode: "" (shared, default for `qvr add`),
 	// "edit" (`qvr edit` ejected to EditPath), or "link" (`qvr link`).
 	// Empty-string default keeps existing v5 locks loading unchanged.
-	Mode string `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty" toml:"mode,omitempty"`
 
 	// EditPath is the project-relative path of the canonical edit copy
 	// when Mode == "edit" (e.g. ".claude/skills/auth"). All target
 	// symlinks point at this directory; siblings beyond the canonical
 	// target carry relative symlinks to it. Empty when Mode != "edit".
-	EditPath string `json:"editPath,omitempty"`
+	EditPath string `json:"editPath,omitempty" toml:"editPath,omitempty"`
 
 	// Targets is the list of agent dirs the skill is symlinked into.
-	Targets []string `json:"targets"`
+	Targets []string `json:"targets" toml:"targets"`
 
 	// InstalledAt is the original install timestamp. Stable across resyncs
 	// so the lock diff stays quiet.
-	InstalledAt time.Time `json:"installedAt"`
+	InstalledAt time.Time `json:"installedAt" toml:"installedAt"`
 
 	// Disabled hides the skill from agents without removing the worktree.
-	Disabled bool `json:"disabled,omitempty"`
+	Disabled bool `json:"disabled,omitempty" toml:"disabled,omitempty"`
 
 	// Verification carries supply-chain signals: scan results, signatures,
 	// attestations, evals. Omitted entirely when there's nothing to record.
-	Verification *VerificationRecord `json:"verification,omitempty"`
+	Verification *VerificationRecord `json:"verification,omitempty" toml:"verification,omitempty"`
 }
 
 // IsLink reports whether this entry is a local-link install. The link
@@ -213,8 +215,8 @@ func (e *LockEntry) IsEdit() bool {
 
 // LockFile is the on-disk record of installed skills.
 type LockFile struct {
-	Version int                   `json:"version"`
-	Skills  map[string]*LockEntry `json:"skills"`
+	Version int                   `json:"version" toml:"version"`
+	Skills  map[string]*LockEntry `json:"skills" toml:"skills"`
 	path    string                // canonical write destination — not serialized
 }
 
@@ -268,14 +270,12 @@ func ReadLockFile(path string) (*LockFile, error) {
 		return l, nil
 	}
 	// Zero out Version before Unmarshal — NewLockFile seeds it to
-	// LockFileVersion, but json.Unmarshal won't reset fields that aren't
+	// LockFileVersion, but toml.Unmarshal won't reset fields that aren't
 	// in the input, so we'd silently accept a missing `version` key.
 	l.Version = 0
-	if err := json.Unmarshal(data, l); err != nil {
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) && typeErr.Field == "version" {
-			rawVersion := extractRawVersion(data)
-			return nil, fmt.Errorf("%w: `version` must be an integer, got %s — delete the lock and reinstall",
+	if err := toml.Unmarshal(data, l); err != nil {
+		if rawVersion := extractRawVersion(data); rawVersion != "" {
+			return nil, fmt.Errorf("%w: `version` must be an integer TOML value, got %s — delete the lock and reinstall",
 				ErrLockVersionUnsupported, rawVersion)
 		}
 		return nil, fmt.Errorf("parse lock file: %w", err)
@@ -307,6 +307,25 @@ func ReadLockFile(path string) (*LockFile, error) {
 	return l, nil
 }
 
+// MarshalLockFile serializes a lock file using the canonical on-disk TOML
+// format. Callers that need to compare planned writes with prior bytes should
+// use this helper so idempotency checks match Write exactly.
+func MarshalLockFile(l *LockFile) ([]byte, error) {
+	l.Version = LockFileVersion
+	if l.Skills == nil {
+		l.Skills = make(map[string]*LockEntry)
+	}
+
+	data, err := toml.Marshal(l)
+	if err != nil {
+		return nil, fmt.Errorf("marshal lock file: %w", err)
+	}
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	return data, nil
+}
+
 // Write persists the lock file atomically: write to a temp sibling, then rename.
 func (l *LockFile) Write() error {
 	if l.path == "" {
@@ -315,16 +334,11 @@ func (l *LockFile) Write() error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("create lock dir: %w", err)
 	}
-	l.Version = LockFileVersion
-	if l.Skills == nil {
-		l.Skills = make(map[string]*LockEntry)
-	}
 
-	data, err := json.MarshalIndent(l, "", "  ")
+	data, err := MarshalLockFile(l)
 	if err != nil {
-		return fmt.Errorf("marshal lock file: %w", err)
+		return err
 	}
-	data = append(data, '\n')
 
 	tmp, err := os.CreateTemp(filepath.Dir(l.path), ".lock-*.tmp")
 	if err != nil {
@@ -398,17 +412,28 @@ func (l *LockFile) Entries() []*LockEntry {
 	return out
 }
 
-// extractRawVersion pulls the `version` field out of the raw JSON without
+// extractRawVersion pulls the `version` field out of the raw TOML without
 // caring about its type, so the friendly error message can echo what the
 // user actually wrote (e.g. `"three"`).
 func extractRawVersion(data []byte) string {
-	var probe struct {
-		Version json.RawMessage `json:"version"`
+	var probe map[string]any
+	if err := toml.Unmarshal(data, &probe); err != nil {
+		return ""
 	}
-	if err := json.Unmarshal(data, &probe); err != nil || len(probe.Version) == 0 {
-		return "<unknown>"
+	v, ok := probe["version"]
+	if !ok {
+		return ""
 	}
-	return string(probe.Version)
+	switch t := v.(type) {
+	case string:
+		return strconv.Quote(t)
+	case bool:
+		return strconv.FormatBool(t)
+	case []any:
+		return fmt.Sprint(t)
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 // DefaultLockPath returns the lock path. The `global` arg picks the location:

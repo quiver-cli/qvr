@@ -303,12 +303,6 @@ func Search(filter SearchFilter, entries []SkillIndexEntry) []SearchResult {
 	return results
 }
 
-// SubstringSearch is preserved for callers that only want query-based search.
-// New code should use Search with a full SearchFilter.
-func SubstringSearch(query string, entries []SkillIndexEntry) []SearchResult {
-	return Search(SearchFilter{Query: query}, entries)
-}
-
 // entryHasAllTags is true when every required tag appears in the entry's
 // `metadata.tags` field (comma-separated, case-insensitive).
 func entryHasAllTags(entry SkillIndexEntry, required map[string]struct{}) bool {
