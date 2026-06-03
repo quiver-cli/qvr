@@ -66,7 +66,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		latestLock   *model.LockFile
 		idempotent   bool
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)

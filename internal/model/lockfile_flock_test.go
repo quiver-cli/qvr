@@ -16,6 +16,7 @@ import (
 // Under WithLock, all N entries must land.
 func TestWithLock_SerialisesConcurrentReadModifyWrite(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
 	lockPath := filepath.Join(dir, "qvr.lock")
 
 	const N = 8
@@ -26,7 +27,7 @@ func TestWithLock_SerialisesConcurrentReadModifyWrite(t *testing.T) {
 	for i := range N {
 		go func() {
 			defer wg.Done()
-			err := model.WithLock(lockPath, func() error {
+			err := model.WithLock(home, lockPath, func() error {
 				lock, err := model.ReadLockFile(lockPath)
 				if err != nil {
 					return fmt.Errorf("read: %w", err)
@@ -69,7 +70,7 @@ func TestWithLock_PropagatesClosureError(t *testing.T) {
 	lockPath := filepath.Join(dir, "qvr.lock")
 
 	want := fmt.Errorf("boom")
-	got := model.WithLock(lockPath, func() error { return want })
+	got := model.WithLock(t.TempDir(), lockPath, func() error { return want })
 	if got != want {
 		t.Fatalf("expected error %v, got %v", want, got)
 	}
@@ -81,7 +82,7 @@ func TestWithLock_CreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "nested", "deeper", "qvr.lock")
 	called := false
-	if err := model.WithLock(lockPath, func() error { called = true; return nil }); err != nil {
+	if err := model.WithLock(t.TempDir(), lockPath, func() error { called = true; return nil }); err != nil {
 		t.Fatalf("WithLock: %v", err)
 	}
 	if !called {
@@ -89,17 +90,41 @@ func TestWithLock_CreatesParentDir(t *testing.T) {
 	}
 }
 
-func TestWithLock_UsesHiddenSentinel(t *testing.T) {
+// TestWithLock_SentinelUnderQuiverHome verifies the sentinel lives under
+// quiverHome/locks (matching uv's cache-dir locks) and that the project
+// directory holding qvr.lock stays free of any flock bookkeeping file.
+func TestWithLock_SentinelUnderQuiverHome(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
 	lockPath := filepath.Join(dir, "qvr.lock")
 
-	if err := model.WithLock(lockPath, func() error { return nil }); err != nil {
+	if err := model.WithLock(home, lockPath, func() error { return nil }); err != nil {
 		t.Fatalf("WithLock: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "qvr.lock.lock")); !os.IsNotExist(err) {
-		t.Fatalf("visible qvr.lock.lock sentinel exists or stat failed: %v", err)
+
+	// The project dir must contain no .flock sentinel.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read project dir: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".qvr.lock.flock")); err != nil {
-		t.Fatalf("hidden sentinel missing: %v", err)
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == model.LockSentinelSuffix {
+			t.Fatalf("found flock sentinel %q in project dir; should be under quiver home", e.Name())
+		}
+	}
+
+	// Exactly one sentinel must exist under quiverHome/locks.
+	locks, err := os.ReadDir(filepath.Join(home, "locks"))
+	if err != nil {
+		t.Fatalf("read locks dir: %v", err)
+	}
+	got := 0
+	for _, e := range locks {
+		if filepath.Ext(e.Name()) == model.LockSentinelSuffix {
+			got++
+		}
+	}
+	if got != 1 {
+		t.Fatalf("expected 1 sentinel under quiver home, got %d", got)
 	}
 }

@@ -154,7 +154,7 @@ func runInitProjectScoped(name string) error {
 	subtreeHash, _ := canonical.HashSubtreeFromDisk(canonicalAbs)
 
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), initGlobal)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, lerr := model.ReadLockFile(lockPath)
 		if lerr != nil {
 			return fmt.Errorf("read lock: %w", lerr)

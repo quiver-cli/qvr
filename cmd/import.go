@@ -160,7 +160,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		for _, entry := range entries {
 			lr := importLineResult{
 				Line:    entry.Line,

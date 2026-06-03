@@ -206,7 +206,7 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		autoUnejected       bool // tag pushed + relocked + relinked at the new tag
 		autoUnejectNeedsAdd bool // eject torn down, but re-install failed; user must `qvr add` to finish
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)

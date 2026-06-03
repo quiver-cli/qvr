@@ -123,7 +123,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	var results []*skill.InstallResult
 	var firstErr error
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		for _, ref := range args {
 			result, err := installer.Install(skill.InstallRequest{
 				Skill:       ref,

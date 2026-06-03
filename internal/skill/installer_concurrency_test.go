@@ -25,6 +25,7 @@ func TestInstaller_ConcurrentInstallSerialisesUnderWithLock(t *testing.T) {
 	h.addRegistry(t, "acme", remote)
 
 	lockPath := filepath.Join(h.project, model.LockFileName)
+	quiverHome := t.TempDir()
 	names := []string{"alpha", "bravo", "delta"}
 
 	var wg sync.WaitGroup
@@ -34,7 +35,7 @@ func TestInstaller_ConcurrentInstallSerialisesUnderWithLock(t *testing.T) {
 		name := name // capture loop variable
 		go func() {
 			defer wg.Done()
-			err := model.WithLock(lockPath, func() error {
+			err := model.WithLock(quiverHome, lockPath, func() error {
 				_, ierr := h.installer.Install(skill.InstallRequest{
 					Skill:       name,
 					Targets:     []string{"claude"},

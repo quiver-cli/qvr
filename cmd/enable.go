@@ -39,7 +39,7 @@ func runEnable(cmd *cobra.Command, args []string) error {
 		created    []string
 		latestLock *model.LockFile
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)

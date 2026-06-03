@@ -76,7 +76,7 @@ func runLink(cmd *cobra.Command, args []string) error {
 
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), linkGlobal)
 	var result *skill.InstallResult
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		r, err := installer.Link(resolved, skill.InstallRequest{
 			Targets:     targets,
 			Global:      linkGlobal,

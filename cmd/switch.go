@@ -170,7 +170,7 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 		alreadyOnTarget bool
 		latestLock      *model.LockFile
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)
@@ -282,7 +282,7 @@ func runTip(cmd *cobra.Command, names []string) error {
 		nothing    bool
 		refused    int
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)

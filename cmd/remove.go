@@ -46,7 +46,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), removeGlobal)
 
 	var removed []string
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		// Atomic precondition check: refuse to remove anything if any arg is
 		// missing from the lock. Mirrors `git rm` — partial execution on a
 		// mid-batch error is a footgun for destructive verbs.

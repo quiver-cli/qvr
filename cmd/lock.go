@@ -154,7 +154,7 @@ func runLock(cmd *cobra.Command, args []string) error {
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), lockResolveGlobal)
 
 	var out *LockResolveOutput
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		o, err := lockResolveInternal(cmd.Context(), lockPath)
 		if err != nil {
 			return err
@@ -361,7 +361,7 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 		empty   bool
 		failure string
 	)
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)
@@ -655,7 +655,7 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), lockUpgradeGlobal)
 
 	var out *UpgradeOutput
-	lockErr := model.WithLock(lockPath, func() error {
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		o, err := lockUpgradeInternal(lockPath)
 		if err != nil {
 			return err
