@@ -92,6 +92,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), syncGlobal)
+	cfg, cerr := config.Load()
+	if cerr != nil {
+		return fmt.Errorf("load config: %w", cerr)
+	}
+	if err := enforceScanPolicy(cfg, syncNoScan); err != nil {
+		return err
+	}
 
 	// --locked is a CI assertion: a sync must not modify qvr.lock. Snapshot the
 	// committed bytes up front; after reconcile we compare and fail (restoring
@@ -149,8 +156,10 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// WOULD change (restores, symlinks, orphans) without mutating disk or
 		// the lock. The would-change lists then drive --check's exit code.
 		r, err := reconciler.Reconcile(lock, projectRoot, config.Dir(), skill.ReconcileOptions{
-			DryRun:        syncDryRun || syncCheck,
-			KeepUntracked: syncKeepUntracked,
+			DryRun:                   syncDryRun || syncCheck,
+			RequireSigned:            cfg.Security.RequireSigned,
+			TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
+			KeepUntracked:            syncKeepUntracked,
 		})
 		if err != nil {
 			return fmt.Errorf("sync: %w", err)
@@ -177,19 +186,16 @@ func runSync(cmd *cobra.Command, args []string) error {
 			// rescanning would rewrite verification.scan. Drift verification
 			// below still runs for all of them.
 			if !syncLocked && !syncFrozen && !syncCheck {
-				cfg, cerr := config.Load()
-				if cerr == nil {
-					// Snapshot the lock's current on-disk bytes so we can
-					// skip the write when reconcile + scan changed nothing
-					// (issue #79: sync should be idempotent — no rewrite on
-					// no-state-change reruns). Snapshot taken before the scan
-					// pass because that's the last in-memory mutation source.
-					priorBytes, _ := os.ReadFile(lockPath)
-					atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg, projectRoot)
-					if needsLockWrite(lock, priorBytes) {
-						if werr := lock.Write(); werr != nil {
-							return fmt.Errorf("persist scan results: %w", werr)
-						}
+				// Snapshot the lock's current on-disk bytes so we can
+				// skip the write when reconcile + scan changed nothing
+				// (issue #79: sync should be idempotent — no rewrite on
+				// no-state-change reruns). Snapshot taken before the scan
+				// pass because that's the last in-memory mutation source.
+				priorBytes, _ := os.ReadFile(lockPath)
+				atOrAboveThreshold = scanRestoredSkillsAfterSync(cmd.Context(), lock, cfg, projectRoot)
+				if needsLockWrite(lock, priorBytes) {
+					if werr := lock.Write(); werr != nil {
+						return fmt.Errorf("persist scan results: %w", werr)
 					}
 				}
 			}

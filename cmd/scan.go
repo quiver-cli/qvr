@@ -1,9 +1,16 @@
 package cmd
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/raks097/quiver/internal/output"
 	"github.com/raks097/quiver/internal/security"
@@ -17,6 +24,7 @@ var (
 	scanGlobal       bool
 	scanFormat       string
 	scanMaxFileBytes int64 = -1 // -1 = no override; use security default
+	scanAgainst      string
 )
 
 var scanCmd = &cobra.Command{
@@ -44,6 +52,8 @@ func init() {
 		"report format override (text|json|sarif|markdown); takes precedence over --output")
 	scanCmd.Flags().Int64Var(&scanMaxFileBytes, "max-file-bytes", -1,
 		"per-file content cap in bytes (0 disables the cap); overrides QVR_MAX_FILE_BYTES and the 10 MiB default")
+	scanCmd.Flags().StringVar(&scanAgainst, "against", "",
+		"only report findings new relative to this Git ref")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -138,6 +148,21 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
+	if scanAgainst != "" {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		baseline, cleanup, err := scanBaseline(ctx, scanner, resolved, scanAgainst)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if err != nil {
+			return err
+		}
+		result.Findings = diffFindings(result.Findings, baseline.Findings)
+		result.Summary = summariseScanFindings(result.Findings)
+	}
 
 	// Apply the display filter without rewriting Summary — the summary
 	// always reflects the *complete* finding set so downstream tooling
@@ -176,6 +201,158 @@ func runScan(cmd *cobra.Command, args []string) error {
 			countAbove(result.Summary, failOn), failOn)
 	}
 	return nil
+}
+
+func scanBaseline(ctx context.Context, scanner *security.Scanner, resolved, ref string) (*security.ScanResult, func(), error) {
+	dir, cleanup, err := materializeGitRefPath(ctx, resolved, ref)
+	if err != nil {
+		return nil, cleanup, err
+	}
+	s, err := skill.LoadFromPath(dir)
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("--against %s: baseline does not contain a loadable skill at the same path: %w", ref, err)
+	}
+	res, err := scanner.Scan(ctx, s, dir)
+	if err != nil {
+		return nil, cleanup, fmt.Errorf("--against %s: scan baseline: %w", ref, err)
+	}
+	return res, cleanup, nil
+}
+
+func materializeGitRefPath(ctx context.Context, resolved, ref string) (string, func(), error) {
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", nil, fmt.Errorf("--against: resolve absolute path: %w", err)
+	}
+	if realResolved, err := filepath.EvalSymlinks(resolvedAbs); err == nil {
+		resolvedAbs = realResolved
+	}
+	rootBytes, err := exec.CommandContext(ctx, "git", "-C", resolved, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", nil, fmt.Errorf("--against requires %s to be inside a Git worktree", resolved)
+	}
+	root := strings.TrimSpace(string(rootBytes))
+	if realRoot, err := filepath.EvalSymlinks(root); err == nil {
+		root = realRoot
+	}
+	rel, err := filepath.Rel(root, resolvedAbs)
+	if err != nil {
+		return "", nil, fmt.Errorf("--against: resolve path relative to git root: %w", err)
+	}
+	if rel == "" {
+		rel = "."
+	}
+	archivePath := filepath.ToSlash(rel)
+	if archivePath == "." {
+		archivePath = "."
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "archive", ref, "--", archivePath)
+	data, err := cmd.Output()
+	if err != nil {
+		return "", nil, fmt.Errorf("--against %s: git archive failed for %s", ref, archivePath)
+	}
+	tmp, err := os.MkdirTemp("", "qvr-scan-against-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("--against: create temp dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	if err := extractTar(data, tmp); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	baselineDir := tmp
+	if rel != "." {
+		baselineDir = filepath.Join(tmp, rel)
+	}
+	return baselineDir, cleanup, nil
+}
+
+func extractTar(data []byte, dest string) error {
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("--against: read archive: %w", err)
+		}
+		name := filepath.Clean(h.Name)
+		if name == "." {
+			continue
+		}
+		target := filepath.Join(dest, name)
+		if !strings.HasPrefix(target, dest+string(os.PathSeparator)) {
+			return fmt.Errorf("--against: archive entry escapes destination: %s", h.Name)
+		}
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("--against: mkdir %s: %w", name, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf("--against: mkdir parent %s: %w", name, err)
+			}
+			mode := os.FileMode(h.Mode) & 0o777
+			if mode == 0 {
+				mode = 0o644
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			if err != nil {
+				return fmt.Errorf("--against: create %s: %w", name, err)
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				_ = f.Close()
+				return fmt.Errorf("--against: extract %s: %w", name, err)
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("--against: close %s: %w", name, err)
+			}
+		}
+	}
+}
+
+func diffFindings(current, baseline []security.Finding) []security.Finding {
+	seen := make(map[string]struct{}, len(baseline))
+	for _, f := range baseline {
+		seen[findingKey(f)] = struct{}{}
+	}
+	out := make([]security.Finding, 0, len(current))
+	for _, f := range current {
+		if _, ok := seen[findingKey(f)]; !ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func findingKey(f security.Finding) string {
+	return strings.Join([]string{
+		string(f.Severity),
+		f.Check,
+		f.RuleID,
+		f.File,
+		strconv.Itoa(f.Line),
+		f.Message,
+	}, "\x00")
+}
+
+func summariseScanFindings(findings []security.Finding) security.Summary {
+	var s security.Summary
+	for _, f := range findings {
+		switch f.Severity {
+		case security.SeverityCritical:
+			s.Critical++
+		case security.SeverityError:
+			s.Error++
+		case security.SeverityWarning:
+			s.Warning++
+		case security.SeverityInfo:
+			s.Info++
+		}
+	}
+	return s
 }
 
 // effectiveScanFormat honors `--format` when set, otherwise falls back

@@ -70,9 +70,9 @@ type EvalRef struct {
 // Git-native provenance signature statuses. v1 trust is "uv for agent
 // skills": provenance is optional metadata derived from `git verify-tag` /
 // `git verify-commit`, never a qvr-native signing format. SignatureStatusNone
-// is the common case (most skill repos are unsigned) and never blocks an
-// install; SignatureStatusInvalid is the one status that blocks, because a
-// present-but-broken signature signals tampering.
+// is the common case (most skill repos are unsigned) and only blocks when
+// security.require_signed is enabled; SignatureStatusInvalid always blocks,
+// because a present-but-broken signature signals tampering.
 const (
 	SignatureStatusVerified = "verified" // git verified a good signature
 	SignatureStatusNone     = "none"     // no signature present on tag/commit
@@ -81,10 +81,9 @@ const (
 
 // ProvenanceRef records optional, git-native provenance for an installed
 // skill: whether the resolved ref carried a verifiable Git signature, and
-// who signed it. It is informational — install is gated only when
-// SignatureStatus == SignatureStatusInvalid. This is the v1 trust surface;
-// the cryptographic Signature/Attestation slots stay reserved for a future
-// signing track.
+// who signed it. It is informational unless policy requires verified
+// signatures. This is the v1 trust surface; the cryptographic
+// Signature/Attestation slots stay reserved for a future signing track.
 type ProvenanceRef struct {
 	Provider        string `json:"provider" toml:"provider"`                 // "git"
 	Tag             string `json:"tag,omitempty" toml:"tag,omitempty"`       // the ref verified, when a tag

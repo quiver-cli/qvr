@@ -8,13 +8,13 @@ Quiver is deliberately thin on team primitives. Git and your git host (GitHub, G
 |---|---|---|
 | Add/remove team members | — | GitHub Teams (or your host's equivalent). |
 | Gate who can merge to a registry | — | Branch protection + CODEOWNERS. |
-| Fork a skill into your own registry | — | `gh repo fork` or `git clone && push to a new remote`. Copy the skill's subdir if you only want one. |
+| Fork a skill into your own registry | — | `gh repo fork` or `git clone && push to a new remote`. Import a single skill subdirectory when you only want one skill. |
 | Diff two versions of a skill | partial (`qvr diff` shows local worktree edits) | `git diff <v1>..<v2> -- skills/<name>/` inside the registry for version-to-version. |
 | Use the same skill across multiple teams | ✓ | One registry per team plus a shared org registry. Install from any of them. |
 | Pin a skill to a specific version or branch | ✓ | `qvr add acme/code-review@v2.1.0` (any git ref). |
-| Track upstream changes after a fork | ✓ | `qvr publish --fork --migrate` records `forkedFrom: <upstream>@<sha>` in the lockfile entry. The published SKILL.md stays byte-identical. `qvr verify` will read this in the v0.9 trust layer to surface the provenance chain. |
-| Audit who's installed what across machines | ✓ (planned) | `qvr inventory` — lands with the trust layer. |
-| Require a registry's skills be signed | ✓ (planned) | `quiver.trust.yaml` with `require-signature: true` — lands with the trust layer. |
+| Track upstream changes after a fork | ✓ | `qvr publish --fork --migrate` records `forkedFrom: <upstream>@<sha>` in the lockfile entry. The published SKILL.md stays byte-identical. |
+| Audit who's installed what across machines | ✓ (planned) | `qvr inventory` remains a post-v1 fleet feature. |
+| Require a registry's skills be signed | ✓ | `qvr config set security.require_signed true`, then pin expected commit authors with `qvr trust pin <registry> <author>`. |
 
 If you find yourself wanting a `qvr team`/`qvr fork` command, the answer is almost always "use the git tool you'd reach for outside Quiver." That keeps a single source of truth (the git host) and avoids parallel state.
 
@@ -55,8 +55,9 @@ Quiver doesn't ship a `qvr fork` command. Two paths, depending on whether you're
 # 1. Fork the upstream registry (or clone + push to a new remote you own).
 gh repo fork acme/org-skills --clone --remote
 
-# 2. Pull just the skill you want into your team's registry.
-cp -R org-skills/skills/code-review platform-skills/skills/
+# 2. Import just the skill you want into your team's registry.
+mkdir -p platform-skills/skills/code-review
+git -C org-skills archive HEAD:skills/code-review | tar -x -C platform-skills/skills/code-review
 cd platform-skills
 git add skills/code-review && git commit -m "fork code-review from acme/org-skills"
 git push
@@ -70,7 +71,7 @@ qvr edit code-review
 qvr publish code-review --fork git@github.com:acme/platform-skills.git --migrate --tag v0.1.0
 ```
 
-After `--migrate`, the lockfile entry records `forkedFrom: <original-upstream>@<sha>` so the provenance chain is preserved locally. The published SKILL.md is byte-identical to your eject dir — qvr never stamps metadata into the artifact. The v0.9 trust layer's `qvr verify` reads `forkedFrom` from the lockfile to enforce fork policy.
+After `--migrate`, the lockfile entry records `forkedFrom: <original-upstream>@<sha>` so the provenance chain is preserved locally. The published SKILL.md is byte-identical to your eject dir — qvr never stamps metadata into the artifact.
 
 ## Comparing versions
 
@@ -157,5 +158,5 @@ jobs:
 1. **One registry per team** — keeps git permissions simple. Cross-team skills live in a shared `org` registry.
 2. **Use branches for versions** — `main` is latest stable; `v1`/`v2` for pinned majors.
 3. **Tag releases** — `v1.0.0` makes installs reproducible (`qvr add foo@v1.0.0`).
-4. **Require scan in CI** — catch issues before they reach agents. Once the trust layer ships, also require `qvr verify` to enforce trust policy.
+4. **Require scan and trust in CI** — catch issues before they reach agents. Use `qvr lock verify --strict` for integrity and `qvr trust verify` for registry commit-author policy.
 5. **Treat skills like code** — PRs, reviews, CI checks. Your git host already does this; let it.

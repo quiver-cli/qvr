@@ -25,7 +25,7 @@ var (
 var uiCmd = &cobra.Command{
 	Use:   "ui",
 	Short: "Launch the local dashboard (sessions, skills, tree, scan, provenance)",
-	Long: `Start a local web dashboard for Quiver — an MLflow-style view over what the
+	Long: `Start a local web dashboard for Quiver — a local view over what the
 CLI already records: agent sessions from the audit pipeline, installed skills,
 the registry → skill → target tree, scan results, and provenance.
 

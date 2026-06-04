@@ -28,6 +28,13 @@ var (
 	// git signature (BAD signature). The only provenance status that gates an
 	// install — absent or unverifiable signatures never block.
 	ErrInvalidSignature = errors.New("invalid git signature on resolved ref")
+	// ErrSignatureRequired means policy requires a verified git signature but
+	// the resolved ref had no verifiable tag or commit signature.
+	ErrSignatureRequired = errors.New("verified git signature required")
+	// ErrSignedByMismatch means the skill declares metadata.signed_by but the
+	// ref's verified signature is by a different identity — the skill was
+	// re-signed by someone other than its declared signer. Issue #167.
+	ErrSignedByMismatch = errors.New("signed_by does not match the verified signature")
 )
 
 // InstallRequest describes a desired install.
@@ -68,6 +75,15 @@ type InstallRequest struct {
 	// so two aliases pointing at the same canonical commit share one
 	// worktree on disk.
 	As string
+	// RequireSigned refuses installs unless the resolved ref has a verified
+	// git tag or commit signature.
+	RequireSigned bool
+	// TrustedAuthors, when non-empty, refuses installs whose commit author is
+	// not in this list.
+	TrustedAuthors []string
+	// TrustedAuthorsByRegistry applies author pins after the registry is
+	// resolved. Used by bare installs that search all registries.
+	TrustedAuthorsByRegistry map[string][]string
 }
 
 // InstallResult holds the outcome for a single skill install.
@@ -357,14 +373,44 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	}
 
 	// Optional git-native provenance (the v1 trust surface). Verify a signed
-	// tag/commit if one is present. An invalid — present-but-bad — signature
-	// blocks the install before any symlink or lock side effects, because it
-	// signals tampering. Absent or unverifiable signatures are recorded as
-	// metadata, never gated. Computed once here and reused for the lock entry.
-	provenance := CheckGitProvenance(loc.RepoPath, version, resolvedSHA)
+	// tag/commit if one is present. An invalid present-but-bad signature blocks
+	// the install before any symlink or lock side effects, because it signals
+	// tampering. When policy requires signatures, absent or unverifiable
+	// signatures also block. Computed once here and reused for the lock entry.
+	// Scoped to the skill's own subtree (loc.Entry.Path) so signature status
+	// reflects the commit that wrote the skill, not the branch tip (#173).
+	provenance := CheckGitProvenance(loc.RepoPath, version, resolvedSHA, loc.Entry.Path)
 	if provenance != nil && provenance.SignatureStatus == model.SignatureStatusInvalid {
 		return nil, fmt.Errorf("%w: %s@%s carries an invalid git signature on %q — refusing to install",
 			ErrInvalidSignature, name, registry.ShortSHA(resolvedSHA), version)
+	}
+	if req.RequireSigned && (provenance == nil || provenance.SignatureStatus != model.SignatureStatusVerified) {
+		return nil, fmt.Errorf("%w: %s@%s is unsigned; disable security.require_signed or install a signed tag/commit",
+			ErrSignatureRequired, name, registry.ShortSHA(resolvedSHA))
+	}
+	// signed_by declaration: a skill can name (in metadata.signed_by) the
+	// identity that must have signed its ref. When a verified signature is
+	// present its signer must match the declaration — a mismatch means the ref
+	// was re-signed by someone other than the declared signer and blocks the
+	// install. An absent/unverifiable signature leaves the declaration
+	// unverifiable; require_signed (above) gates that case when policy demands
+	// it, so here we act only on a present-but-wrong signer. Matching reuses the
+	// email-aware author matcher so `signed_by: alice@example.com` matches a
+	// signer reported as `Alice <alice@example.com>`. Issue #167.
+	if signedBy := DeclaredSignedBy(skillDir); signedBy != "" &&
+		provenance != nil && provenance.SignatureStatus == model.SignatureStatusVerified &&
+		!AuthorMatchesPin(provenance.Signer, signedBy) {
+		return nil, fmt.Errorf("%w: %s@%s declares signed_by %q but its verified signature is by %q",
+			ErrSignedByMismatch, name, registry.ShortSHA(resolvedSHA), signedBy, provenance.Signer)
+	}
+	commitAuthor := CommitAuthor(loc.RepoPath, resolvedSHA, loc.Entry.Path)
+	trustedAuthors := req.TrustedAuthors
+	if len(trustedAuthors) == 0 && req.TrustedAuthorsByRegistry != nil {
+		trustedAuthors = req.TrustedAuthorsByRegistry[loc.RegistryName]
+	}
+	if len(trustedAuthors) > 0 && !AuthorAllowed(commitAuthor, trustedAuthors) {
+		return nil, fmt.Errorf("untrusted commit author: %s@%s was authored by %q, not one of %s",
+			name, registry.ShortSHA(resolvedSHA), commitAuthor, strings.Join(trustedAuthors, ", "))
 	}
 
 	// Freeze the verified bytes: write-protect the installed skill subtree so
@@ -460,6 +506,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		Ref:           version,
 		Commit:        commit,
 		InstallCommit: commit,
+		CommitAuthor:  commitAuthor,
 		SubtreeHash:   subtreeHash,
 		TreeOID:       treeOID,
 		Targets:       targets,

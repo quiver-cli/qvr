@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,6 +29,7 @@ func withScanPrinter(t *testing.T, format output.Format) (out, errBuf *bytes.Buf
 func resetScanFlags() {
 	scanSeverity = "info"
 	scanFailOn = "error"
+	scanAgainst = ""
 }
 
 func TestRunScanCleanSkillTextSucceeds(t *testing.T) {
@@ -228,5 +231,99 @@ func TestRunScanSeverityFilterHidesLowerFindings(t *testing.T) {
 	// Summary should STILL reflect the unfiltered scan.
 	if res.Summary.Warning == 0 {
 		t.Errorf("summary should retain unfiltered counts, got %+v", res.Summary)
+	}
+}
+
+func TestRunScanAgainstReportsOnlyNewFindings(t *testing.T) {
+	defer resetScanFlags()
+	repo := t.TempDir()
+	skillDir := filepath.Join(repo, "skills", "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeScanSkill(t, skillDir, "---\nname: review\ndescription: clean baseline\n---\n# Review\n")
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "Test")
+	gitCmd(t, repo, "config", "user.email", "test@example.com")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "baseline")
+	gitCmd(t, repo, "tag", "baseline")
+
+	writeScanSkill(t, skillDir, "---\nname: review\ndescription: new secret\n---\n# Review\nAKIAIOSFODNN7EXAMPLE\n")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "add secret")
+
+	scanAgainst = "baseline"
+	out, _, restore := withScanPrinter(t, output.FormatJSON)
+	defer restore()
+
+	err := runScan(scanCmd, []string{skillDir})
+	if !errors.Is(err, errJSONHandled) {
+		t.Fatalf("runScan err = %v, want errJSONHandled for new critical finding", err)
+	}
+	var res security.ScanResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out.String())
+	}
+	if res.Summary.Critical == 0 {
+		t.Fatalf("summary = %+v, want new critical finding", res.Summary)
+	}
+	for _, f := range res.Findings {
+		if f.Check == security.SecretsCheckName {
+			return
+		}
+	}
+	t.Fatalf("findings = %+v, want secrets finding", res.Findings)
+}
+
+func TestRunScanAgainstSelfDiffKeepsExecutableMode(t *testing.T) {
+	defer resetScanFlags()
+	repo := t.TempDir()
+	skillDir := filepath.Join(repo, "skills", "review")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeScanSkill(t, skillDir, "---\nname: review\ndescription: executable fixture\n---\n# Review\n")
+	script := filepath.Join(scriptsDir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	gitCmd(t, repo, "init")
+	gitCmd(t, repo, "config", "user.name", "Test")
+	gitCmd(t, repo, "config", "user.email", "test@example.com")
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-m", "baseline")
+
+	scanAgainst = "HEAD"
+	scanFailOn = "warning"
+	out, _, restore := withScanPrinter(t, output.FormatJSON)
+	defer restore()
+
+	if err := runScan(scanCmd, []string{skillDir}); err != nil {
+		t.Fatalf("self diff with unchanged executable bit should be clean, got %v\n%s", err, out.String())
+	}
+	var res security.ScanResult
+	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out.String())
+	}
+	if res.Summary.Total() != 0 || len(res.Findings) != 0 {
+		t.Fatalf("self diff findings = %+v summary=%+v, want none", res.Findings, res.Summary)
+	}
+}
+
+func writeScanSkill(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+}
+
+func gitCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

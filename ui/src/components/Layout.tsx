@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import ScopeSwitcher from "./ScopeSwitcher";
 import type { Scope } from "../api";
 
-// MLflow-style chrome: a dark left sidebar of sections + a light content area.
+// Dashboard chrome: a dark left sidebar of sections + a light content area.
 // Registries are global (top, above the project switcher); the rest of the nav
 // is scoped to whichever project the switcher has selected.
 
@@ -65,7 +65,7 @@ export default function Layout({
         <div className="px-5 py-4 text-[0.6875rem] leading-relaxed text-gray-500">
           read-only · local
           <br />
-          an MLflow for agent skills
+          uv for agent skills
         </div>
       </aside>
       <main className="flex-1 overflow-x-hidden">

@@ -159,7 +159,7 @@ func (m *Manager) Remove(name string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	// Accept a bare leaf (e.g. `gstack` → `garrytan/gstack`). ResolveName
+	// Accept a bare leaf (e.g. `skills` -> `acme/skills`). ResolveName
 	// returns ErrRegistryNotFound for an unknown name (same sentinel callers
 	// already check) or an ambiguity error when a leaf matches several.
 	name, err = ResolveName(cfg, name)
@@ -410,7 +410,7 @@ func (m *Manager) ListSkills(names []string) ([]RegistrySkills, error) {
 
 	out := make([]RegistrySkills, 0, len(names))
 	for _, name := range names {
-		// Accept a bare leaf (e.g. `gstack` → `garrytan/gstack`). Resolution
+		// Accept a bare leaf (e.g. `skills` -> `acme/skills`). Resolution
 		// failures stay per-entry so a bad name in a multi-name list doesn't
 		// abort the rest; the resolved full name is what we display.
 		resolved, rerr := ResolveName(cfg, name)
@@ -469,8 +469,8 @@ func (m *Manager) FindSkillIn(skillName, registryName string) (*SkillLocation, e
 	}
 
 	if registryName != "" {
-		// Accept a bare leaf (e.g. `gstack` for `garrytan/gstack`) so
-		// `qvr add --registry gstack` doesn't force the org segment.
+		// Accept a bare leaf (e.g. `skills` for `acme/skills`) so
+		// `qvr add --registry skills` doesn't force the org segment.
 		resolved, rerr := ResolveName(cfg, registryName)
 		if rerr != nil {
 			if errors.Is(rerr, ErrRegistryNotFound) {
@@ -551,8 +551,8 @@ func (m *Manager) findSkillInRegistry(skillName, regName, regURL string) *SkillL
 //   - no match returns ErrRegistryNotFound (wrapped, with the input name),
 //   - more than one match returns an ambiguity error naming the candidates.
 //
-// This is what lets `qvr registry update gstack`, `qvr registry list gstack`,
-// and `qvr add --registry gstack` work when only `garrytan/gstack` is
+// This is what lets `qvr registry update skills`, `qvr registry list skills`,
+// and `qvr add --registry skills` work when only `acme/skills` is
 // configured, without forcing the user to type the org segment. The empty
 // string resolves to itself (callers treat "" as "all registries").
 func ResolveName(cfg *config.Config, name string) (string, error) {

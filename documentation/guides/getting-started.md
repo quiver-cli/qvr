@@ -1,17 +1,12 @@
 # Getting Started
 
-> **Status: v0.5.0.** Project-local lockfile model: `qvr init`, `validate`,
-> `config`, `registry add/list/update/remove`, `search`, `version`, `add`,
-> `remove`, `sync` (strict reconciler), `docs` (AGENTS.md), `pull`, `push`,
-> `publish`, `edit`, `upgrade`, `switch`, `link`, `read`, `list`, `ls`,
-> `info`, `diff`, `status`, `outdated`, `disable`, `enable`, `doctor`
-> (with `--global` and `--all` across inspections). The local React
-> dashboard (`qvr ui`) is in flight.
+> **Status: active development.** Project-local locks, registry management,
+> install/sync/edit/publish, security scan gates, inspections, audit capture,
+> and the local dashboard (`qvr ui`) are available today.
 
 ## Install
 
-Prebuilt binaries (Homebrew, curl installer) are still in flight. For
-now, build from source or install via `go install`:
+Install via `go install` or build from source:
 
 ```bash
 # from source

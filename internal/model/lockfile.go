@@ -134,6 +134,10 @@ type LockEntry struct {
 	// to Commit.
 	InstallCommit string `json:"installCommit,omitempty" toml:"installCommit,omitempty"`
 
+	// CommitAuthor is the author identity on the installed commit, formatted as
+	// `Name <email>`. Trust policy can pin allowed authors per registry.
+	CommitAuthor string `json:"commitAuthor,omitempty" toml:"commitAuthor,omitempty"`
+
 	// SubtreeHash is the canonical content hash of the installed skill
 	// subtree. Load-bearing — drift detection compares this to a fresh
 	// recomputation from disk.

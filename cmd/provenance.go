@@ -47,9 +47,10 @@ present and verified.
 
 Provenance is honest about its limits. A "verified" signature means qvr ran
 'git verify-tag'/'git verify-commit' and Git was satisfied — it does NOT by
-itself mean the author is trusted. An unsigned skill still installs; an
-*invalid* signature is refused at install time. Fast — reads local state and,
-when no signature status is recorded yet, runs a local Git verification.`,
+itself mean the author is trusted. An unsigned skill installs unless
+security.require_signed is enabled; an *invalid* signature is refused at install
+time. Fast — reads local state and, when no signature status is recorded yet,
+runs a local Git verification.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProvenance,
 }
@@ -139,7 +140,7 @@ func provenanceFor(entry *model.LockEntry) *model.ProvenanceRef {
 	if worktree == "" {
 		return nil
 	}
-	return skill.CheckGitProvenance(worktree, entry.Ref, entry.Commit)
+	return skill.CheckGitProvenance(worktree, entry.Ref, entry.Commit, entry.Path)
 }
 
 // provenanceStatus rolls the signals into the one-word state shown to users.
@@ -178,6 +179,8 @@ func signedCol(status string) string {
 		return "✓ verified"
 	case model.SignatureStatusInvalid:
 		return "✗ invalid"
+	case model.SignatureStatusNone:
+		return "none"
 	default:
 		return "—"
 	}

@@ -53,10 +53,9 @@ The solution uses Git's own primitives:
 
 Single-skill repos live under the same `registries/` tree — `qvr registry add`
 is the only entrypoint, so the indexer's job is to walk whatever's there
-(one skill or many). The legacy `subdir/` and `standalone/` directories
-from earlier prototypes have been collapsed. Both `registries/` and
-`worktrees/` nest by `<org>/<repo>` so the on-disk shape is uniform and
-a whole org can be wiped or browsed at once.
+(one skill or many). Both `registries/` and `worktrees/` nest by
+`<org>/<repo>` so the on-disk shape is uniform and a whole org can be wiped or
+browsed at once.
 
 ### Data Flow
 
@@ -139,7 +138,7 @@ internal/registry/
 
 pkg/skillspec/           (public, no internal deps)
 
-# Planned (not yet shipping):
+# Possible future areas:
 #   internal/attestation/, internal/trust/  (signing + per-registry trust policy, v0.9)
 #   internal/inventory/, internal/audit/    (cross-agent inventory + local audit log, v0.9)
 #   internal/ui/ + ui/                      (embedded React dashboard, v0.9)

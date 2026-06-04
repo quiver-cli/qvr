@@ -29,6 +29,8 @@ var configValueValidators = map[string]func(string) (string, error){
 		return strings.Join(parts, ","), nil
 	},
 	"security.scan_on_install": validateBool,
+	"security.require_scan":    validateBool,
+	"security.require_signed":  validateBool,
 	// Vocab must match what the scanner actually emits (internal/security
 	// scanner.go: info|warning|error|critical). `security.scan_on_install
 	// false` is the off switch — there's no "none" sentinel here on purpose.
@@ -116,6 +118,8 @@ var knownConfigKeys = []string{
 	"default_registry",
 	"github_token",
 	"security.scan_on_install",
+	"security.require_scan",
+	"security.require_signed",
 	"security.block_severity",
 	"output.format",
 	"output.color",
@@ -125,7 +129,7 @@ var knownConfigKeys = []string{
 }
 
 // suggestSubKeys returns the known dotted keys nested under prefix
-// (e.g. "security" → ["security.scan_on_install", "security.block_severity"]).
+// (e.g. "security" -> ["security.scan_on_install", "security.require_scan", ...]).
 // Empty when prefix is already dotted or doesn't match any section.
 func suggestSubKeys(prefix string) []string {
 	if prefix == "" || strings.Contains(prefix, ".") {
@@ -152,6 +156,16 @@ func configRead(cfg *config.Config, key string) string {
 		return cfg.GithubToken
 	case "security.scan_on_install":
 		if cfg.Security.ScanOnInstall {
+			return "true"
+		}
+		return "false"
+	case "security.require_scan":
+		if cfg.Security.RequireScan {
+			return "true"
+		}
+		return "false"
+	case "security.require_signed":
+		if cfg.Security.RequireSigned {
 			return "true"
 		}
 		return "false"
@@ -184,6 +198,10 @@ func configWrite(cfg *config.Config, key, value string) error {
 		cfg.GithubToken = value
 	case "security.scan_on_install":
 		cfg.Security.ScanOnInstall = value == "true"
+	case "security.require_scan":
+		cfg.Security.RequireScan = value == "true"
+	case "security.require_signed":
+		cfg.Security.RequireSigned = value == "true"
 	case "security.block_severity":
 		cfg.Security.BlockSeverity = value
 	case "output.format":

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,6 +21,15 @@ import (
 // Stored on lockfile scan entries so a later `qvr lock verify` can detect
 // drift even when the scanner has been upgraded since the install.
 const scannerVersion = "0.7.0"
+
+var errScanRequired = errors.New("security.require_scan is true; --no-scan is not allowed")
+
+func enforceScanPolicy(cfg *config.Config, disabled bool) error {
+	if disabled && cfg != nil && cfg.Security.RequireScan {
+		return errScanRequired
+	}
+	return nil
+}
 
 // scanGateOptions tunes a single ScanAndGate call.
 type scanGateOptions struct {
@@ -90,6 +100,9 @@ type scanGateResult struct {
 // path on add/registry/sync/publish.
 func ScanAndGate(ctx context.Context, skillDir string, cfg *config.Config, opts scanGateOptions) (*scanGateResult, error) {
 	out := &scanGateResult{Skipped: true}
+	if err := enforceScanPolicy(cfg, opts.Disabled); err != nil {
+		return out, err
+	}
 	if opts.Disabled {
 		// Distinguish "user explicitly opted out for this call" from "scanning
 		// isn't configured" so toScanRef can mint a "skipped" sentinel only

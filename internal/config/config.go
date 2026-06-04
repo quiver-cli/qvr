@@ -43,9 +43,22 @@ type Config struct {
 	DefaultRegistry string                    `yaml:"default_registry,omitempty" json:"default_registry,omitempty"`
 	GithubToken     string                    `yaml:"github_token,omitempty" json:"github_token,omitempty"`
 	Security        SecurityConfig            `yaml:"security,omitempty" json:"security,omitempty"`
+	Trust           TrustConfig               `yaml:"trust,omitempty" json:"trust,omitempty"`
 	Output          OutputConfig              `yaml:"output,omitempty" json:"output,omitempty"`
 	Cache           CacheConfig               `yaml:"cache,omitempty" json:"cache,omitempty"`
 	Ops             OpsConfig                 `yaml:"ops,omitempty" json:"ops,omitempty"`
+}
+
+// TrustConfig stores optional registry-level author policy. It is separate
+// from SecurityConfig because it names human/org policy, not scanner gates.
+type TrustConfig struct {
+	Registries map[string]RegistryTrustConfig `yaml:"registries,omitempty" json:"registries,omitempty"`
+}
+
+// RegistryTrustConfig is the trust policy for one registry.
+type RegistryTrustConfig struct {
+	Authors []string `yaml:"authors,omitempty" json:"authors,omitempty"`
+	Signers []string `yaml:"signers,omitempty" json:"signers,omitempty"`
 }
 
 // CacheConfig controls the registry-index cache freshness window. IndexTTL
@@ -74,6 +87,8 @@ type RegistryConfig struct {
 // SecurityConfig holds security-related settings.
 type SecurityConfig struct {
 	ScanOnInstall bool   `yaml:"scan_on_install" json:"scan_on_install"`
+	RequireScan   bool   `yaml:"require_scan,omitempty" json:"require_scan,omitempty"`
+	RequireSigned bool   `yaml:"require_signed,omitempty" json:"require_signed,omitempty"`
 	BlockSeverity string `yaml:"block_severity,omitempty" json:"block_severity,omitempty"`
 }
 

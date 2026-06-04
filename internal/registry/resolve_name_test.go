@@ -27,21 +27,21 @@ func TestResolveName(t *testing.T) {
 	}{
 		{
 			name:       "empty resolves to empty (all registries)",
-			configured: []string{"garrytan/gstack"},
+			configured: []string{"acme/skills"},
 			input:      "",
 			want:       "",
 		},
 		{
 			name:       "exact full name passes through",
-			configured: []string{"garrytan/gstack", "acme/tools"},
-			input:      "garrytan/gstack",
-			want:       "garrytan/gstack",
+			configured: []string{"acme/skills", "example/tools"},
+			input:      "acme/skills",
+			want:       "acme/skills",
 		},
 		{
 			name:       "unique leaf resolves to full name",
-			configured: []string{"garrytan/gstack", "acme/tools"},
-			input:      "gstack",
-			want:       "garrytan/gstack",
+			configured: []string{"acme/skills", "example/tools"},
+			input:      "skills",
+			want:       "acme/skills",
 		},
 		{
 			name:       "flat name still works as exact match",
@@ -51,21 +51,21 @@ func TestResolveName(t *testing.T) {
 		},
 		{
 			name:       "unknown name is not found",
-			configured: []string{"garrytan/gstack"},
+			configured: []string{"acme/skills"},
 			input:      "nope",
 			wantErrIs:  registry.ErrRegistryNotFound,
 		},
 		{
 			name:       "ambiguous leaf errors and names candidates",
-			configured: []string{"garrytan/gstack", "other/gstack"},
-			input:      "gstack",
+			configured: []string{"acme/skills", "other/skills"},
+			input:      "skills",
 			wantErrSub: "ambiguous",
 		},
 		{
 			name:       "exact match wins over leaf ambiguity",
-			configured: []string{"gstack", "other/gstack"},
-			input:      "gstack",
-			want:       "gstack",
+			configured: []string{"skills", "other/skills"},
+			input:      "skills",
+			want:       "skills",
 		},
 	}
 

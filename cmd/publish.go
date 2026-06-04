@@ -260,6 +260,9 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		var publishGate *scanGateResult
 		cfg, cerr := config.Load()
 		if cerr == nil && editDir != "" {
+			if err := enforceScanPolicy(cfg, publishNoScan); err != nil {
+				return err
+			}
 			gate, gerr := ScanAndGate(cmd.Context(), editDir, cfg, scanGateOptions{
 				Disabled: publishNoScan,
 				Action:   "publish",
@@ -512,6 +515,9 @@ func runPublishGreenfield(cmd *cobra.Command, path string) error {
 	// dry-run too — the gate is part of publishability, not push-side.
 	cfg, cerr := config.Load()
 	if cerr == nil {
+		if err := enforceScanPolicy(cfg, publishNoScan); err != nil {
+			return err
+		}
 		scanPath, _, derr := resolveSkillDir(path)
 		if derr != nil || scanPath == "" {
 			scanPath = path

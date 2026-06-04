@@ -100,14 +100,14 @@ func TestSync_RestoresLockedCommitNotMovedRef(t *testing.T) {
 
 // TestCheckGitProvenance_UnsignedReportsNone confirms an ordinary unsigned
 // install reports "none" (not "invalid") — unsigned must never look like
-// tampering, and never blocks.
+// tampering. Policy can still choose to reject unsigned refs.
 func TestCheckGitProvenance_UnsignedReportsNone(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
 	h.addRegistry(t, "acme", remote)
 	entry := installCodeReview(t, h, remote)
 
-	prov := skill.CheckGitProvenance(skill.EntryWorktreePath(entry), entry.Ref, entry.Commit)
+	prov := skill.CheckGitProvenance(skill.EntryWorktreePath(entry), entry.Ref, entry.Commit, entry.Path)
 	if prov == nil {
 		t.Fatal("expected a provenance result for an installed skill")
 	}

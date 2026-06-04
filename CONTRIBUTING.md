@@ -1,7 +1,7 @@
 # Contributing to Quiver
 
-Thanks for your interest. Quiver is in pre-alpha — APIs and on-disk
-formats may shift before v1.0.
+Thanks for your interest. Quiver is in active development, and APIs or on-disk
+formats may still shift before v1.0.
 
 ## Build & test
 

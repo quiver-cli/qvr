@@ -16,6 +16,12 @@ func TestDefault(t *testing.T) {
 	if !cfg.Security.ScanOnInstall {
 		t.Error("scan_on_install should default to true")
 	}
+	if cfg.Security.RequireScan {
+		t.Error("require_scan should default to false")
+	}
+	if cfg.Security.RequireSigned {
+		t.Error("require_signed should default to false")
+	}
 	if cfg.Security.BlockSeverity != "critical" {
 		t.Errorf("block_severity = %q, want %q", cfg.Security.BlockSeverity, "critical")
 	}

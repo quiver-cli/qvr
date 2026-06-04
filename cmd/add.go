@@ -80,6 +80,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := enforceScanPolicy(cfg, addNoScan); err != nil {
+		return err
+	}
 	// --as renames a single lock entry; with multiple positional args it
 	// would silently apply to only one and skip the rest, which would be
 	// the kind of "looks like it worked" footgun the rest of `qvr add`
@@ -147,15 +150,18 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		for _, item := range items {
 			ref := item.skillRef
 			result, err := installer.Install(skill.InstallRequest{
-				Skill:       ref,
-				Targets:     targets,
-				Global:      addGlobal,
-				ProjectRoot: projectRoot,
-				LockPath:    lockPath,
-				Force:       addForce,
-				Frozen:      addFrozen,
-				Registry:    item.registry,
-				As:          addAs,
+				Skill:                    ref,
+				Targets:                  targets,
+				Global:                   addGlobal,
+				ProjectRoot:              projectRoot,
+				LockPath:                 lockPath,
+				Force:                    addForce,
+				Frozen:                   addFrozen,
+				Registry:                 item.registry,
+				As:                       addAs,
+				RequireSigned:            cfg.Security.RequireSigned,
+				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
+				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
 			})
 			if err != nil {
 				// Skill not found is the headline error — point at `qvr registry add`

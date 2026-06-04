@@ -38,6 +38,11 @@ func NewReconciler(in *Installer) *Reconciler {
 type ReconcileOptions struct {
 	// DryRun reports what would change without touching the filesystem.
 	DryRun bool
+	// RequireSigned refuses materializing unsigned locked entries.
+	RequireSigned bool
+	// TrustedAuthorsByRegistry refuses materializing entries authored by anyone
+	// outside the registry's pinned author list.
+	TrustedAuthorsByRegistry map[string][]string
 	// KeepUntracked downgrades orphan removal to a warning. Used by projects
 	// that mix hand-managed skills with qvr-managed ones and want sync to
 	// leave the manual entries alone.
@@ -156,12 +161,15 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 				pin = entry.Commit
 			}
 			if _, err := r.Installer.Install(InstallRequest{
-				Skill:       ref,
-				Targets:     entry.Targets,
-				Global:      global,
-				ProjectRoot: projectRoot,
-				PinCommit:   pin,
-				As:          aliasFlag,
+				Skill:                    ref,
+				Targets:                  entry.Targets,
+				Global:                   global,
+				ProjectRoot:              projectRoot,
+				PinCommit:                pin,
+				As:                       aliasFlag,
+				RequireSigned:            opts.RequireSigned,
+				TrustedAuthors:           opts.TrustedAuthorsByRegistry[entry.Registry],
+				TrustedAuthorsByRegistry: opts.TrustedAuthorsByRegistry,
 			}); err != nil {
 				res.Errors = append(res.Errors, fmt.Sprintf("install %s: %v", entry.Name, err))
 				continue

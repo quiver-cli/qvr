@@ -122,7 +122,7 @@ func isTagChar(r rune) bool {
 }
 
 func formatHiddenRune(cat hiddenCategory, r rune) string {
-	// Render the codepoint as U+XXXX hex so the message is copy-pasteable
+	// Render the codepoint as U+XXXX hex so the message is easy to search for
 	// even though the rune itself is invisible by definition.
 	return "hidden " + string(cat) + " present (U+" + hexCodepoint(r) + ")"
 }

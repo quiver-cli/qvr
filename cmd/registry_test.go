@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/raks097/quiver/internal/config"
 	"github.com/raks097/quiver/internal/git"
+	"github.com/raks097/quiver/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -76,6 +77,22 @@ func TestRejectWebURL(t *testing.T) {
 				t.Errorf("error %q missing hint %q", err.Error(), tt.wantHint)
 			}
 		})
+	}
+}
+
+func TestRegistryTrustSummary(t *testing.T) {
+	reg := &model.Registry{Name: "acme/skills", SkillCount: 3}
+	cfg := &config.Config{Security: config.SecurityConfig{
+		ScanOnInstall: true,
+		RequireScan:   true,
+		RequireSigned: true,
+	}}
+	signals := registryOwnerSignals{AccountAge: "2020-01-02", LastActivity: "2026-06-01", Followers: "42", PublicRepos: "7"}
+	got := registryTrustSummary(reg, cfg, signals)
+	for _, want := range []string{"owner acme", "account age 2020-01-02", "last activity 2026-06-01", "followers 42", "public repos 7", "skills 3", "scans required", "signatures required"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("registryTrustSummary() = %q, want %q", got, want)
+		}
 	}
 }
 

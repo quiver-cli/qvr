@@ -63,6 +63,53 @@ func TestInstall_BasicFlow(t *testing.T) {
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Errorf("lock file missing: %v", err)
 	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	entry, err := lock.Get("code-review")
+	if err != nil {
+		t.Fatalf("lock get: %v", err)
+	}
+	if entry.CommitAuthor != "Test <t@t>" {
+		t.Errorf("commitAuthor = %q, want Test <t@t>", entry.CommitAuthor)
+	}
+}
+
+func TestInstall_RequireSignedRejectsUnsigned(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{
+		"code-review": codeReviewSkill,
+	})
+	h.addRegistry(t, "acme", remote)
+
+	_, err := h.installer.Install(skill.InstallRequest{
+		Skill:         "code-review",
+		Targets:       []string{"claude"},
+		ProjectRoot:   h.project,
+		RequireSigned: true,
+	})
+	if !errors.Is(err, skill.ErrSignatureRequired) {
+		t.Fatalf("Install err = %v, want ErrSignatureRequired", err)
+	}
+}
+
+func TestInstall_TrustedAuthorsRejectsMismatch(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{
+		"code-review": codeReviewSkill,
+	})
+	h.addRegistry(t, "acme", remote)
+
+	_, err := h.installer.Install(skill.InstallRequest{
+		Skill:          "code-review",
+		Targets:        []string{"claude"},
+		ProjectRoot:    h.project,
+		TrustedAuthors: []string{"Alice <alice@example.com>"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "untrusted commit author") {
+		t.Fatalf("Install err = %v, want untrusted commit author", err)
+	}
 }
 
 func TestInstall_AddsNewTargetsWithoutRebuilding(t *testing.T) {

@@ -166,23 +166,23 @@ func TestReachable_CountsAliasedMultiVersionWorktrees(t *testing.T) {
 
 	proj := filepath.Join(t.TempDir(), "proj")
 	// Primary entry: keyed on its own name.
-	primaryWt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("c43c850abcdef"))
+	primaryWt := registry.WorktreePath("acme/skills", "careful", registry.ShortSHA("c43c850abcdef"))
 	// Alias entries: keyed on the CANONICAL name + their install commit, even
 	// though the lock key is the alias.
-	v1Wt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("49cc4ff9c99e9b2"))
-	v2Wt := registry.WorktreePath("garrytan/gstack", "careful", registry.ShortSHA("22f8c7f4aaaaaaa"))
+	v1Wt := registry.WorktreePath("acme/skills", "careful", registry.ShortSHA("49cc4ff9c99e9b2"))
+	v2Wt := registry.WorktreePath("acme/skills", "careful", registry.ShortSHA("22f8c7f4aaaaaaa"))
 
 	writeLock(t, filepath.Join(proj, "qvr.lock"),
 		&model.LockEntry{
-			Name: "careful", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Name: "careful", Registry: "acme/skills", Source: "https://github.com/acme/skills.git",
 			Path: "careful", Ref: "main", Commit: "c43c850abcdef", InstallCommit: "c43c850abcdef",
 		},
 		&model.LockEntry{
-			Name: "careful-v1", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Name: "careful-v1", Registry: "acme/skills", Source: "https://github.com/acme/skills.git",
 			Path: "careful", Canonical: "careful", Ref: "49cc4ff9", Commit: "49cc4ff9c99e9b2", InstallCommit: "49cc4ff9c99e9b2",
 		},
 		&model.LockEntry{
-			Name: "careful-v2", Registry: "garrytan/gstack", Source: "https://github.com/garrytan/gstack.git",
+			Name: "careful-v2", Registry: "acme/skills", Source: "https://github.com/acme/skills.git",
 			Path: "careful", Canonical: "careful", Ref: "22f8c7f4", Commit: "22f8c7f4aaaaaaa", InstallCommit: "22f8c7f4aaaaaaa",
 		},
 	)

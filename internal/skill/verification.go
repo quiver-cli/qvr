@@ -3,26 +3,61 @@ package skill
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/raks097/quiver/internal/canonical"
 	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/registry"
+	"github.com/raks097/quiver/pkg/skillspec"
 )
 
+// SkillCommit returns the SHA of the commit that last modified the skill
+// subtree at path, as of commit. This is the commit whose author and signature
+// represent a skill's provenance — not the branch tip, which on a registry
+// holding many skills on one branch is just whoever pushed last.
+//
+// A root-layout skill (path "" or ".") IS the whole repo, so its commit is the
+// tip reachable from commit. When the path-scoped log finds nothing (the path
+// was introduced by commit itself with no prior history, or a degraded repo)
+// it falls back to commit, so the result is never silently empty. Issues #171,
+// #173.
+func SkillCommit(repoPath, commit, path string) string {
+	if repoPath == "" || commit == "" || IsRootLayoutPath(path) {
+		return commit
+	}
+	out, err := exec.Command("git", "-C", repoPath,
+		"log", "-1", "--format=%H", commit, "--", path).Output()
+	if err != nil {
+		return commit
+	}
+	if sha := strings.TrimSpace(string(out)); sha != "" {
+		return sha
+	}
+	return commit
+}
+
 // CheckGitProvenance derives optional, git-native provenance for an install:
-// whether the resolved ref carries a verifiable Git signature, and who signed
-// it. It prefers a signed annotated tag (the requested ref) and falls back to
-// the commit-level signature. Returns nil when nothing could be checked
-// (e.g. git couldn't read the repo) so the caller records no misleading
-// "none". A returned ProvenanceRef with SignatureStatus == invalid is the
-// only outcome an install should treat as fatal.
+// whether the skill's content carries a verifiable Git signature, and who
+// signed it. It prefers a signed annotated tag (the requested ref — a
+// deliberate signed release covers the whole tree, and forging one requires a
+// held trusted key, so it is not a tip-leak), and otherwise falls back to the
+// signature on the commit that last touched the skill's own subtree. Returns
+// nil when nothing could be checked (e.g. git couldn't read the repo) so the
+// caller records no misleading "none". A returned ProvenanceRef with
+// SignatureStatus == invalid is always fatal; SignatureStatus == none is fatal
+// only when policy requires signed refs.
 //
 // repoPath is the bare/working repo to verify against; ref is the requested
-// version label; commit is the resolved SHA used for the commit-level
-// fallback.
-func CheckGitProvenance(repoPath, ref, commit string) *model.ProvenanceRef {
+// version label; commit is the resolved tip SHA; path is the skill's
+// registry-relative subtree. The commit-level fallback verifies the signature
+// on SkillCommit(repoPath, commit, path) — the skill's own last-touching
+// commit — NOT the branch tip, which would let an unsigned skill ride in under
+// an unrelated signed tip commit (the #173 tip-leak).
+func CheckGitProvenance(repoPath, ref, commit, path string) *model.ProvenanceRef {
 	ctx := context.Background()
 	// Prefer the requested ref as a signed annotated tag.
 	if status, signer, err := git.VerifyTagSignature(ctx, repoPath, ref); err == nil {
@@ -35,8 +70,8 @@ func CheckGitProvenance(repoPath, ref, commit string) *model.ProvenanceRef {
 			}
 		}
 	}
-	// Fall back to the commit-level signature.
-	target := commit
+	// Fall back to the signature on the skill's own last-touching commit.
+	target := SkillCommit(repoPath, commit, path)
 	if target == "" {
 		target = ref
 	}
@@ -49,6 +84,108 @@ func CheckGitProvenance(repoPath, ref, commit string) *model.ProvenanceRef {
 		SignatureStatus: status,
 		Signer:          signer,
 	}
+}
+
+// CommitAuthor returns the author identity, in `Name <email>` form, of the
+// commit that last modified the skill subtree at path as of commit — the
+// author who actually wrote the installed skill content, not the branch tip.
+//
+// A registry holds many skills on one branch, so recording (or pinning
+// against) the tip author — whoever pushed last — would let an unrelated
+// commit stand in for a skill's real provenance, and conversely false-reject a
+// skill whose own content a pinned author wrote. Issue #171.
+func CommitAuthor(repoPath, commit, path string) string {
+	target := SkillCommit(repoPath, commit, path)
+	if repoPath == "" || target == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "-C", repoPath, "show", "-s", "--format=%an <%ae>", target).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// authorEmail extracts the lowercased email between the last `<` `>` pair of a
+// `Name <email>` git identity. Returns "" when there is no bracketed email.
+func authorEmail(identity string) string {
+	open := strings.LastIndex(identity, "<")
+	closing := strings.LastIndex(identity, ">")
+	if open == -1 || closing == -1 || closing < open {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(identity[open+1 : closing]))
+}
+
+// AuthorMatchesPin reports whether a git commit author identity (`Name <email>`)
+// satisfies a single trust pin. A pin matches when it equals the full identity
+// (case-insensitive) or just the author's email — the stable, canonical part of
+// a git identity. A pin may itself be a bare email, a bracketed `<email>`, or a
+// full `Name <email>`; in every form the email component is what's compared.
+//
+// Issue #172: pinning by email alone (the obvious thing a user reaches for) must
+// actually gate installs instead of silently rejecting every one. A bare token
+// with no email (e.g. a GitHub handle) can never match a real commit author —
+// `qvr trust pin` rejects such values up front (see ValidAuthorPin) so a pin is
+// never recorded that its own matcher can't satisfy.
+func AuthorMatchesPin(author, pin string) bool {
+	author = strings.TrimSpace(author)
+	pin = strings.TrimSpace(pin)
+	if author == "" || pin == "" {
+		return false
+	}
+	if strings.EqualFold(author, pin) {
+		return true
+	}
+	authorMail := authorEmail(author)
+	if authorMail == "" {
+		return false
+	}
+	if pinMail := authorEmail(pin); pinMail != "" {
+		return pinMail == authorMail
+	}
+	// Bare-token pin: treat it as an email candidate.
+	return strings.EqualFold(pin, authorMail)
+}
+
+// AuthorAllowed reports whether author satisfies any pin in the set.
+func AuthorAllowed(author string, pins []string) bool {
+	for _, p := range pins {
+		if AuthorMatchesPin(author, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidAuthorPin reports whether value could ever match a git commit-author
+// identity — i.e. it carries an email, either as a full `Name <email>` /
+// bracketed `<email>` identity or as a bare email token. A GitHub handle or
+// bare name carries no email, can never match the AuthorMatchesPin matcher, and
+// so would give false confidence if recorded; `qvr trust pin` rejects such
+// values. Issue #172.
+func ValidAuthorPin(value string) bool {
+	value = strings.TrimSpace(value)
+	if email := authorEmail(value); email != "" {
+		return true
+	}
+	return strings.Contains(value, "@")
+}
+
+// DeclaredSignedBy returns the trimmed metadata.signed_by value from the
+// SKILL.md in skillDir, or "" when the file is unreadable, unparseable, or
+// declares no signer. Best-effort: a parse failure here must not by itself
+// block an install — the caller only acts on a non-empty result. Issue #167.
+func DeclaredSignedBy(skillDir string) string {
+	content, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		return ""
+	}
+	parsed, err := skillspec.Parse(string(content))
+	if err != nil || parsed.Frontmatter.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Frontmatter.Metadata["signed_by"])
 }
 
 // ComputeSubtreeHash returns the canonical content hash of a skill subtree

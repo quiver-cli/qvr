@@ -84,6 +84,9 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := enforceScanPolicy(cfg, importNoScan); err != nil {
+		return err
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -203,15 +206,18 @@ func runImport(cmd *cobra.Command, args []string) error {
 			}
 
 			result, ierr := installer.Install(skill.InstallRequest{
-				Skill:       skillRef,
-				Targets:     targets,
-				Global:      importGlobal,
-				ProjectRoot: projectRoot,
-				LockPath:    lockPath,
-				Force:       importForce,
-				Frozen:      importFrozen && entry.Commit != "",
-				Registry:    pr.alias,
-				As:          entry.Alias,
+				Skill:                    skillRef,
+				Targets:                  targets,
+				Global:                   importGlobal,
+				ProjectRoot:              projectRoot,
+				LockPath:                 lockPath,
+				Force:                    importForce,
+				Frozen:                   importFrozen && entry.Commit != "",
+				Registry:                 pr.alias,
+				As:                       entry.Alias,
+				RequireSigned:            cfg.Security.RequireSigned,
+				TrustedAuthors:           trustedAuthorsForRegistry(cfg, pr.alias),
+				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
 			})
 			if ierr != nil {
 				if errors.Is(ierr, skill.ErrSkillNotFound) {

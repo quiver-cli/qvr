@@ -48,6 +48,44 @@ func TestConfigValidator_BlockSeverityErrorMessageListsScannerVocab(t *testing.T
 	}
 }
 
+func TestConfigRead_SecurityPolicyKeysSurface(t *testing.T) {
+	cfg := &config.Config{Security: config.SecurityConfig{
+		RequireScan:   true,
+		RequireSigned: true,
+	}}
+	cases := []struct {
+		key string
+		set func() bool
+	}{
+		{"security.require_scan", func() bool { return cfg.Security.RequireScan }},
+		{"security.require_signed", func() bool { return cfg.Security.RequireSigned }},
+	}
+	for _, tc := range cases {
+		if got := configRead(cfg, tc.key); got != "true" {
+			t.Errorf("configRead(%s) = %q, want true", tc.key, got)
+		}
+		if err := configWrite(cfg, tc.key, "false"); err != nil {
+			t.Fatalf("configWrite(%s): %v", tc.key, err)
+		}
+		if tc.set() {
+			t.Fatalf("configWrite should set %s=false", tc.key)
+		}
+		if _, ok := configValueValidators[tc.key]; !ok {
+			t.Fatalf("%s missing validator", tc.key)
+		}
+		var found bool
+		for _, k := range knownConfigKeys {
+			if k == tc.key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s missing from knownConfigKeys", tc.key)
+		}
+	}
+}
+
 // TestConfigRead_OpsKeysSurface is the #124 regression. Pre-fix, the
 // text view of `qvr config get` iterated only 8 dotted keys (security/
 // output/cache/default_*), so `ops.enabled` — the telemetry switch —

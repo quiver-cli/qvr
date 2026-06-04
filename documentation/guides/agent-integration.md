@@ -1,9 +1,7 @@
 # Agent Integration Guide
 
-> **Status: v0.5.0.** Target paths, `--target <agent>`, and `--global`
-> all ship today. `AGENTS.md` auto-refreshes via `qvr docs` (regenerated
-> on add/remove/switch). Per-agent hook adapters (`qvr ops install-hooks`)
-> are in flight.
+> **Status: active development.** Target paths, `--target <agent>`, `--global`,
+> `AGENTS.md` generation, and audit hook installation are available today.
 
 qvr works with any AI coding agent that reads skills from a directory. Here's how to set up each agent.
 

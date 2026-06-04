@@ -8,10 +8,11 @@
   the git-native agent skills manager · CLI: qvr
 ```
 
-> **Status: pre-alpha.** Project-local `qvr.lock` (schema v5), shared
+> **Status: active development.** Project-local `qvr.lock` (schema v5), shared
 > SHA-keyed cache, strict visibility, supply-chain scan gates wired into
-> install/sync/publish. Surface is stable enough to use; internals still
-> moving.
+> install/sync/publish, and local audit views are available today. Public CLI
+> behavior is intended to stay practical and git-native as the project moves
+> toward v1.0.
 
 ---
 
@@ -234,9 +235,13 @@ qvr registry update --check refs only, no fetch, no cache write
 ## Security scanning
 
 Every install path runs the same scanner that powers `qvr scan` as a gate,
-governed by two config keys (defaults in **bold**):
+governed by three config keys (defaults in **bold**):
 
 - `security.scan_on_install` (**true**) — master switch for the gate.
+- `security.require_scan` (**false**) — when true, commands reject `--no-scan`
+  instead of allowing a per-command bypass.
+- `security.require_signed` (**false**) — when true, installs require a
+  verified Git tag or commit signature.
 - `security.block_severity` (**critical**) — findings at or above this
   severity refuse the operation. Set to `error`/`warning`/`info` to tighten,
   unset to disable blocking (findings still surface).
@@ -248,12 +253,15 @@ governed by two config keys (defaults in **bold**):
 | `qvr sync` | Each restored worktree is scanned; findings surfaced but **not** blocked — the lock already committed. Run `qvr remove <name>` or `qvr switch <name> <safer-ref>`. |
 | `qvr publish [path]` | Local skill is scanned before the registry is touched; dry-run included. |
 
-Every gated command takes `--no-scan` to bypass for that single invocation.
-Set `security.scan_on_install false` to disable globally.
+Every gated command takes `--no-scan` to bypass scan checks for that single
+invocation unless `security.require_scan` is true. Set
+`security.scan_on_install false` to disable scanning globally. Invalid Git
+signatures always block; `security.require_signed true` also blocks unsigned
+refs.
 
 ## Install
 
-Prebuilt binaries are still in flight. For now, build from source:
+Install with Go or build from source:
 
 ```
 git clone https://github.com/raks097/quiver.git
@@ -436,7 +444,9 @@ Shipping today:
   *locked commit*, not whatever HEAD moved to (`--locked` for CI). Optional
   git-native provenance (`git verify-tag`/`verify-commit`) surfaced via
   `qvr provenance` and a `SIGNED` column — invalid signatures block, absent is
-  fine. `qvr tree`, `qvr export`/`import` for portability.
+  fine unless `security.require_signed` is enabled. `qvr trust pin` and
+  `qvr trust verify` enforce per-registry commit-author policy. `qvr tree`,
+  `qvr export`/`import` for portability.
 - **Cache** — `cache list`/`cache prune` with `projects.json` reachability
   tracking and orphan-cleanup hints; object dedup via hardlinked worktrees
 - **Observability** — `qvr audit` captures agent transcripts verbatim and
@@ -478,11 +488,11 @@ In-depth docs live under [`documentation/`](documentation/):
 
 ## Why another skills tool
 
-Existing options are either proprietary (vendor-locked catalogs) or ad-hoc
-(copy-paste + dotfiles). Skills move fast — you want a branch-per-experiment
-workflow, the ability to fork a teammate's skill, and to push your fixes back.
-Git already has all of that. Quiver is the thin layer that makes Git feel like a
-package manager for agents.
+Agent skills need the same operational loop developers expect from package
+managers: resolve, lock, install, inspect, update, and publish. Skills also
+benefit from normal Git workflows: branches for experiments, tags for releases,
+forks for ownership changes, and review through your existing git host. Quiver
+is the thin layer that makes Git feel like a package manager for agents.
 
 ## Develop
 

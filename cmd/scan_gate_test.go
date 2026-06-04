@@ -65,6 +65,27 @@ func TestScanAndGate_DisabledByFlag(t *testing.T) {
 	}
 }
 
+func TestScanAndGate_RequireScanRejectsNoScan(t *testing.T) {
+	resetPrinter(t)
+	dir := writeSkillWithSecret(t, t.TempDir(), "dangerous")
+	cfg := &config.Config{Security: config.SecurityConfig{
+		ScanOnInstall: true,
+		RequireScan:   true,
+		BlockSeverity: "critical",
+	}}
+
+	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{Disabled: true})
+	if err == nil {
+		t.Fatal("expected require_scan to reject --no-scan")
+	}
+	if !strings.Contains(err.Error(), "security.require_scan") {
+		t.Fatalf("error = %q, want security.require_scan context", err.Error())
+	}
+	if got == nil || !got.Skipped {
+		t.Fatalf("gate result = %+v, want skipped result", got)
+	}
+}
+
 func TestScanAndGate_DisabledByConfig(t *testing.T) {
 	resetPrinter(t)
 	dir := writeSkillWithSecret(t, t.TempDir(), "dangerous")
