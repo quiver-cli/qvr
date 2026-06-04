@@ -125,8 +125,8 @@ export QUIVER_OUTPUT_FORMAT=json
 | `~/.quiver/config.yaml`                            | Configuration                                                                        |
 | `~/.quiver/qvr.lock`                               | Global ambient lock (`--global` lane)                                                |
 | `~/.quiver/registries/<org>/<repo>.git/`           | Bare clones of every registered source                                               |
-| `~/.quiver/worktrees/<org>/<repo>/<skill>/<sha7>/` | SHA-keyed sparse worktrees, shared across projects (mirrors the `registries/` shape) |
-| `~/.quiver/cache/index/<name>.json`                | Cached registry indexes                                                              |
+| `~/.quiver/worktrees/<org>/<repo>/<skill>/<sha7>/` | Worktree store: SHA-keyed sparse worktrees, shared across projects (mirrors the `registries/` shape) |
+| `~/.quiver/cache/index/<name>.json`                | Registry index cache (per-registry skill catalog; TTL'd, rebuilt from the bare clone) |
 | `<project>/qvr.lock`                               | Project lock — source of truth for what agents see                                   |
 
 Override base path: `export QUIVER_HOME=/custom/path`

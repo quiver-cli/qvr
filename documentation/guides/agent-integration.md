@@ -130,6 +130,6 @@ The generated AGENTS.md includes:
 1. **Set your default target**: `qvr config set default_target claude`
 2. **Install team skills**: `qvr add code-review deploy-helper test-runner`
 3. **Generate AGENTS.md**: `qvr docs` (optional, depends on agent)
-3a. **Reconcile project against the lock**: `qvr sync` (removes orphan symlinks, rebuilds missing worktrees from cache)
+3a. **Reconcile project against the lock**: `qvr sync` (removes orphan symlinks, rebuilds missing worktrees from the lock + bare clone)
 4. **Keep updated**: `qvr pull` periodically
 5. **Push improvements**: If agent modifies a skill, `qvr push <skill>`

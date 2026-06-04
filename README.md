@@ -8,8 +8,8 @@
   the git-native agent skills manager · CLI: qvr
 ```
 
-> **Status: active development.** Project-local `qvr.lock` (schema v5), shared
-> SHA-keyed cache, strict visibility, supply-chain scan gates wired into
+> **Status: active development.** Project-local `qvr.lock` (schema v5), a shared
+> SHA-keyed worktree store, strict visibility, supply-chain scan gates wired into
 > install/sync/publish, and local audit views are available today. Public CLI
 > behavior is intended to stay practical and git-native as the project moves
 > toward v1.0.
@@ -83,14 +83,16 @@ kept, since skill absence can't be proven there.)
 ## How it's wired
 
 ```
- ~/.quiver/                              shared cache, ambient toolbox
+ ~/.quiver/                              shared worktree store + index cache
  |
  +-- config.yaml                         registered sources (URLs + names)
  +-- qvr.lock                            global ambient lock (--global lane)
- +-- registries/<org>/<repo>.git/                 bare clones, nested by org
- +-- worktrees/<org>/<repo>/<skill>/<sha7>/       immutable, SHA-keyed,
- |                                                shared across projects
- +-- cache/index/<name>.json                      registry index TTL cache
+ +-- registries/<org>/<repo>.git/                 bare clones (source of truth),
+ |                                                nested by org
+ +-- worktrees/<org>/<repo>/<skill>/<sha7>/       worktree store: immutable,
+ |                                                SHA-keyed, shared across projects
+ +-- cache/index/<name>.json                      registry index cache (TTL'd
+                                                  catalog, rebuilt from the clone)
 
 
  <project>/
@@ -212,24 +214,29 @@ For each entry the index records: `name`, `description`, `metadata` from
 frontmatter; the `path` inside the repo; and the full list of **branches and
 tags**, which become the versions you can `qvr add <skill>@<ref>`.
 
-### Index cache
+### Registry index
 
-The index is persisted at `~/.quiver/cache/index/<name>.json`. Written
-atomically (tmp + rename) so a concurrent reader never sees a half-written
-file.
+The **registry index** is the catalog of what a registry offers — every skill's
+`name`, `description`, `path`, and available refs — derived by walking the bare
+clone at `HEAD`. It's the *source of truth* for discovery (`qvr search`,
+`qvr add`), not a copy of any skill's files.
+
+That catalog is persisted as a TTL **cache** at `~/.quiver/cache/index/<name>.json`,
+written atomically (tmp + rename) so a concurrent reader never sees a half-written
+file. The on-disk file is a cache of the index — the bare clone remains the source.
 
 After **1 hour** the next read rebuilds the index from the local bare clone —
 purely a local operation, no network. To pull new commits from upstream, run
-`qvr registry update`; that fetches and rebuilds the cache immediately. The
+`qvr registry update`; that fetches and rebuilds the index immediately. The
 TTL is measured against the cache's embedded `generated` timestamp (set on
 write), not the file's mtime, so manually touching the file won't expire it.
 
 ```
-qvr search <q>              reads cache, builds if missing
-qvr version list <skill>    reads cache
+qvr search <q>              reads the index, builds if missing
+qvr version list <skill>    reads the index
 qvr registry add            builds on first clone
 qvr registry update         rebuilds after fetch
-qvr registry update --check refs only, no fetch, no cache write
+qvr registry update --check refs only, no fetch, no index write
 ```
 
 ## Security scanning
@@ -408,17 +415,26 @@ qvr lock upgrade            populate Verification blocks for any entries missing
 A missing worktree or a hash-computation failure flips it to exit 1, so the
 gate can't silently pass when something's gone sideways.
 
-### Shared cache
+### Worktree store
+
+Installed skills materialize as SHA-keyed worktrees under
+`~/.quiver/worktrees/`, shared across projects. The store is *derived* state —
+`qvr sync` rebuilds any missing worktree from the lock + bare clone — so it can be
+garbage-collected freely. `qvr cache` is that GC (the verbs mirror `uv cache`):
 
 ```
 qvr cache list              reachable + orphan worktrees with sizes
 qvr cache prune --dry-run   show what would be removed
 qvr cache prune             delete worktrees no longer referenced by any project lock
+qvr cache clean             wipe the whole store (and the registry index cache)
 ```
 
-A worktree is reachable if any tracked project lock (or the global lock)
-references it. `qvr add` and `qvr remove` keep the project list (~/.quiver/
-`projects.json`) up to date automatically.
+This is distinct from `qvr remove`, which is per-project (drops one lock entry +
+its symlinks). The store is global, so orphans accumulate that no per-project
+command can reclaim — an old SHA left behind by `qvr switch`, or worktrees from a
+project you `rm -rf`'d. A worktree is reachable if any tracked project lock (or the
+global lock) references it; `qvr add` and `qvr remove` keep the project list
+(`~/.quiver/projects.json`) up to date automatically.
 
 ## Roadmap
 
@@ -426,7 +442,7 @@ Shipping today:
 
 - **Foundation** — `init`, `validate`, `config`, `skillspec` parser
 - **Registry** — `add`, `remove`, `list`, `update` (with `--check` dry-run),
-  `search`, `version`, TTL-cached index
+  `search`, `version`, TTL-cached registry index
 - **Project-local install** — `add` (with `--as`, `--frozen`, `--registry`),
   `sync` (with `--strict`), `link`, worktrees, symlinks, `pull`,
   `upgrade`/`switch`, AGENTS.md auto-sync, `read`,
@@ -447,8 +463,9 @@ Shipping today:
   fine unless `security.require_signed` is enabled. `qvr trust pin` and
   `qvr trust verify` enforce per-registry commit-author policy. `qvr tree`,
   `qvr export`/`import` for portability.
-- **Cache** — `cache list`/`cache prune` with `projects.json` reachability
-  tracking and orphan-cleanup hints; object dedup via hardlinked worktrees
+- **Worktree GC** — `cache list`/`cache prune`/`cache clean` over the worktree
+  store with `projects.json` reachability tracking and orphan-cleanup hints;
+  object dedup via hardlinked worktrees
 - **Observability** — `qvr audit` captures agent transcripts verbatim and
   projects OpenTelemetry spans (`logs`, `spans`, `--otlp` export, `rederive`
   backfill) attributed to the active skill; embedded React dashboard via

@@ -23,7 +23,10 @@ const DefaultCacheTTL = time.Hour
 // ErrCacheMiss signals the cache file for a registry does not exist.
 var ErrCacheMiss = errors.New("cache miss")
 
-// IndexCache is the on-disk JSON structure cached per registry at
+// IndexCache is the on-disk cache of a registry's *index* — the catalog of
+// skills the registry offers (names, descriptions, paths, refs), derived by
+// walking the bare clone at HEAD. It holds no skill files; the bare clone
+// remains the source of truth. Persisted as JSON per registry at
 // ~/.quiver/cache/index/<name>.json.
 type IndexCache struct {
 	Registry  string            `json:"registry"`

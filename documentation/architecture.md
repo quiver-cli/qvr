@@ -44,7 +44,9 @@ The solution uses Git's own primitives:
 ├── config.yaml
 ├── qvr.lock                               # Global ambient lock (--global lane)
 └── cache/
-    └── index/                             # Cached registry skill indexes
+    └── index/                             # Registry index cache (per-registry
+                                           #   skill catalog, TTL'd, rebuilt from
+                                           #   the bare clone — not skill files)
 
 <project>/
 ├── qvr.lock                               # Project lock — source of truth for agents
@@ -56,6 +58,26 @@ is the only entrypoint, so the indexer's job is to walk whatever's there
 (one skill or many). Both `registries/` and `worktrees/` nest by
 `<org>/<repo>` so the on-disk shape is uniform and a whole org can be wiped or
 browsed at once.
+
+### Source of truth vs. derived state
+
+Only one thing on disk is authoritative; everything else is regenerable from it.
+Keeping these distinct is why "cache" means two different things in Quiver — be
+precise about which.
+
+| Layer | Path | Role | Regenerable from |
+|-------|------|------|------------------|
+| **Bare clone** | `registries/<org>/<repo>.git/` | **Source of truth** — every object + ref. The network-expensive artifact. | upstream (re-clone) |
+| **Registry index** | `cache/index/<name>.json` | Derived **catalog** of skills/versions a registry offers (names, descriptions, paths, refs). Powers discovery; holds no skill files. Persisted as a TTL **cache**. | the bare clone (re-index) |
+| **Worktree store** | `worktrees/<org>/<repo>/<skill>/<sha7>/` | Derived, SHA-keyed **installs** — the materialized skill files the symlinks point at, shared across projects. | the lock + bare clone (`qvr sync`) |
+
+Both derived layers are caches in the strict sense (rebuildable, disposable), which
+is what lets `qvr cache clean` wipe them and lets `qvr remove` drop a shared worktree
+without ref-counting — `qvr sync` rebuilds whatever a surviving project still needs.
+The **registry index cache** answers "what skills exist?"; the **worktree store**
+answers "which skills are installed, and what are their bytes?". `qvr cache prune`
+GCs the latter (orphans that per-project `add`/`remove` structurally can't reclaim:
+old SHAs left by `qvr switch`, or worktrees from a project deleted out-of-band).
 
 ### Data Flow
 
@@ -125,7 +147,7 @@ cmd/ (Cobra commands)
   → internal/config/    (Viper config)
   → internal/skill/     (business logic: loader, validator, linker,
                          installer, syncer, publisher)
-  → internal/registry/  (registry manager, indexer, TTL cache)
+  → internal/registry/  (registry manager, indexer, registry-index TTL cache)
   → internal/output/    (formatting — text/JSON printer)
 
 internal/skill/

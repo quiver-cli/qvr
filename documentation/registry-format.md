@@ -91,7 +91,7 @@ Added via `qvr add <repo-url>` instead of `qvr registry add`.
 
 2. **Index**: qvr reads git tree objects from the bare repo to discover skills
    - No checkout needed — reads blob objects directly
-   - Index cached at `~/.quiver/cache/index/acme.json`
+   - The resulting registry index (skill catalog) is cached at `~/.quiver/cache/index/acme.json`
 
 3. **Install**: Creates a git worktree with sparse checkout for the specific skill
    - Each skill independently versioned
