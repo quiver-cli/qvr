@@ -38,9 +38,17 @@ type RawSessionFilter struct {
 	Since *time.Time // sessions whose first row is at/after this time
 	Until *time.Time // sessions whose first row is at/before this time
 	Agent string
-	Skill string   // only sessions that used this skill (matched via spans)
-	Dirs  []string // working_directory ∈ Dirs (empty = all)
-	Limit int
+	Skill string // only sessions that used this skill (matched via spans)
+	// SkillsOnly restricts the result to sessions that used at least one skill
+	// (any skill-attributed span). The DB still stores every session — capture's
+	// retention gate only prunes settled skill-less sessions, so sessions that
+	// haven't ended, lack a deriver, or were explicitly ingested can still be
+	// skill-less. This is the read-side surfacing filter the UI sets so those
+	// never appear in the dashboard. Ignored when Skill is set (a specific skill
+	// already implies skill-bearing).
+	SkillsOnly bool
+	Dirs       []string // working_directory ∈ Dirs (empty = all)
+	Limit      int
 }
 
 const rawSessionSelect = `SELECT
@@ -78,6 +86,15 @@ func (s *sqliteStore) ListRawSessions(ctx context.Context, f *RawSessionFilter) 
 				`session_id IN (SELECT DISTINCT session_id FROM spans
 				  WHERE json_extract(attributes, '$."skill.name"') = ?)`)
 			args = append(args, f.Skill)
+		} else if f.SkillsOnly {
+			// Surface only skill-bearing sessions: keep those with at least one
+			// span attributed to any skill. The DB still holds skill-less sessions
+			// (see SkillsOnly doc) — this hides them from the listing without
+			// deleting them. Redundant when f.Skill is set, hence the else.
+			where = append(where,
+				`session_id IN (SELECT DISTINCT session_id FROM spans
+				  WHERE json_extract(attributes, '$."skill.name"') IS NOT NULL
+				    AND json_extract(attributes, '$."skill.name"') != '')`)
 		}
 	}
 	q := rawSessionSelect

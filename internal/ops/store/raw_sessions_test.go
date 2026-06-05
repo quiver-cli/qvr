@@ -87,6 +87,45 @@ func TestListRawSessions_Filters(t *testing.T) {
 	}
 }
 
+func TestListRawSessions_SkillsOnly(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+
+	a := uuid.New() // used a skill
+	b := uuid.New() // skill-less (lingering in the DB)
+	seedSession(t, st, a, "codex", "/proj", time.Now().UTC(), "code-review")
+	seedSession(t, st, b, "claude-code", "/proj", time.Now().UTC(), "")
+
+	// Default (SkillsOnly false): the DB returns every session, skill-less ones
+	// included — the store is the complete record.
+	all, err := st.ListRawSessions(ctx, &RawSessionFilter{})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("unfiltered = %d sessions, want 2 (skill-less retained in DB)", len(all))
+	}
+
+	// SkillsOnly: skill-bearing sessions only — the skill-less one is hidden.
+	got, err := st.ListRawSessions(ctx, &RawSessionFilter{SkillsOnly: true})
+	if err != nil {
+		t.Fatalf("skills-only filter: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionID != a {
+		t.Errorf("skills-only = %d sessions, want only a (the skill user)", len(got))
+	}
+
+	// A specific Skill filter already implies skill-bearing; SkillsOnly is a
+	// no-op alongside it and must not change the result.
+	got, err = st.ListRawSessions(ctx, &RawSessionFilter{Skill: "code-review", SkillsOnly: true})
+	if err != nil {
+		t.Fatalf("skill+skills-only filter: %v", err)
+	}
+	if len(got) != 1 || got[0].SessionID != a {
+		t.Errorf("skill+skills-only = %d sessions, want only a", len(got))
+	}
+}
+
 func TestSkillsForSessions(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()

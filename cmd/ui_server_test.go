@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,7 +67,10 @@ func seedUIEnv(t *testing.T, withStore bool) (projectRoot string, sessionID uuid
 		t.Fatalf("open seed store: %v", err)
 	}
 	sessionID = uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	seedRawSession(t, st, sessionID, projectRoot, "claude-code")
+	// Skill-bearing so the UI's SkillsOnly filter surfaces it. Uses a different
+	// skill than addSkillSession's "code-review" so the per-skill filter tests
+	// stay unambiguous.
+	seedRawSession(t, st, sessionID, projectRoot, "claude-code", "code-reviewer")
 	if err := st.Close(); err != nil {
 		t.Fatalf("close seed store: %v", err)
 	}
@@ -75,7 +79,10 @@ func seedUIEnv(t *testing.T, withStore bool) (projectRoot string, sessionID uuid
 
 // seedRawSession writes a couple of verbatim transcript rows for a session and
 // persists its derived spans — the raw-only equivalent of seeding an event.
-func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDir, agent string) {
+// Any skills passed are attached as extra SKILL-attributed spans so the session
+// counts as skill-bearing (the UI's SkillsOnly surfacing filter keeps it); with
+// none, the session is skill-less and the dashboard hides it.
+func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDir, agent string, skills ...string) {
 	t.Helper()
 	ctx := context.Background()
 	rows := []*ops.RawTrace{
@@ -94,7 +101,7 @@ func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDi
 		t.Fatalf("seed raw traces: %v", err)
 	}
 	spans, _ := derive.DeriveSession(rows)
-	srows := make([]*store.SpanRow, 0, len(spans))
+	srows := make([]*store.SpanRow, 0, len(spans)+len(skills))
 	for _, sp := range spans {
 		attrs, _ := json.Marshal(sp.Attributes)
 		srows = append(srows, &store.SpanRow{
@@ -102,6 +109,15 @@ func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDi
 			SessionID: sessionID, AgentName: agent, Kind: sp.Kind, Name: sp.Name,
 			StartMs: sp.StartMs, EndMs: sp.EndMs, Attributes: string(attrs),
 			DeriverVersion: derive.Version,
+		})
+	}
+	for i, sk := range skills {
+		attrs, _ := json.Marshal(map[string]any{"skill.name": sk})
+		srows = append(srows, &store.SpanRow{
+			SpanID: fmt.Sprintf("skillspan-%s-%d", sessionID, i), TraceID: "tr",
+			SessionID: sessionID, AgentName: agent, Kind: "SKILL",
+			Name: "execute_tool", StartMs: 1, EndMs: 2,
+			Attributes: string(attrs), DeriverVersion: derive.Version,
 		})
 	}
 	if err := st.ReplaceSessionSpans(ctx, sessionID, srows); err != nil {
@@ -547,7 +563,7 @@ func addSkillSession(t *testing.T, workingDir string) {
 // TestUI_SessionsFilters exercises the harness/skill filters and the
 // skills-per-session payload over the HTTP layer.
 func TestUI_SessionsFilters(t *testing.T) {
-	root, _ := seedUIEnv(t, true) // one claude session ("hi"), no skill
+	root, _ := seedUIEnv(t, true) // one claude session ("hi") that used code-reviewer
 	addSkillSession(t, root)      // one codex session that used code-review
 	h := newUITestServer(t, root)
 
@@ -579,6 +595,60 @@ func TestUI_SessionsFilters(t *testing.T) {
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions?skill=nope"), &none)
 	if len(none) != 0 {
 		t.Errorf("unknown skill filter = %d, want 0", len(none))
+	}
+}
+
+// TestUI_SessionsExcludeSkilless asserts the dashboard surfaces only
+// skill-bearing sessions: a skill-less session that lingers in the DB (e.g. it
+// never ended, so capture's retention gate hasn't pruned it) is hidden, while a
+// multi-skill session shows every skill it used.
+func TestUI_SessionsExcludeSkilless(t *testing.T) {
+	root, _ := seedUIEnv(t, true) // one skill-bearing claude session (code-reviewer)
+
+	st, err := store.Open(context.Background(), store.OpenOptions{Path: dbPathForTest(t)})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// A skill-less session in scope — present in the DB, must not surface.
+	seedRawSession(t, st, uuid.New(), root, "claude-code")
+	// A multi-skill session in scope — surfaces, tagged with both skills.
+	multiID := uuid.New()
+	seedRawSession(t, st, multiID, root, "claude-code", "alpha-skill", "beta-skill")
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	h := newUITestServer(t, root)
+	var sessions []*store.RawSession
+	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions"), &sessions)
+
+	// Exactly the two skill-bearing sessions (seedUIEnv's + the multi-skill one);
+	// the skill-less one is excluded.
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2 (skill-less hidden)", len(sessions))
+	}
+	var multi *store.RawSession
+	for _, s := range sessions {
+		if s.SessionID == multiID {
+			multi = s
+		}
+	}
+	if multi == nil {
+		t.Fatalf("multi-skill session %s missing from list", multiID)
+	}
+	if len(multi.Skills) != 2 {
+		t.Errorf("multi.Skills = %v, want both alpha-skill and beta-skill", multi.Skills)
+	}
+	for _, want := range []string{"alpha-skill", "beta-skill"} {
+		found := false
+		for _, got := range multi.Skills {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("multi.Skills %v missing %q", multi.Skills, want)
+		}
 	}
 }
 
