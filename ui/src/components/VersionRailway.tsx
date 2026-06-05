@@ -42,8 +42,15 @@ export default function VersionRailway({
       </div>
     );
   }
+  // Cap the visible window to ~10 versions (each node ≈ 68px) and scroll within
+  // it, so a repo with a long tag history doesn't push the rest of the page out
+  // of view. `pr-1` keeps the scrollbar off the node cards.
   return (
-    <ol className="text-sm">
+    <ol 
+      className="max-h-[42rem] overflow-y-auto pr-1 text-sm"
+      tabIndex={0}
+      aria-label="Version history timeline"
+    >
       {versions.map((v, i) => {
         const isLast = i === versions.length - 1;
         const selected =

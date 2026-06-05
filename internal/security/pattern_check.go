@@ -77,7 +77,7 @@ func (p *patternCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry)
 				continue
 			}
 			line := lineNumberFor(f.Content, loc[0])
-			findings = append(findings, p.findingFor(r.rule, f.Path, line))
+			findings = append(findings, p.findingFor(r.rule, f.Path, line, lineTextFor(f.Content, loc[0])))
 		}
 
 		if len(lineRules) == 0 {
@@ -92,14 +92,14 @@ func (p *patternCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry)
 				if r.skip != nil && r.skip.MatchString(line) {
 					continue
 				}
-				findings = append(findings, p.findingFor(r.rule, f.Path, lineIdx+1))
+				findings = append(findings, p.findingFor(r.rule, f.Path, lineIdx+1, line))
 			}
 		}
 	}
 	return findings
 }
 
-func (p *patternCheck) findingFor(r Rule, file string, line int) Finding {
+func (p *patternCheck) findingFor(r Rule, file string, line int, evidence string) Finding {
 	msg := fmt.Sprintf("%s: %s", r.ID, r.Hint)
 	return Finding{
 		Check:       p.name,
@@ -109,6 +109,7 @@ func (p *patternCheck) findingFor(r Rule, file string, line int) Finding {
 		Confidence:  r.Confidence,
 		File:        file,
 		Line:        line,
+		Evidence:    evidenceSnippet(evidence),
 		Message:     msg,
 		Remediation: r.Remediation,
 	}
@@ -125,4 +126,38 @@ func lineNumberFor(s string, off int) int {
 		off = len(s)
 	}
 	return 1 + strings.Count(s[:off], "\n")
+}
+
+// lineTextFor returns the full text of the line containing byte offset `off`
+// in `s`, excluding the trailing newline. Used for full-file rules where the
+// match is located by offset rather than by line iteration.
+func lineTextFor(s string, off int) string {
+	if off < 0 {
+		off = 0
+	}
+	if off > len(s) {
+		off = len(s)
+	}
+	start := strings.LastIndexByte(s[:off], '\n') + 1
+	end := strings.IndexByte(s[off:], '\n')
+	if end < 0 {
+		return s[start:]
+	}
+	return s[start : off+end]
+}
+
+// maxEvidenceLen caps the offending-line snippet so a pathologically long
+// minified line can't bloat a finding (and the JSON payload behind it).
+const maxEvidenceLen = 200
+
+// evidenceSnippet trims surrounding whitespace and rune-caps the matched line
+// so it's safe to render inline next to a finding. Capping is rune-aware so a
+// truncation can't split a multi-byte sequence (the unicode check cares).
+func evidenceSnippet(line string) string {
+	s := strings.TrimSpace(line)
+	r := []rune(s)
+	if len(r) > maxEvidenceLen {
+		return string(r[:maxEvidenceLen]) + "…"
+	}
+	return s
 }

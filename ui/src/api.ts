@@ -281,6 +281,7 @@ export interface Finding {
   confidence?: number;
   file?: string;
   line?: number;
+  evidence?: string;
   message: string;
   remediation?: string;
 }

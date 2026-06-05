@@ -62,11 +62,11 @@ export default function Overview() {
                 <GateStat label="Unscanned" value={data.gate_unscanned} tone="gray" />
               </div>
               <p className="mt-4 text-xs text-gray-500">
-                Recorded at install time. See the{" "}
-                <Link className="text-blue-600 hover:underline" to="/scan">
-                  Scan
+                Recorded at install time. Open a{" "}
+                <Link className="text-blue-600 hover:underline" to="/skills">
+                  skill
                 </Link>{" "}
-                page to run a live scan.
+                to run a live scan.
               </p>
             </Card>
 

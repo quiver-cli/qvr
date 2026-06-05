@@ -6,8 +6,6 @@ import Sessions from "./pages/Sessions";
 import SessionDetail from "./pages/SessionDetail";
 import Skills from "./pages/Skills";
 import SkillView from "./pages/SkillDetail";
-import Tree from "./pages/Tree";
-import Scan from "./pages/Scan";
 import Provenance from "./pages/Provenance";
 import Registries from "./pages/Registries";
 import RegistryDetail from "./pages/RegistryDetail";
@@ -38,8 +36,6 @@ export default function App() {
         <Route path="/sessions/:id" element={<SessionDetail />} />
         <Route path="/skills" element={<Skills />} />
         <Route path="/skills/:name" element={<SkillView mode="project" />} />
-        <Route path="/tree" element={<Tree />} />
-        <Route path="/scan" element={<Scan />} />
         <Route path="/provenance" element={<Provenance />} />
         <Route path="*" element={<Overview />} />
       </Routes>

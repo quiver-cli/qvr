@@ -76,15 +76,21 @@ func ParseSeverity(s string) (Severity, error) {
 // empty. The JSON omits empty values so the historical shape of
 // findings — emitted before these fields existed — is unchanged.
 type Finding struct {
-	Check       string   `json:"check"`
-	RuleID      string   `json:"rule_id,omitempty"`
-	Category    Category `json:"category,omitempty"`
-	Severity    Severity `json:"severity"`
-	Confidence  float64  `json:"confidence,omitempty"`
-	File        string   `json:"file,omitempty"`
-	Line        int      `json:"line,omitempty"`
-	Message     string   `json:"message"`
-	Remediation string   `json:"remediation,omitempty"`
+	Check      string   `json:"check"`
+	RuleID     string   `json:"rule_id,omitempty"`
+	Category   Category `json:"category,omitempty"`
+	Severity   Severity `json:"severity"`
+	Confidence float64  `json:"confidence,omitempty"`
+	File       string   `json:"file,omitempty"`
+	Line       int      `json:"line,omitempty"`
+	// Evidence is the offending source line (whitespace-trimmed, rune-capped)
+	// that triggered the match, so a reader can see *what* fired without
+	// re-opening the file at File:Line. Empty for findings with no single-line
+	// attribution (frontmatter-wide rules, mode-bit checks). Populated by the
+	// rule engine; checks that don't use it leave it empty.
+	Evidence    string `json:"evidence,omitempty"`
+	Message     string `json:"message"`
+	Remediation string `json:"remediation,omitempty"`
 }
 
 // Check is the contract for a single scanner stage.

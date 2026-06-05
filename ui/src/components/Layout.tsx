@@ -11,8 +11,6 @@ const scopedNav = [
   { to: "/", label: "Overview", end: true },
   { to: "/sessions", label: "Sessions" },
   { to: "/skills", label: "Skills" },
-  { to: "/tree", label: "Tree" },
-  { to: "/scan", label: "Scan" },
   { to: "/provenance", label: "Provenance" },
 ];
 

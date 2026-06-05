@@ -473,6 +473,11 @@ function FindingsList({ findings }: { findings: Finding[] | null }) {
             )}
           </div>
           <p className="mt-1 text-sm text-gray-700">{f.message}</p>
+          {f.evidence && (
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-gray-100 px-2 py-1 font-mono text-xs text-gray-600">
+              {f.evidence}
+            </pre>
+          )}
           {f.remediation && (
             <p className="mt-0.5 text-xs text-gray-500">↳ {f.remediation}</p>
           )}

