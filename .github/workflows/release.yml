@@ -1,6 +1,6 @@
 # Cuts a release on every semver tag: builds the React dashboard, embeds it,
 # cross-compiles qvr for linux/macOS/windows × amd64/arm64, and publishes the
-# binaries, checksums, and Homebrew formula via GoReleaser.
+# binaries and checksums via GoReleaser.
 #
 # Tag a release with:  git tag v0.12.0 && git push origin v0.12.0
 name: Release

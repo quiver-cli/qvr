@@ -287,6 +287,21 @@ irm https://raw.githubusercontent.com/quiver-cli/qvr/main/install.ps1 | iex
 Pin a version with `QVR_VERSION=v0.12.0` (or `$env:QVR_VERSION`); override the
 location with `QVR_INSTALL_DIR`.
 
+### Updating
+
+Once `qvr` is on your PATH, update it in place — no need to re-run the installer:
+
+```
+qvr upgrade            # download + verify + swap to the latest release
+qvr upgrade --check    # just report whether a newer release exists
+qvr upgrade --version v0.12.0   # pin a specific release
+```
+
+The release binary carries the dashboard embedded, so `qvr upgrade` brings the
+UI (`qvr ui`) current too. The archive's checksum is verified before the binary
+is atomically replaced. Works on Linux, macOS, and Windows with no `curl`/`tar`
+dependency — the download, verify, and swap are all done in-process.
+
 ### From source
 
 ```
@@ -296,9 +311,11 @@ make build-all          # builds the React UI, then the binary (needs Node 20+)
 make install            # -> /usr/local/bin/qvr  (sudo if needed)
 ```
 
-`go install github.com/quiver-cli/qvr@latest` works too, but builds without the
-embedded dashboard (the API still serves; `qvr ui` shows a "run make ui" stub).
-Use a prebuilt binary or `make build-all` for the full UI. Requires Go 1.22+.
+Requires Go 1.22+ and Node 20+. Building from source is the only path that needs
+a toolchain — `make build-all` embeds the dashboard so `qvr ui` works. (Plain
+`go install` is intentionally not a supported install path: it can't run the npm
+build, so it ships without the UI. Use the prebuilt binary above for the full
+experience.)
 
 ## Quick start
 
@@ -490,9 +507,8 @@ Planned:
 
 - `qvr add --local` vendor mode (materialize real files into the project),
   plus a `qvr publish` flow that round-trips vendored edits back upstream.
-- v1.0 — prebuilt multi-platform binaries via Homebrew / `go install` /
-  curl installer, `qvr doctor`, shell completions, and faster parallel
-  fetch/install.
+- v1.0 — prebuilt multi-platform binaries via Homebrew / curl installer,
+  `qvr doctor`, shell completions, and faster parallel fetch/install.
 - post-1.0 — two-stage scanner (`qvr scan --deep`, SBOM), `qvr inventory`, and
   OTLP push/live export to a configured collector.
 

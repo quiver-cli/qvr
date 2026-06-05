@@ -17,8 +17,9 @@ import (
 // switch is the single "change which commit an installed skill is on" verb. It
 // subsumes the former `upgrade` and `pull` commands (issue #160): all three
 // re-point a worktree, with heavily overlapping semantics. One implementation,
-// three modes, two aliases — `upgrade` and `pull` keep working (and keep their
-// historical default mode) via cmd.CalledAs().
+// three modes. `pull` survives as an alias (via cmd.CalledAs()); the former
+// `upgrade` alias was retired so the top-level `qvr upgrade` can mean "update
+// the qvr CLI itself" — upgrading a *skill* is `qvr switch <skill> --latest`.
 var (
 	repointLatest bool
 	repointTo     string
@@ -28,7 +29,7 @@ var (
 
 var switchCmd = &cobra.Command{
 	Use:     "switch <skill> [ref]",
-	Aliases: []string{"upgrade", "pull"},
+	Aliases: []string{"pull"},
 	Short:   "Change which commit an installed skill is on",
 	Long: `Re-point one or more installed skills onto a different commit. One verb,
 three modes:
@@ -38,12 +39,13 @@ three modes:
   qvr switch <skill> --tip     fast-forward the current ref to its upstream tip
   qvr switch --tip [skill...]  fast-forward every (or just the named) skill
 
-'upgrade' and 'pull' are aliases kept for muscle memory and scripts. They share
-this implementation but default to the mode they always meant:
+'pull' is an alias kept for muscle memory and scripts, sharing this
+implementation but defaulting to the --tip mode it always meant:
 
-  qvr upgrade <skill>          == qvr switch <skill> --latest
-  qvr upgrade <skill> --to R   == qvr switch <skill> R
   qvr pull [skill...]          == qvr switch --tip [skill...]
+
+To move a skill to its latest release, use 'qvr switch <skill> --latest'.
+(The top-level 'qvr upgrade' now updates the qvr CLI binary, not a skill.)
 
 A re-point never clobbers local work: --tip refuses to advance a dirty or
 diverged worktree, reporting a conflict for you to resolve manually.`,
@@ -53,7 +55,7 @@ diverged worktree, reporting a conflict for you to resolve manually.`,
 
 func init() {
 	switchCmd.Flags().BoolVar(&repointLatest, "latest", false,
-		"move to the latest semver tag (the default mode of `qvr upgrade`)")
+		"move the skill to the latest semver tag in its registry")
 	switchCmd.Flags().StringVar(&repointTo, "to", "", "explicit ref to move to (alias for the positional <ref>)")
 	switchCmd.Flags().BoolVar(&repointTip, "tip", false,
 		"fast-forward the current ref to its upstream tip (the mode of `qvr pull`)")
@@ -62,8 +64,8 @@ func init() {
 	rootCmd.AddCommand(switchCmd)
 }
 
-// repointMode is the resolved operation a `switch`/`upgrade`/`pull` invocation
-// maps to. Exactly one is chosen from the flags + how the command was called.
+// repointMode is the resolved operation a `switch`/`pull` invocation maps to.
+// Exactly one is chosen from the flags + how the command was called.
 type repointMode int
 
 const (
@@ -115,9 +117,7 @@ func resolveRepoint(calledAs string, args []string) (repointMode, []string, stri
 		switch calledAs {
 		case "pull":
 			mode = modeTip
-		case "upgrade":
-			mode = modeLatest
-		default: // "switch" (or any other alias) needs an explicit ref
+		default: // "switch" needs an explicit ref
 			mode = modeExplicit
 		}
 	}
@@ -160,15 +160,11 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 
 	// The user-facing verb tracks the alias the user actually typed, not the
 	// resolved mode: `qvr switch foo --latest` reports "switched", while
-	// `qvr upgrade foo` reports "upgraded". Pre-fix modeLatest always said
-	// "upgraded", leaking the alias wording into a plain `switch` invocation.
-	// `action` (error-message + registry-refresh label) follows suit.
+	// `qvr pull foo` reports "pulled". `action` (error-message + registry-refresh
+	// label) follows suit.
 	action := "switch"
 	verb := "switched"
-	switch cmd.CalledAs() {
-	case "upgrade":
-		action, verb = "upgrade", "upgraded"
-	case "pull":
+	if cmd.CalledAs() == "pull" {
 		action, verb = "pull", "pulled"
 	}
 

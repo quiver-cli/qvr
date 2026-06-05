@@ -73,6 +73,6 @@ changelog:
 release:
   github:
     owner: quiver-cli
-    name: quiver
+    name: qvr
   draft: false
   prerelease: auto

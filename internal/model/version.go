@@ -113,6 +113,13 @@ func IsSemverTag(tag string) bool {
 	return true
 }
 
+// CompareSemver compares two semver strings (with or without a leading "v" or
+// per-skill namespace prefix), returning >0 if a > b, <0 if a < b, 0 if equal.
+// It is the exported entry point for callers outside this package — e.g.
+// `qvr upgrade` comparing the running binary's version to the latest release —
+// so semver ordering has a single authority here.
+func CompareSemver(a, b string) int { return compareSemver(a, b) }
+
 // compareSemver returns >0 if a > b, <0 if a < b, 0 if equal.
 func compareSemver(a, b string) int {
 	aParts := parseSemver(a)
