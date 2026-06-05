@@ -35,6 +35,13 @@ var (
 	// ref's verified signature is by a different identity — the skill was
 	// re-signed by someone other than its declared signer. Issue #167.
 	ErrSignedByMismatch = errors.New("signed_by does not match the verified signature")
+	// ErrSkillAbsentAtRef means the requested ref resolved to a real commit but
+	// the skill's subdirectory does not exist in the tree at that commit —
+	// almost always because the skill was added to the repo after that commit.
+	// Distinct from a bad ref (which fails earlier at worktree creation) so the
+	// user gets an actionable "pick a ref where the skill exists" message
+	// instead of a leaked internal .staging path and a raw stat failure (#178).
+	ErrSkillAbsentAtRef = errors.New("skill not present at the resolved ref")
 )
 
 // InstallRequest describes a desired install.
@@ -345,6 +352,17 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		} else if err := in.Worktree.SetSparseCheckout(stagingPath, []string{loc.Entry.Path}); err != nil {
 			_ = os.RemoveAll(stagingPath)
 			return nil, fmt.Errorf("sparse checkout: %w", err)
+		}
+		// The ref resolved (worktree creation succeeded), but if the skill's own
+		// SKILL.md isn't in the checked-out tree the skill simply doesn't exist
+		// at this commit — typically because it was added to the repo later.
+		// Catch that here with a user-facing message rather than letting the
+		// loader surface a raw `stat skill dir` failure over the internal
+		// `.staging` path (#178).
+		if _, statErr := os.Stat(filepath.Join(stagingPath, loc.Entry.Path, "SKILL.md")); errors.Is(statErr, os.ErrNotExist) {
+			_ = os.RemoveAll(stagingPath)
+			return nil, fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
+				ErrSkillAbsentAtRef, name, loc.Entry.Path, version, registry.ShortSHA(resolvedSHA), name)
 		}
 		if err := validateStagedSkill(stagingPath, loc.Entry.Path, name); err != nil {
 			_ = os.RemoveAll(stagingPath)

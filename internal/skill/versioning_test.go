@@ -2,8 +2,10 @@ package skill_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -340,6 +342,61 @@ func TestInstall_SkipsTagWhoseCommitMissesSkillPath(t *testing.T) {
 	// And the worktree must actually hold the SKILL.md the resolver promised.
 	if _, statErr := os.Stat(filepath.Join(result.Worktree, "skills", "code-review", "SKILL.md")); statErr != nil {
 		t.Errorf("worktree missing skill after install: %v", statErr)
+	}
+}
+
+// TestInstall_ExplicitRefMissingSkill_ActionableError is the regression for
+// issue #178. `qvr switch <skill> <ref>` (and any explicit-ref install) onto a
+// ref that RESOLVES but predates the skill's subdirectory used to surface a raw
+// loader failure — "load staged skill: stat skill dir: ...<sha>.staging/...: no
+// such file or directory" — leaking the internal staging path. The fix detects
+// the absent SKILL.md in the staged tree and returns ErrSkillAbsentAtRef with a
+// user-facing message that names the skill, its path, the ref, and points at
+// `qvr version list`. This contrasts with an unresolvable ref, which still
+// fails earlier at worktree creation ("create worktree: reference not found").
+func TestInstall_ExplicitRefMissingSkill_ActionableError(t *testing.T) {
+	h := newHarness(t)
+
+	// C0 (tagged v0.2.0) has no skill; main (C1) adds skills/code-review.
+	remote := seedRemoteWithTaggedAndPostTagSkill(t, "v0.2.0", "code-review", codeReviewSkill)
+	h.addRegistry(t, "fork", remote)
+
+	// Sanity: installing at main (where the skill lives) succeeds.
+	if _, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review@main",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+	}); err != nil {
+		t.Fatalf("install at main: %v", err)
+	}
+
+	// Now re-point to the v0.2.0 tag, whose commit predates the skill. Force
+	// mirrors what `qvr switch` passes when re-materializing a worktree.
+	_, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review@v0.2.0",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+		Force:       true,
+	})
+	if err == nil {
+		t.Fatal("expected an error switching to a ref where the skill is absent")
+	}
+	if !errors.Is(err, skill.ErrSkillAbsentAtRef) {
+		t.Errorf("error = %v, want ErrSkillAbsentAtRef", err)
+	}
+	msg := err.Error()
+	// The whole point of #178: no internal staging path, no raw stat wording.
+	if strings.Contains(msg, ".staging") {
+		t.Errorf("error leaks internal staging path: %q", msg)
+	}
+	if strings.Contains(msg, "stat skill dir") {
+		t.Errorf("error leaks raw stat wording: %q", msg)
+	}
+	// And it should be actionable: name the skill and point at version list.
+	for _, want := range []string{"code-review", "v0.2.0", "qvr version list"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing actionable detail %q", msg, want)
+		}
 	}
 }
 
