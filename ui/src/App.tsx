@@ -5,7 +5,7 @@ import Overview from "./pages/Overview";
 import Sessions from "./pages/Sessions";
 import SessionDetail from "./pages/SessionDetail";
 import Skills from "./pages/Skills";
-import SkillDetail from "./pages/SkillDetail";
+import SkillView from "./pages/SkillDetail";
 import Tree from "./pages/Tree";
 import Scan from "./pages/Scan";
 import Provenance from "./pages/Provenance";
@@ -30,10 +30,14 @@ export default function App() {
         <Route path="/" element={<Overview />} />
         <Route path="/registries" element={<Registries />} />
         <Route path="/registries/:name" element={<RegistryDetail />} />
+        <Route
+          path="/registries/:registry/skills/:name"
+          element={<SkillView mode="registry" />}
+        />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/sessions/:id" element={<SessionDetail />} />
         <Route path="/skills" element={<Skills />} />
-        <Route path="/skills/:name" element={<SkillDetail />} />
+        <Route path="/skills/:name" element={<SkillView mode="project" />} />
         <Route path="/tree" element={<Tree />} />
         <Route path="/scan" element={<Scan />} />
         <Route path="/provenance" element={<Provenance />} />

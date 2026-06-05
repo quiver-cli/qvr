@@ -14,7 +14,33 @@ import (
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Manage skill versions",
+	Short: "Print qvr's build version, or manage skill versions",
+	Long: `Print qvr's build version and provenance.
+
+With no arguments this reports the binary's own version, commit, and build date
+(like ` + "`go version`" + `). The ` + "`list`" + ` subcommand instead lists the
+available versions (branches and tags) of an installed skill.`,
+	// No subcommand → print the binary's own provenance. A stray positional is
+	// a typo'd subcommand (e.g. `qvr version lst`) and must fail loudly rather
+	// than silently printing the binary version (mirrors rejectUnknownSubcommand).
+	RunE: runVersion,
+}
+
+func runVersion(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+	}
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(map[string]string{
+			"version": version,
+			"commit":  commit,
+			"date":    date,
+		})
+	}
+	// Line 1 is machine-friendly ("qvr <version>") so installers and the
+	// Makefile `verify` target can `awk '{print $2}'` it; provenance follows.
+	fmt.Fprintf(cmd.OutOrStdout(), "qvr %s\n  commit: %s\n  built:  %s\n", version, commit, date)
+	return nil
 }
 
 var versionListRefresh bool

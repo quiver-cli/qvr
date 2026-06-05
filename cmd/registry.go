@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,7 +72,6 @@ var (
 	registryUpdateVerbose bool
 	registryListFull      bool
 	registryListRefresh   bool
-	registryAddNoScan     bool
 )
 
 var registryUpdateCmd = &cobra.Command{
@@ -87,8 +84,6 @@ var registryUpdateCmd = &cobra.Command{
 func init() {
 	registryAddCmd.Flags().StringVar(&registryAddName, "name", "",
 		"override the auto-inferred <org>/<repo> name (full literal override; pass <alias> or <org>/<alias>)")
-	registryAddCmd.Flags().BoolVar(&registryAddNoScan, "no-scan", false,
-		"skip the per-skill security scan that normally gates registry adds (override security.scan_on_install)")
 	registryUpdateCmd.Flags().BoolVar(&registryUpdateCheck, "check", false,
 		"check for upstream changes without downloading")
 	registryUpdateCmd.Flags().BoolVarP(&registryUpdateVerbose, "verbose", "v", false,
@@ -128,14 +123,17 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	if cerr != nil {
 		return fmt.Errorf("load config: %w", cerr)
 	}
-	if err := enforceScanPolicy(cfg, registryAddNoScan); err != nil {
-		return err
-	}
 
 	gc := git.NewGoGitClient()
 	mgr := newRegistryManager(gc)
 
+	// Clone + first index happen inside Add and can take seconds on a large
+	// or remote repo. Animate a spinner so the terminal never looks frozen
+	// (no-op in JSON mode / non-TTY — see Printer.Spinner).
+	sp := printer.Spinner()
+	sp.Start(fmt.Sprintf("Cloning %s …", name))
 	reg, err := mgr.Add(cmd.Context(), name, repoURL)
+	sp.Stop()
 	if err != nil {
 		// Manager.Add surfaces ErrRegistryExists when the name is taken.
 		// Reformat with a `--name` hint so the user knows the override path.
@@ -145,25 +143,11 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("add registry: %w", err)
 	}
 
-	// Registry-source scan. Materialise each indexed skill into a throwaway
-	// worktree and scan it so users see risky entries early. This is advisory:
-	// registering a source does not install or execute any skill, and blocking
-	// the entire registry because one large repo has fixtures/vendor code is too
-	// coarse. The hard gate still runs when a specific skill is installed.
-	var flaggedByScan []string
-	if gateAvailable(cfg, registryAddNoScan) {
-		skills, _, ixerr := mgr.Index(reg.Name, registry.RegistryPath(reg.Name))
-		if ixerr == nil && len(skills) > 0 {
-			blockedSkills, gateErr := scanRegistrySkillsBeforeAdd(cmd.Context(), reg, skills, cfg)
-			if gateErr != nil {
-				printer.Warning(fmt.Sprintf("registry %s: scan pass failed (%v); registry kept — rerun `qvr scan <skill>` per-skill to retry", reg.Name, gateErr))
-			} else if len(blockedSkills) > 0 {
-				flaggedByScan = blockedSkills
-				printer.Warning(fmt.Sprintf("registry %s: scan flagged %d skill(s) at/above the install block threshold (%s); registry kept — `qvr add` will re-scan and gate the selected skill",
-					reg.Name, len(blockedSkills), strings.Join(blockedSkills, ", ")))
-			}
-		}
-	}
+	// No scan here. `qvr registry add` only clones the repo and builds the
+	// skill index (the "skill tree") — it neither installs nor executes any
+	// skill, so there is nothing to gate yet. The security scan runs at
+	// `qvr add <skill>`, where the selected skill is materialised and the
+	// install gate decides whether it may be linked into an agent dir.
 
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(reg)
@@ -176,9 +160,6 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	if reg.SkippedCount > 0 {
 		msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
 			reg.SkippedCount, reg.Name)
-	}
-	if len(flaggedByScan) > 0 {
-		msg += fmt.Sprintf(" (%d scan-flagged)", len(flaggedByScan))
 	}
 	printer.Success(msg)
 	printer.Info(registryTrustSummary(reg, cfg, fetchRegistryOwnerSignals(cmd.Context(), reg, cfg)))
@@ -305,101 +286,6 @@ func githubOwner(reg *model.Registry) string {
 		return reg.Name[:i]
 	}
 	return ""
-}
-
-// scanRegistrySkillsBeforeAdd materialises each indexed skill into a throwaway
-// worktree (sparse-checked-out to just that skill's subpath) and runs the
-// standard scan gate. Returns the list of skill names that were blocked
-// (each already had its findings surfaced via ScanAndGate's renderer).
-//
-// The materialisation cost is proportional to the count of skills × the
-// skill subtree size, not the whole repo — sparse checkout keeps each scan
-// dir bounded to one skill. Slow registries (~30 skills) still finish in
-// under a couple of minutes; users see incremental progress via the
-// per-finding banner.
-func scanRegistrySkillsBeforeAdd(ctx context.Context, reg *model.Registry, skills []registry.SkillIndexEntry, cfg *config.Config) ([]string, error) {
-	worktreeMgr := git.NewGoGitWorktree()
-	barePath := registry.RegistryPath(reg.Name)
-
-	tmpRoot, err := os.MkdirTemp("", "qvr-registry-scan-*")
-	if err != nil {
-		return nil, fmt.Errorf("create scan workspace: %w", err)
-	}
-	defer os.RemoveAll(tmpRoot)
-
-	ref := reg.DefaultBranch
-	if ref == "" {
-		ref = "main"
-	}
-
-	var blocked []string
-	for _, s := range skills {
-		// Each skill scans in its own subdir so a per-skill failure doesn't
-		// abort the rest — we collect all blocks and report the full list.
-		stage := filepath.Join(tmpRoot, sanitizeForFs(s.Name))
-		if err := worktreeMgr.Add(barePath, stage, ref); err != nil {
-			printer.Warning(fmt.Sprintf("scan %s: could not materialise (%v); skipping gate", s.Name, err))
-			continue
-		}
-		// Scope the scan to just this skill's content so a multi-purpose repo's
-		// app code / test fixtures never gate a skill that doesn't ship them.
-		//   - non-root skill → its own subtree (scan dir is that subtree)
-		//   - lone root skill → the whole repo (no narrowing; it IS the skill)
-		//   - root skill with siblings → SKILL.md + recognized content dirs only
-		scopePaths := registry.SkillScopePaths(s)
-		skillDir := stage
-		switch {
-		case len(scopePaths) == 1 && scopePaths[0] == s.Path && s.Path != "" && s.Path != ".":
-			if err := worktreeMgr.SetSparseCheckout(stage, scopePaths); err != nil {
-				printer.Warning(fmt.Sprintf("scan %s: sparse-checkout failed (%v); scanning full clone", s.Name, err))
-			}
-			skillDir = filepath.Join(stage, s.Path)
-		case len(scopePaths) > 0:
-			// root-with-siblings: explicit content patterns, scan from repo root
-			if err := worktreeMgr.SetSparseCheckoutPatterns(stage, scopePaths); err != nil {
-				printer.Warning(fmt.Sprintf("scan %s: sparse-checkout failed (%v); scanning full clone", s.Name, err))
-			}
-		default:
-			// lone root skill: scan the full clone (matches what gets installed)
-		}
-		gate, gerr := ScanAndGate(ctx, skillDir, cfg, scanGateOptions{
-			Action:            "registry add",
-			Subject:           s.Name,
-			WarnOnly:          true,
-			Quiet:             true,
-			QuietHint:         fmt.Sprintf("Run `qvr add %s` to re-scan and apply the install gate for this skill.", s.Name),
-			ReportOnlyBlocked: true,
-		})
-		if gerr != nil {
-			printer.Warning(fmt.Sprintf("scan %s: %v; skipping gate", s.Name, gerr))
-			continue
-		}
-		if gate.Blocked {
-			blocked = append(blocked, s.Name)
-		}
-	}
-	return blocked, nil
-}
-
-// sanitizeForFs produces a safe directory segment from a skill name, for the
-// per-skill scan workspace. The skill name is already lowercase-alphanumeric
-// + hyphens per spec, but we belt-and-brace strip anything funky just in
-// case the indexer accepted a borderline case.
-func sanitizeForFs(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	out := b.String()
-	if out == "" {
-		out = "skill"
-	}
-	return out
 }
 
 func runRegistryRemove(cmd *cobra.Command, args []string) error {

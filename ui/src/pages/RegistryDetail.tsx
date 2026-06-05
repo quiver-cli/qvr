@@ -5,7 +5,6 @@ import {
   Card,
   Empty,
   ErrorBox,
-  fmtTime,
   Loading,
   Mono,
   PageHeader,
@@ -37,106 +36,65 @@ export default function RegistryDetail() {
           />
           {data.error && <ErrorBox message={data.error} />}
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            {/* Repo-level version tree: every branch & tag with its commit and
-                timestamp. The default branch is marked current. */}
-            <Card
-              title={`Version tree (${data.versions.length})`}
-            >
-              {data.versions.length === 0 ? (
-                <Empty>No branches or tags found in this registry's clone.</Empty>
-              ) : (
-                <VersionTree versions={data.versions} />
-              )}
-              {data.defaultBranch && (
-                <p className="mt-3 text-xs text-gray-400">
-                  Default branch: <Mono>{data.defaultBranch}</Mono>. Each skill below
-                  expands to show which version is installed.
-                </p>
-              )}
-            </Card>
-
-            {/* Skills the registry offers, with install status. */}
-            <Card title={`Skills (${data.skills.length})`}>
-              {data.skills.length === 0 ? (
-                <Empty>This registry has no indexable skills.</Empty>
-              ) : (
-                <ul className="divide-y divide-gray-100">
-                  {data.skills.map((s) => (
-                    <SkillItem key={s.name} skill={s} versions={data.versions} />
-                  ))}
-                </ul>
-              )}
-            </Card>
-          </div>
+          {/* Skills the registry offers, with install status. Expanding a skill
+              lists the versions (refs/tags) it can be installed at — no repo-wide
+              version tree, just the skill and its versions. */}
+          <Card title={`Skills (${data.skills.length})`}>
+            {data.skills.length === 0 ? (
+              <Empty>This registry has no indexable skills.</Empty>
+            ) : (
+              <ul className="divide-y divide-gray-100">
+                {data.skills.map((s) => (
+                  <SkillItem
+                    key={s.name}
+                    registry={name}
+                    skill={s}
+                    versions={data.versions}
+                  />
+                ))}
+              </ul>
+            )}
+            {data.defaultBranch && (
+              <p className="mt-3 text-xs text-gray-400">
+                Default branch: <Mono>{data.defaultBranch}</Mono>
+              </p>
+            )}
+          </Card>
         </>
       )}
     </>
   );
 }
 
-// VersionTree renders refs as a timeline. `currentRef` (the installed/default
-// ref) is highlighted; `currentSha` additionally flags the exact installed
-// commit even if it was pinned by SHA rather than ref name.
-function VersionTree({
-  versions,
-  currentRef,
-  currentSha,
-}: {
-  versions: RegistryVersion[];
-  currentRef?: string;
-  currentSha?: string;
-}) {
-  return (
-    <ul className="space-y-1.5">
-      {versions.map((v) => {
-        const isCurrent =
-          (currentRef && v.ref === currentRef) ||
-          (currentSha && v.sha === currentSha) ||
-          (!currentRef && !currentSha && v.current);
-        return (
-          <li
-            key={`${v.isTag ? "tag" : "branch"}:${v.ref}`}
-            className={`flex flex-wrap items-center gap-2 rounded-md px-2 py-1.5 ${
-              isCurrent ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200" : ""
-            }`}
-          >
-            <Pill tone={v.isTag ? "amber" : "blue"}>{v.isTag ? "tag" : "branch"}</Pill>
-            <span className={`font-medium ${isCurrent ? "text-emerald-800" : "text-gray-800"}`}>
-              {v.ref}
-            </span>
-            {isCurrent && <Pill tone="green">current</Pill>}
-            <Mono title={v.sha}>{short(v.sha)}</Mono>
-            {v.time && !v.time.startsWith("0001") && (
-              <span className="text-xs text-gray-400">{fmtTime(v.time)}</span>
-            )}
-            {v.subject && (
-              <span className="w-full truncate pl-1 text-xs text-gray-400">{v.subject}</span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 function SkillItem({
+  registry,
   skill,
   versions,
 }: {
+  registry: string;
   skill: import("../api").RegistrySkillRow;
   versions: RegistryVersion[];
 }) {
   const [open, setOpen] = useState(false);
   return (
     <li className="py-2">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 text-left"
-      >
-        <span className="text-gray-400">{open ? "▾" : "▸"}</span>
-        <span className="font-medium text-gray-800">{skill.name}</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? "Collapse versions" : "Expand versions"}
+          className="text-gray-400 hover:text-gray-600"
+        >
+          {open ? "▾" : "▸"}
+        </button>
+        <Link
+          to={`/registries/${encodeURIComponent(registry)}/skills/${encodeURIComponent(
+            skill.name,
+          )}`}
+          className="font-medium text-gray-800 hover:text-blue-600 hover:underline"
+        >
+          {skill.name}
+        </Link>
         {skill.installed ? (
           <Pill tone="green">
             installed{skill.installedRef ? ` @ ${skill.installedRef}` : ""}
@@ -147,7 +105,7 @@ function SkillItem({
         {skill.installed && skill.installedCommit && (
           <Mono title={skill.installedCommit}>{short(skill.installedCommit)}</Mono>
         )}
-      </button>
+      </div>
       {skill.description && (
         <p className="mt-0.5 pl-6 text-sm text-gray-500">{skill.description}</p>
       )}
@@ -156,13 +114,60 @@ function SkillItem({
           <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
             Versions {skill.installed ? "(installed one highlighted)" : ""}
           </div>
-          <VersionTree
-            versions={versions}
-            currentRef={skill.installedRef}
-            currentSha={skill.installedCommit}
-          />
+          {versions.length === 0 ? (
+            <Empty>No branches or tags found in this registry's clone.</Empty>
+          ) : (
+            <SkillVersions
+              versions={versions}
+              currentRef={skill.installedRef}
+              currentSha={skill.installedCommit}
+            />
+          )}
         </div>
       )}
     </li>
+  );
+}
+
+// SkillVersions lists the refs (branches/tags) a skill can be installed at as a
+// flat, compact set of chips — the installed/pinned one is highlighted. This is
+// deliberately not a timeline: users browsing a skill just want to see which
+// versions exist, not every commit's sha/date/subject.
+function SkillVersions({
+  versions,
+  currentRef,
+  currentSha,
+}: {
+  versions: RegistryVersion[];
+  currentRef?: string;
+  currentSha?: string;
+}) {
+  return (
+    <ul className="flex flex-wrap gap-1.5">
+      {versions.map((v) => {
+        const isCurrent =
+          (currentRef && v.ref === currentRef) ||
+          (currentSha && v.sha === currentSha) ||
+          (!currentRef && !currentSha && v.current);
+        return (
+          <li
+            key={`${v.isTag ? "tag" : "branch"}:${v.ref}`}
+            className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-sm ${
+              isCurrent
+                ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200"
+                : "bg-gray-50"
+            }`}
+          >
+            <Pill tone={v.isTag ? "amber" : "blue"}>{v.isTag ? "tag" : "branch"}</Pill>
+            <span
+              className={`font-medium ${isCurrent ? "text-emerald-800" : "text-gray-800"}`}
+            >
+              {v.ref}
+            </span>
+            {isCurrent && <Pill tone="green">current</Pill>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

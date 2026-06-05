@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,10 +16,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/raks097/quiver/internal/config"
+	"github.com/raks097/quiver/internal/git"
 	"github.com/raks097/quiver/internal/model"
 	"github.com/raks097/quiver/internal/ops"
 	"github.com/raks097/quiver/internal/ops/derive"
 	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/raks097/quiver/internal/registry"
 
 	_ "modernc.org/sqlite"
 )
@@ -759,4 +762,112 @@ func hasSkill(rows []scopedListEntry, name string) bool {
 		}
 	}
 	return false
+}
+
+// seedBareRegistry builds a one-skill remote repo (a SKILL.md plus a nested
+// script) and bare-clones it into the registry path under name, so handlers
+// that read straight from the bare clone (file listing, ref versions) have real
+// content to walk. Returns the registry name. Assumes QUIVER_HOME is already set
+// (seedUIEnv does this).
+func seedBareRegistry(t *testing.T, name string) {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote")
+	skillDir := filepath.Join(remote, "skills", "demo")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "---\nname: demo\ndescription: a demo skill\n---\n# demo\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.sh"), []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatalf("write run.sh: %v", err)
+	}
+	gitCmd(t, remote, "init", "-q", "-b", "main")
+	gitCmd(t, remote, "add", "-A")
+	gitCmd(t, remote, "-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+
+	bare := registry.RegistryPath(name)
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatalf("mkdir bare parent: %v", err)
+	}
+	if err := git.NewGoGitClient().BareClone(context.Background(), remote, bare); err != nil {
+		t.Fatalf("bare clone: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Registries == nil {
+		cfg.Registries = map[string]config.RegistryConfig{}
+	}
+	cfg.Registries[name] = config.RegistryConfig{URL: remote}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+}
+
+// TestUI_RegistrySkill exercises the registry-scope skill detail endpoint: it
+// must list the skill's files (skill-relative, recursive) straight from the bare
+// clone and carry the repo's version timeline, without the skill being installed.
+func TestUI_RegistrySkill(t *testing.T) {
+	root, _ := seedUIEnv(t, true)
+	seedBareRegistry(t, "demo-reg")
+	h := newUITestServer(t, root)
+
+	rec := do(t, h, http.MethodGet, "/api/registries/demo-reg/skills/demo")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var got registrySkillDetail
+	mustJSON(t, rec, &got)
+	if got.Error != "" {
+		t.Fatalf("unexpected error: %s", got.Error)
+	}
+	if got.Name != "demo" || got.Registry != "demo-reg" {
+		t.Errorf("identity = %q/%q, want demo/demo-reg", got.Name, got.Registry)
+	}
+	if got.Path != "skills/demo" {
+		t.Errorf("path = %q, want skills/demo", got.Path)
+	}
+	if got.Installed {
+		t.Errorf("installed = true, want false (skill not in lock)")
+	}
+	wantFiles := map[string]bool{"SKILL.md": false, "scripts/run.sh": false}
+	for _, f := range got.Files {
+		if _, ok := wantFiles[f]; ok {
+			wantFiles[f] = true
+		}
+		if strings.HasPrefix(f, "skills/demo/") {
+			t.Errorf("file %q is repo-relative, want skill-relative", f)
+		}
+	}
+	for f, seen := range wantFiles {
+		if !seen {
+			t.Errorf("missing file %q in %v", f, got.Files)
+		}
+	}
+	var foundMain bool
+	for _, v := range got.Versions {
+		if v.Ref == "main" {
+			foundMain = true
+			if !v.Current {
+				t.Errorf("main should be marked current (default branch)")
+			}
+		}
+	}
+	if !foundMain {
+		t.Errorf("versions = %+v, want a main branch", got.Versions)
+	}
+}
+
+// TestUI_RegistrySkill_UnknownRegistry asserts a missing registry 404s.
+func TestUI_RegistrySkill_UnknownRegistry(t *testing.T) {
+	root, _ := seedUIEnv(t, true)
+	h := newUITestServer(t, root)
+	rec := do(t, h, http.MethodGet, "/api/registries/nope/skills/demo")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
 }

@@ -96,7 +96,11 @@ func TestRegistryTrustSummary(t *testing.T) {
 	}
 }
 
-func TestRegistryAddKeepsRegistryWhenScanFlagsSkill(t *testing.T) {
+// Registry add only clones + indexes the skill tree; it never scans. Even a
+// skill that would trip the install gate (here, a leaked credential) is indexed
+// without warning — the scan is deferred to `qvr add <skill>`, where the skill
+// is actually materialised and gated.
+func TestRegistryAddIndexesSkillsWithoutScanning(t *testing.T) {
 	t.Setenv("QUIVER_HOME", t.TempDir())
 	resetPrinter(t)
 
@@ -110,7 +114,7 @@ func TestRegistryAddKeepsRegistryWhenScanFlagsSkill(t *testing.T) {
 	repo := seedRegistryRepo(t, map[string]string{
 		"skills/leaky/SKILL.md": `---
 name: leaky
-description: trips the registry advisory scan
+description: would trip the install gate, but registry add never scans
 ---
 # Leaky
 
@@ -119,16 +123,14 @@ Fixture credential: AKIAIOSFODNN7EXAMPLE
 	})
 
 	registryAddName = "local/leaky"
-	registryAddNoScan = false
 	t.Cleanup(func() {
 		registryAddName = ""
-		registryAddNoScan = false
 	})
 
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	if err := runRegistryAdd(cmd, []string{"file://" + repo}); err != nil {
-		t.Fatalf("registry add should keep advisory-scan registries: %v", err)
+		t.Fatalf("registry add should succeed without scanning: %v", err)
 	}
 
 	mgr := newRegistryManager(git.NewGoGitClient())
@@ -145,11 +147,8 @@ Fixture credential: AKIAIOSFODNN7EXAMPLE
 		t.Fatalf("printer.Err is not a String()-capable buffer")
 	}
 	stderr := stringer.String()
-	if !strings.Contains(stderr, "scan flagged 1 skill") {
-		t.Fatalf("expected advisory scan warning, got stderr:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, "registry kept") {
-		t.Fatalf("expected registry-kept wording, got stderr:\n%s", stderr)
+	if strings.Contains(stderr, "scan") {
+		t.Fatalf("registry add must not scan; got scan-related stderr:\n%s", stderr)
 	}
 }
 

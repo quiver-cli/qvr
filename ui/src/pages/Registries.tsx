@@ -20,7 +20,7 @@ export default function Registries() {
     <>
       <PageHeader
         title="Registries"
-        subtitle="Global · shared across all projects. Click a registry to see its skills and version tree."
+        subtitle="Global · shared across all projects. Click a registry to see its skills and versions."
       />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
@@ -60,12 +60,7 @@ export default function Registries() {
               <Td>
                 <Mono>{r.url}</Mono>
               </Td>
-              <Td>
-                {r.skill_count}
-                {r.skipped_count ? (
-                  <span className="ml-1 text-xs text-amber-600">({r.skipped_count} skipped)</span>
-                ) : null}
-              </Td>
+              <Td>{r.skill_count}</Td>
               <Td>{r.last_fetched && !r.last_fetched.startsWith("0001") ? fmtTime(r.last_fetched) : "never"}</Td>
             </tr>
           ))}

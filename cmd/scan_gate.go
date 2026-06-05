@@ -34,7 +34,7 @@ func enforceScanPolicy(cfg *config.Config, disabled bool) error {
 // scanGateOptions tunes a single ScanAndGate call.
 type scanGateOptions struct {
 	// Disabled forces the gate off regardless of cfg.Security.ScanOnInstall.
-	// Set by `--no-scan` flags on add/registry/sync/publish.
+	// Set by `--no-scan` flags on add/sync/publish.
 	Disabled bool
 	// Action labels the calling operation in surfaced output ("add", "registry
 	// add", "sync restore", "publish"). Used in the rendered banner so the

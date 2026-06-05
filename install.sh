@@ -43,6 +43,15 @@ case "$ARCH" in
   *) err "unsupported architecture '$ARCH'" ;;
 esac
 
+# --- record any prior install (for staleness visibility) ------------------
+# Capture the version and path of a qvr already on PATH, so we can report the
+# before/after and warn if a different copy ends up shadowing the new one.
+PRIOR_BIN="$(command -v "$BINARY" 2>/dev/null || true)"
+PRIOR_VER=""
+if [ -n "$PRIOR_BIN" ]; then
+  PRIOR_VER="$("$PRIOR_BIN" version 2>/dev/null | head -n1 | awk '{print $2}' || true)"
+fi
+
 # --- resolve version ------------------------------------------------------
 VERSION="${QVR_VERSION:-}"
 if [ -z "$VERSION" ]; then
@@ -50,6 +59,14 @@ if [ -z "$VERSION" ]; then
   VERSION="$(dl "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep '"tag_name":' | head -n1 | cut -d'"' -f4)"
   [ -n "$VERSION" ] || err "could not determine latest version (set QVR_VERSION)"
+fi
+
+if [ -n "$PRIOR_VER" ]; then
+  if [ "$PRIOR_VER" = "$VERSION" ]; then
+    info "Already on ${VERSION} (${PRIOR_BIN}) — reinstalling cleanly"
+  else
+    info "Upgrading ${PRIOR_VER} -> ${VERSION} (current: ${PRIOR_BIN})"
+  fi
 fi
 
 ASSET="${BINARY}_${OS}_${ARCH}.tar.gz"
@@ -104,4 +121,18 @@ case ":${PATH}:" in
   *":${DIR}:"*) ;;
   *) printf '\033[1;33mnote:\033[0m %s is not on your PATH — add it:\n  export PATH="%s:$PATH"\n' "$DIR" "$DIR" ;;
 esac
-"${DIR}/${BINARY}" version || true
+
+# Zero-staleness check: confirm the qvr that PATH actually resolves is the one we
+# just wrote. If an older copy sits earlier on PATH it will shadow this install —
+# the classic "I upgraded but qvr still reports the old version" trap.
+RESOLVED="$(command -v "$BINARY" 2>/dev/null || true)"
+if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "${DIR}/${BINARY}" ]; then
+  printf '\033[1;33mwarning:\033[0m a different %s is earlier on PATH and will shadow this install:\n' "$BINARY"
+  printf '  shadowing : %s (%s)\n' "$RESOLVED" "$("$RESOLVED" version 2>/dev/null | head -n1 | awk '{print $2}' || echo '?')"
+  printf '  installed : %s (%s)\n' "${DIR}/${BINARY}" "$VERSION"
+  printf 'Remove the stale copy or put %s earlier on PATH.\n' "$DIR"
+fi
+
+# Report what is now in effect (the resolved binary, not just the freshly written
+# one) so the user sees the real, post-install version.
+"${RESOLVED:-${DIR}/${BINARY}}" version || true

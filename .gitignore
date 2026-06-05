@@ -24,7 +24,6 @@ Thumbs.db
 # Public-facing documentation lives in `documentation/` and is tracked.
 docs/
 CLAUDE.md
-inspo/
 
 # Plans / notes
 .claude/

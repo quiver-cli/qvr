@@ -106,6 +106,25 @@ export interface TargetDetail {
   error?: string;
 }
 
+// ScanRef mirrors model.ScanRef: the recorded (install-time) scan-gate summary
+// carried in the lock. Counts are on the lock's 5-rung scale (see SeverityCounts
+// below). decision ∈ allowed | blocked | skipped.
+export interface ScanRef {
+  reportSHA?: string;
+  scannerVersion?: string;
+  counts: SeverityCounts;
+  decision: string;
+  reason?: string;
+  sarifPath?: string;
+}
+
+// VerificationRecord mirrors model.VerificationRecord — the supply-chain signals
+// recorded on a skill. Only `scan` is surfaced today; the other slots
+// (signature, eval, …) are reserved and added when their writers ship.
+export interface VerificationRecord {
+  scan?: ScanRef;
+}
+
 export interface SkillInfo {
   name: string;
   description?: string;
@@ -128,6 +147,7 @@ export interface SkillInfo {
   targets?: string[];
   targetDetails?: TargetDetail[];
   files?: string[];
+  verification?: VerificationRecord;
 }
 
 export interface TreeSkill {
@@ -234,6 +254,25 @@ export interface RegistrySkillsResponse {
   error?: string;
 }
 
+// Registry-scope skill detail (Go: registrySkillDetail). One skill browsed from
+// a registry at a chosen ref — its file structure (listed from the bare clone,
+// no checkout), the repo's version timeline, and install status in the active
+// scope. `files` are skill-relative paths, matching SkillInfo.files.
+export interface RegistrySkillDetail {
+  registry: string;
+  name: string;
+  description?: string;
+  path?: string;
+  ref?: string;
+  commit?: string;
+  files: string[];
+  installed: boolean;
+  installedRef?: string;
+  installedCommit?: string;
+  versions: RegistryVersion[];
+  error?: string;
+}
+
 export interface Finding {
   check: string;
   rule_id?: string;
@@ -251,7 +290,9 @@ export interface ScanResult {
   skill: string;
   scanned_at?: string;
   checks: string[];
-  findings: Finding[];
+  // The scanner marshals a nil slice as JSON null (not []) when there are no
+  // findings, so consumers must normalise before reading .length / mapping.
+  findings: Finding[] | null;
   summary: {
     critical: number;
     error: number;
@@ -402,6 +443,16 @@ export const api = {
     getJSON<RegistrySkillsResponse>(
       `/api/registries/${encodeURIComponent(name)}/skills${scopeQuery()}`,
     ),
+  registrySkill: (registry: string, name: string, ref?: string) => {
+    const p = scopeParams();
+    if (ref) p.set("ref", ref);
+    const q = p.toString();
+    return getJSON<RegistrySkillDetail>(
+      `/api/registries/${encodeURIComponent(registry)}/skills/${encodeURIComponent(name)}${
+        q ? `?${q}` : ""
+      }`,
+    );
+  },
   // Global endpoints — not scoped.
   registries: () => getJSON<RegistryStatus[]>("/api/registries"),
   projects: () => getJSON<ProjectSummary[]>("/api/projects"),

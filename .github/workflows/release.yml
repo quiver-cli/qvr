@@ -38,6 +38,9 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
+      - name: Verify tag matches VERSION file
+        run: make release-check
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

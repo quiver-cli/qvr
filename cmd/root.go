@@ -13,7 +13,15 @@ import (
 var (
 	outputFormat string
 	printer      *output.Printer
-	version      = "0.11.0"
+
+	// Build provenance — overridden at link time via -ldflags (see Makefile and
+	// .goreleaser.yaml). The defaults make an un-stamped build (plain `go build`
+	// or `go run` with no ldflags) self-identify as a dev build rather than
+	// impersonate a real release. `make build`/`make run` and goreleaser all
+	// stamp these from git, so any installed binary reports exactly what it is.
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 // errJSONHandled signals to Execute() that the command has already emitted a

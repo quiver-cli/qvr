@@ -24,6 +24,11 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   default { Fail "unsupported architecture '$($env:PROCESSOR_ARCHITECTURE)'" }
 }
 
+# --- record any prior install (for staleness visibility) ------------------
+$priorCmd = Get-Command $Binary -ErrorAction SilentlyContinue
+$priorBin = if ($priorCmd) { $priorCmd.Source } else { $null }
+$priorVer = if ($priorBin) { (& $priorBin version 2>$null | Select-Object -First 1) -split '\s+' | Select-Object -Skip 1 -First 1 } else { $null }
+
 # --- resolve version ------------------------------------------------------
 $version = $env:QVR_VERSION
 if (-not $version) {
@@ -31,6 +36,11 @@ if (-not $version) {
   $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
   $version = $rel.tag_name
   if (-not $version) { Fail 'could not determine latest version (set $env:QVR_VERSION)' }
+}
+
+if ($priorVer) {
+  if ($priorVer -eq $version) { Info "Already on $version ($priorBin) - reinstalling cleanly" }
+  else { Info "Upgrading $priorVer -> $version (current: $priorBin)" }
 }
 
 $asset = "${Binary}_Windows_${arch}.zip"
@@ -71,7 +81,17 @@ try {
     [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
     Info "Added $dir to your user PATH — restart your terminal to use 'qvr'."
   }
-  & (Join-Path $dir "$Binary.exe") version
+  # Zero-staleness check: confirm PATH resolves to the copy we just wrote, not
+  # an older one earlier in PATH that would silently shadow this upgrade.
+  $resolved = (Get-Command $Binary -ErrorAction SilentlyContinue).Source
+  $installed = Join-Path $dir "$Binary.exe"
+  if ($resolved -and ($resolved -ne $installed)) {
+    Write-Host "warning: a different $Binary is earlier on PATH and will shadow this install:" -ForegroundColor Yellow
+    Write-Host "  shadowing : $resolved"
+    Write-Host "  installed : $installed ($version)"
+    Write-Host "Remove the stale copy or put $dir earlier on PATH."
+  }
+  & $(if ($resolved) { $resolved } else { $installed }) version
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

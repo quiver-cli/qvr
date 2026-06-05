@@ -85,6 +85,7 @@ func (s *uiServer) handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/registries", s.handleRegistries)
 	mux.HandleFunc("GET /api/registries/{name}/skills", s.handleRegistrySkills)
+	mux.HandleFunc("GET /api/registries/{name}/skills/{skill}", s.handleRegistrySkill)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
@@ -369,6 +370,148 @@ func (s *uiServer) handleRegistrySkills(w http.ResponseWriter, r *http.Request) 
 		}
 		resp.Skills = append(resp.Skills, row)
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// registrySkillDetail powers the registry-scope skill page: a single skill the
+// registry offers, browsed (and possibly not installed) at a chosen ref. It
+// carries enough to render the same workbench the installed view shows — the
+// skill's file structure (listed straight from the bare clone, no checkout) and
+// the repo's version timeline — plus install status so the page can mark the
+// in-use version. Metadata stays light (name + description from the index): a
+// full SKILL.md parse isn't needed to browse, and a real scan only runs at
+// install, so the page derives a file-type inventory client-side instead.
+type registrySkillDetail struct {
+	Registry        string            `json:"registry"`
+	Name            string            `json:"name"`
+	Description     string            `json:"description,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	Ref             string            `json:"ref,omitempty"`
+	Commit          string            `json:"commit,omitempty"`
+	Files           []string          `json:"files"`
+	Installed       bool              `json:"installed"`
+	InstalledRef    string            `json:"installedRef,omitempty"`
+	InstalledCommit string            `json:"installedCommit,omitempty"`
+	Versions        []registryVersion `json:"versions"`
+	Error           string            `json:"error,omitempty"`
+}
+
+// handleRegistrySkill powers the registry-scope skill detail page. Unlike
+// handleSkill (which needs an installed worktree on disk), this reads the skill
+// straight out of the bare clone at a ref: file list via ListBlobsRecursive,
+// version timeline via RefVersions. Install status comes from the active scope's
+// lock so the in-use version can still be highlighted even though the page is
+// reached from the (global) registry browser.
+func (s *uiServer) handleRegistrySkill(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	skillName := r.PathValue("skill")
+	if _, ok := s.cfg.Registries[name]; !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("registry %q not found", name))
+		return
+	}
+
+	repoPath := registry.RegistryPath(name)
+	gc := git.NewGoGitClient()
+	defaultBranch, _ := gc.DefaultBranch(repoPath)
+
+	ref := r.URL.Query().Get("ref")
+	if ref == "" {
+		ref = defaultBranch
+	}
+
+	resp := registrySkillDetail{
+		Registry: name,
+		Name:     skillName,
+		Ref:      ref,
+		Files:    []string{},
+		Versions: []registryVersion{},
+	}
+
+	// Repo-level version timeline: branches + tags resolved to commit + time.
+	if vers, err := gc.RefVersions(repoPath); err == nil {
+		for _, v := range vers {
+			resp.Versions = append(resp.Versions, registryVersion{
+				Ref:     v.Name,
+				IsTag:   v.IsTag,
+				SHA:     v.Hash,
+				Time:    v.Time,
+				Subject: v.Subject,
+				Current: v.Name == defaultBranch,
+			})
+		}
+	}
+
+	// Install status in the active scope, so the in-use ref/commit can be marked.
+	if sc, err := s.resolveScope(r); err == nil {
+		if entries, err := s.entriesForScope(sc); err == nil {
+			for _, e := range entries {
+				if e.Registry == name && e.Name == skillName {
+					resp.Installed = true
+					resp.InstalledRef = e.Ref
+					resp.InstalledCommit = e.Commit
+					break
+				}
+			}
+		}
+	}
+
+	// Resolve the skill's subpath from the cache-aware index (no network), then
+	// list its files from the bare clone at the chosen ref.
+	mgr := newRegistryManager(gc)
+	listed, err := mgr.ListSkills([]string{name})
+	if err != nil || len(listed) == 0 {
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Error = fmt.Sprintf("skill %q not found in registry %q", skillName, name)
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	rs := listed[0]
+	if rs.Error != "" {
+		resp.Error = rs.Error
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	var skillPath string
+	found := false
+	for _, sk := range rs.Skills {
+		if sk.Name == skillName {
+			resp.Description = sk.Description
+			resp.Path = sk.Path
+			skillPath = sk.Path
+			found = true
+			break
+		}
+	}
+	if !found {
+		resp.Error = fmt.Sprintf("skill %q not found in registry %q", skillName, name)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// A root-layout skill (Path ".") lives at the repo root: list the whole tree.
+	treePath := skillPath
+	if treePath == "." {
+		treePath = ""
+	}
+	blobs, err := gc.ListBlobsRecursive(repoPath, ref, treePath)
+	if err != nil {
+		resp.Error = fmt.Sprintf("list files at %s: %v", ref, err)
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	prefix := treePath
+	if prefix != "" {
+		prefix += "/"
+	}
+	for _, b := range blobs {
+		rel := strings.TrimPrefix(b.Path, prefix)
+		resp.Files = append(resp.Files, rel)
+	}
+	sort.Strings(resp.Files)
 	writeJSON(w, http.StatusOK, resp)
 }
 
