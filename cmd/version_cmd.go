@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 

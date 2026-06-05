@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 // Issue #64: `qvr validate <name>` should resolve a bare installed-skill

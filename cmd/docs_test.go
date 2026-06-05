@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // Issue #cosmetic in the v0.4.0 review: AGENTS.md was rendering `_(reg@ref)_`

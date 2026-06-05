@@ -3,7 +3,7 @@ package model_test
 import (
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 func TestIsSemverTag(t *testing.T) {

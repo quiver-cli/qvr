@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/git"
+	"github.com/quiver-cli/qvr/internal/git"
 )
 
 func TestSanitizeURL(t *testing.T) {

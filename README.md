@@ -275,13 +275,13 @@ A single binary with the dashboard (`qvr ui`) baked in — no Go or Node require
 **Linux / macOS:**
 
 ```
-curl -fsSL https://raw.githubusercontent.com/raks097/quiver/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/quiver-cli/qvr/main/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```
-irm https://raw.githubusercontent.com/raks097/quiver/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/quiver-cli/qvr/main/install.ps1 | iex
 ```
 
 Pin a version with `QVR_VERSION=v0.12.0` (or `$env:QVR_VERSION`); override the
@@ -290,13 +290,13 @@ location with `QVR_INSTALL_DIR`.
 ### From source
 
 ```
-git clone https://github.com/raks097/quiver.git
+git clone https://github.com/quiver-cli/qvr.git
 cd quiver
 make build-all          # builds the React UI, then the binary (needs Node 20+)
 make install            # -> /usr/local/bin/qvr  (sudo if needed)
 ```
 
-`go install github.com/raks097/quiver@latest` works too, but builds without the
+`go install github.com/quiver-cli/qvr@latest` works too, but builds without the
 embedded dashboard (the API still serves; `qvr ui` shows a "run make ui" stub).
 Use a prebuilt binary or `make build-all` for the full UI. Requires Go 1.22+.
 
@@ -534,7 +534,7 @@ go run . init test-skill
 go run . validate testdata/valid-skill
 ```
 
-Module path: `github.com/raks097/quiver`. Module binary: `qvr`.
+Module path: `github.com/quiver-cli/qvr`. Module binary: `qvr`.
 
 ## License
 

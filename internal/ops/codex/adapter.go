@@ -7,7 +7,7 @@
 package codex
 
 import (
-	"github.com/raks097/quiver/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops"
 )
 
 // AgentName is the dispatch key: `qvr _hook codex <type>`.

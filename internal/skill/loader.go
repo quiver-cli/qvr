@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 // LoadFromPath loads a skill from a directory path.

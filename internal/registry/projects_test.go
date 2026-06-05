@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 func setHome(t *testing.T) string {

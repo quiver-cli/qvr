@@ -11,8 +11,8 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // TestPublishInstalled_UserCommitInEjectDir_NoHealFlagNeeded is the

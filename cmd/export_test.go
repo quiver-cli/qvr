@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/manifest"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/manifest"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
 )
 
 // seedExportLock writes a v5 lock with a deterministic mix of entries:
@@ -27,7 +27,7 @@ func seedExportLock(t *testing.T) string {
 	lock.Put(&model.LockEntry{
 		Name:        "code-review",
 		Registry:    "raks",
-		Source:      "https://github.com/raks097/quiver_playground.git",
+		Source:      "https://github.com/quiver-cli/qvr_playground.git",
 		Ref:         "v0.2.0",
 		Commit:      "94e539be7d6a01774d723a7c25513af0f070de7b",
 		SubtreeHash: "sha256:aaa",
@@ -38,7 +38,7 @@ func seedExportLock(t *testing.T) string {
 		Name:        "cr-old",
 		Canonical:   "code-review",
 		Registry:    "raks",
-		Source:      "https://github.com/raks097/quiver_playground.git",
+		Source:      "https://github.com/quiver-cli/qvr_playground.git",
 		Ref:         "v0.1.0",
 		Commit:      "deadbeef0000000000000000000000000000beef",
 		SubtreeHash: "sha256:bbb",
@@ -67,7 +67,7 @@ func seedExportLock(t *testing.T) string {
 	// Edit install — must also be skipped (lives in the project).
 	lock.Put(&model.LockEntry{
 		Name:        "in-progress",
-		Source:      "https://github.com/raks097/quiver_playground.git",
+		Source:      "https://github.com/quiver-cli/qvr_playground.git",
 		Ref:         "main",
 		Mode:        model.ModeEdit,
 		EditPath:    ".claude/skills/in-progress",

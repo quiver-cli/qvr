@@ -13,8 +13,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // TestInstaller_LayoutBRepoRoot reproduces bug #50: a layout-B repo (a single

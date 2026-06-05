@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // PermissionsCheckName is the [Check.Name] of the permissions check.

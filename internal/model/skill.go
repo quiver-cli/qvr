@@ -1,7 +1,7 @@
 package model
 
 import (
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 // Skill represents a loaded skill with filesystem metadata.

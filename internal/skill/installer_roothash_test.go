@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // installRootAndVerify installs `root-app` from a seeded remote, returns its

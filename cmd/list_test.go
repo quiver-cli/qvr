@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
 )
 
 // TestRunList_EditModeSourceColumn is the #117 regression for the list
@@ -95,8 +95,8 @@ func TestRunList_EditModeSourceColumn_AfterEjectFromRegistry(t *testing.T) {
 		Registry:       "raks",
 		Mode:           model.ModeEdit,
 		EditPath:       ".claude/skills/code-review",
-		Source:         "https://github.com/raks097/quiver_playground.git",
-		SourceUpstream: "https://github.com/raks097/quiver_playground.git",
+		Source:         "https://github.com/quiver-cli/qvr_playground.git",
+		SourceUpstream: "https://github.com/quiver-cli/qvr_playground.git",
 		Ref:            "v0.2.0",
 		Targets:        []string{"claude"},
 		InstalledAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -127,7 +127,7 @@ func TestRunList_EditModeSourceColumn_AfterEjectFromRegistry(t *testing.T) {
 		t.Fatalf("runList: %v", err)
 	}
 	got := buf.String()
-	if strings.Contains(got, "github.com/raks097/quiver_playground.git") {
+	if strings.Contains(got, "github.com/quiver-cli/qvr_playground.git") {
 		t.Errorf("SOURCE column still prints upstream URL for ejected entry — issue #117 follow-up:\n%s", got)
 	}
 	if !strings.Contains(got, "edit") {

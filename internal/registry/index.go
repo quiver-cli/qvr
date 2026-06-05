@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 var ErrIndexBuildFailed = errors.New("index build failed")

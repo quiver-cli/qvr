@@ -10,8 +10,8 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // publishExitCodeFixture stands up a minimal edit-mode project: a project

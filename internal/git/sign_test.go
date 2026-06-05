@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/git"
+	"github.com/quiver-cli/qvr/internal/git"
 )
 
 // gitInRepo runs a git subcommand in dir with a deterministic identity, failing

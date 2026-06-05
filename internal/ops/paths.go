@@ -3,7 +3,7 @@ package ops
 import (
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/config"
+	"github.com/quiver-cli/qvr/internal/config"
 )
 
 // DBPath returns the SQLite database path. The user can override via

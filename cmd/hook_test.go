@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 )
 
 // isolatedHome returns a fresh $QUIVER_HOME with config (ops.enabled per the

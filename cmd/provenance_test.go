@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 func TestSignedColRendersNone(t *testing.T) {

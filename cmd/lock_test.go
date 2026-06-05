@@ -10,9 +10,9 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 // Regression for #20 + #21: the message names actual failing categories

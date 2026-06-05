@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/config"
+	"github.com/quiver-cli/qvr/internal/config"
 )
 
 // TestConfigValidator_BlockSeverityAcceptsScannerVocab pins the alignment

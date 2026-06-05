@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops"
 )
 
 // hookTypes are the Copilot CLI hook events Quiver captures.

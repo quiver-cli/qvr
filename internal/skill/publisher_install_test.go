@@ -13,9 +13,9 @@ import (
 	plumbingPkg "github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // ejectedFixture sets up an end-to-end edit-mode state for publish tests:

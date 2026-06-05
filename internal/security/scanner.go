@@ -21,7 +21,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // Severity is the four-step ladder used for findings.

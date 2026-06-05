@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/rawtrace"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/rawtrace"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 )
 
 // newStore opens a throwaway SQLite store under t.TempDir().

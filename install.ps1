@@ -1,6 +1,6 @@
 # qvr installer for Windows (PowerShell).
 #
-#   irm https://raw.githubusercontent.com/raks097/quiver/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/quiver-cli/qvr/main/install.ps1 | iex
 #
 # Downloads the prebuilt release binary (UI embedded) for your architecture from
 # GitHub Releases, verifies its checksum, installs it under
@@ -11,7 +11,7 @@
 #   $env:QVR_INSTALL_DIR   install location (default: %LOCALAPPDATA%\Programs\qvr)
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'raks097/quiver'
+$Repo = 'quiver-cli/qvr'
 $Binary = 'qvr'
 
 function Info($m) { Write-Host "==> $m" -ForegroundColor Blue }

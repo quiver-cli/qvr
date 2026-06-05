@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/output"
 )
 
 // withCapturingPrinter swaps the package-level printer for a buffer-backed

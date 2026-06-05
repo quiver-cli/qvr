@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/raks097/quiver/pkg/secretpatterns"
+	"github.com/quiver-cli/qvr/pkg/secretpatterns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

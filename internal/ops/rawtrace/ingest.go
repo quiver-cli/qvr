@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/redact"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/redact"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 )
 
 // IngestParams configures a one-shot ingest of an already-produced transcript.

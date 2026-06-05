@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // TestSyncerStatus_EditModeNotBroken is the #117 regression for the

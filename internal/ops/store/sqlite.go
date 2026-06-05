@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/raks097/quiver/internal/ops/store/migrations"
+	"github.com/quiver-cli/qvr/internal/ops/store/migrations"
 
 	_ "modernc.org/sqlite"
 )

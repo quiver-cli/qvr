@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/derive"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/derive"
 )
 
 // row builds a transcript RawTrace from a verbatim JSONL line.

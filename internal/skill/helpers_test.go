@@ -13,11 +13,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
-	"github.com/raks097/quiver/internal/skill"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
+	"github.com/quiver-cli/qvr/internal/skill"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 // codeReviewSkill and deployHelperSkill are the minimal valid SKILL.md bodies

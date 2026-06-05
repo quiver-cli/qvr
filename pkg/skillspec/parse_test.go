@@ -3,7 +3,7 @@ package skillspec_test
 import (
 	"testing"
 
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 func TestParse_ValidFull(t *testing.T) {

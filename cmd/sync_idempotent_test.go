@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // TestNeedsLockWrite_ByteIdentical is the unit-level guard for issue #79's

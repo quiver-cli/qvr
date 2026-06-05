@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/manifest"
+	"github.com/quiver-cli/qvr/internal/manifest"
 )
 
 func TestParse_BasicThreeColumn(t *testing.T) {
 	in := `# qvr export — 2026-05-31
-https://github.com/raks097/quiver_playground.git  code-review        v0.2.0
+https://github.com/quiver-cli/qvr_playground.git  code-review        v0.2.0
 https://github.com/acme-labs/agent-skills.git   deploy-to-cloud   main
 https://github.com/OmidZamani/dspy-skills.git     dspy-rag-pipeline  master
 `
@@ -23,7 +23,7 @@ https://github.com/OmidZamani/dspy-skills.git     dspy-rag-pipeline  master
 		t.Fatalf("unexpected parse errors: %v", perrs)
 	}
 	want := []manifest.Entry{
-		{RepoURL: "https://github.com/raks097/quiver_playground.git", Skill: "code-review", Version: "v0.2.0", Line: 2},
+		{RepoURL: "https://github.com/quiver-cli/qvr_playground.git", Skill: "code-review", Version: "v0.2.0", Line: 2},
 		{RepoURL: "https://github.com/acme-labs/agent-skills.git", Skill: "deploy-to-cloud", Version: "main", Line: 3},
 		{RepoURL: "https://github.com/OmidZamani/dspy-skills.git", Skill: "dspy-rag-pipeline", Version: "master", Line: 4},
 	}
@@ -33,7 +33,7 @@ https://github.com/OmidZamani/dspy-skills.git     dspy-rag-pipeline  master
 }
 
 func TestParse_AllFlags(t *testing.T) {
-	in := `https://github.com/raks097/quiver_playground.git  code-review  v0.2.0  --commit=94e539be7d6a01774d723a7c25513af0f070de7b  --target=claude,cursor  --as=cr-v2  --registry-alias=raks
+	in := `https://github.com/quiver-cli/qvr_playground.git  code-review  v0.2.0  --commit=94e539be7d6a01774d723a7c25513af0f070de7b  --target=claude,cursor  --as=cr-v2  --registry-alias=raks
 `
 	got, perrs, err := manifest.Parse(strings.NewReader(in))
 	if err != nil {
@@ -109,7 +109,7 @@ func TestParse_Errors(t *testing.T) {
 
 func TestFormat_RoundTrip(t *testing.T) {
 	entries := []manifest.Entry{
-		{RepoURL: "https://github.com/raks097/quiver_playground.git", Skill: "code-review", Version: "v0.2.0"},
+		{RepoURL: "https://github.com/quiver-cli/qvr_playground.git", Skill: "code-review", Version: "v0.2.0"},
 		{RepoURL: "https://github.com/acme-labs/agent-skills.git", Skill: "deploy-to-cloud", Version: "main", Targets: []string{"cursor", "claude"}},
 		{RepoURL: "https://github.com/OmidZamani/dspy-skills.git", Skill: "dspy-rag-pipeline", Version: "master", Commit: "deadbeef", Alias: "dspy", RegistryAlias: "omid"},
 	}
@@ -130,7 +130,7 @@ func TestFormat_RoundTrip(t *testing.T) {
 		got[i].Line = 0
 	}
 	want := []manifest.Entry{
-		{RepoURL: "https://github.com/raks097/quiver_playground.git", Skill: "code-review", Version: "v0.2.0"},
+		{RepoURL: "https://github.com/quiver-cli/qvr_playground.git", Skill: "code-review", Version: "v0.2.0"},
 		// Targets are sorted on emit so the round-trip lands the slice sorted.
 		{RepoURL: "https://github.com/acme-labs/agent-skills.git", Skill: "deploy-to-cloud", Version: "main", Targets: []string{"claude", "cursor"}},
 		{RepoURL: "https://github.com/OmidZamani/dspy-skills.git", Skill: "dspy-rag-pipeline", Version: "master", Commit: "deadbeef", Alias: "dspy", RegistryAlias: "omid"},

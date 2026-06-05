@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/output"
 )
 
 // TestAuditEnable_CreatesDatabase pins #144: `qvr audit enable` must actually

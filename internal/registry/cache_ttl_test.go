@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 // seedTinyRegistry builds a one-skill bare repo and registers it under name.

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/raks097/quiver/pkg/secretpatterns"
+	"github.com/quiver-cli/qvr/pkg/secretpatterns"
 )
 
 // DefaultMaxScanBytes is the per-file content cap used by [WalkSkill]

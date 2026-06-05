@@ -29,9 +29,9 @@ builds:
     # `make build`. CommitDate (not the build clock) keeps it reproducible.
     ldflags:
       - -s -w
-      - -X github.com/raks097/quiver/cmd.version={{ .Version }}
-      - -X github.com/raks097/quiver/cmd.commit={{ .ShortCommit }}
-      - -X github.com/raks097/quiver/cmd.date={{ .CommitDate }}
+      - -X github.com/quiver-cli/qvr/cmd.version={{ .Version }}
+      - -X github.com/quiver-cli/qvr/cmd.commit={{ .ShortCommit }}
+      - -X github.com/quiver-cli/qvr/cmd.date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
@@ -72,7 +72,7 @@ changelog:
 
 release:
   github:
-    owner: raks097
+    owner: quiver-cli
     name: quiver
   draft: false
   prerelease: auto

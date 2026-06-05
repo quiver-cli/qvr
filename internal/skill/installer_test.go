@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 func TestInstall_BasicFlow(t *testing.T) {

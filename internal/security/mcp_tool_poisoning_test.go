@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -6,7 +6,7 @@ formats may still shift before v1.0.
 ## Build & test
 
 ```bash
-git clone https://github.com/raks097/quiver.git
+git clone https://github.com/quiver-cli/qvr.git
 cd quiver
 make all          # fmt + lint + test + build
 ```

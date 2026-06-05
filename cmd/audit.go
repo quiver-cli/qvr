@@ -6,18 +6,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 	"github.com/spf13/cobra"
 
 	// Side-effect imports: register the per-agent hook installers so the
 	// install/status tooling can see them.
-	_ "github.com/raks097/quiver/internal/ops/claudecode"
-	_ "github.com/raks097/quiver/internal/ops/codex"
-	_ "github.com/raks097/quiver/internal/ops/copilot"
-	_ "github.com/raks097/quiver/internal/ops/cursor"
-	_ "github.com/raks097/quiver/internal/ops/opencode"
+	_ "github.com/quiver-cli/qvr/internal/ops/claudecode"
+	_ "github.com/quiver-cli/qvr/internal/ops/codex"
+	_ "github.com/quiver-cli/qvr/internal/ops/copilot"
+	_ "github.com/quiver-cli/qvr/internal/ops/cursor"
+	_ "github.com/quiver-cli/qvr/internal/ops/opencode"
 )
 
 // auditCmd is the parent for the SkillOps audit-trail surface: enabling

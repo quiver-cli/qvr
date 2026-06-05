@@ -128,7 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          go install github.com/raks097/quiver@latest
+          go install github.com/quiver-cli/qvr@latest
           qvr validate skills/ --output json
           qvr scan skills/ --format json
 ```
@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          go install github.com/raks097/quiver@latest
+          go install github.com/quiver-cli/qvr@latest
           qvr validate skills/
           qvr scan skills/
 ```

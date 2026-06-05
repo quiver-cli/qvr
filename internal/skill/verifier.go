@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/canonical"
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/canonical"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // Per-entry verification status codes used by VerifySingleEntry. These

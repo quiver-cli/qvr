@@ -3,8 +3,8 @@ package cmd
 import (
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/security"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/security"
 )
 
 // TestHashScanResult_deterministic guards issue #77 (reportSHA non-determinism):

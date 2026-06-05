@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // scopedLock pairs a loaded lock file with its scope label ("project" or

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/output"
 )
 
 func TestTable_NoDashSeparatorRow(t *testing.T) {

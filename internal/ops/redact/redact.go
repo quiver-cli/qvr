@@ -11,7 +11,7 @@ package redact
 import (
 	"regexp"
 
-	"github.com/raks097/quiver/pkg/secretpatterns"
+	"github.com/quiver-cli/qvr/pkg/secretpatterns"
 )
 
 // Marker replaces a detected secret value. It contains no JSON-structural

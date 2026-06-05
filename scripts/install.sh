@@ -3,13 +3,13 @@ set -e
 
 # Quiver (qvr) installer
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/raks097/quiver/main/scripts/install.sh | sh
+#   curl -sSL https://raw.githubusercontent.com/quiver-cli/qvr/main/scripts/install.sh | sh
 #
 # Downloads the latest release binary for your OS/arch from GitHub
-# Releases. Falls back to `go install github.com/raks097/quiver@latest`
+# Releases. Falls back to `go install github.com/quiver-cli/qvr@latest`
 # when no release tarball is available.
 
-REPO="raks097/quiver"
+REPO="quiver-cli/qvr"
 INSTALL_DIR="/usr/local/bin"
 BINARY="qvr"
 

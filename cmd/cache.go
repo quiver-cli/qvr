@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/output"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/output"
+	"github.com/quiver-cli/qvr/internal/registry"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

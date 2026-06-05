@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/raks097/quiver/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops"
 )
 
 func init() { Register("codex", codexDeriver{}) }

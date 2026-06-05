@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/ops/derive"
-	"github.com/raks097/quiver/internal/ops/rawtrace"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/ops/derive"
+	"github.com/quiver-cli/qvr/internal/ops/rawtrace"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 	"github.com/spf13/cobra"
 )
 

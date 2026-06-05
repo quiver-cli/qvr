@@ -10,12 +10,12 @@ Install via `go install` or build from source:
 
 ```bash
 # from source
-git clone https://github.com/raks097/quiver.git
+git clone https://github.com/quiver-cli/qvr.git
 cd quiver
 make install            # -> /usr/local/bin/qvr
 
 # or directly
-go install github.com/raks097/quiver@latest
+go install github.com/quiver-cli/qvr@latest
 ```
 
 ## Quick Start

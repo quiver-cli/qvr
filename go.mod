@@ -1,4 +1,4 @@
-module github.com/raks097/quiver
+module github.com/quiver-cli/qvr
 
 go 1.26.1
 

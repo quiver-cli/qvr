@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 func TestCreateSymlink(t *testing.T) {

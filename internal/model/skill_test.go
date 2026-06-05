@@ -3,8 +3,8 @@ package model_test
 import (
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 func TestSkill_EmbedsFrontmatter(t *testing.T) {

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/git"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/git"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 // mockGitClient implements git.GitClient for testing.

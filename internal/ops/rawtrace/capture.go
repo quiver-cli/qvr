@@ -23,10 +23,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/raks097/quiver/internal/ops"
-	"github.com/raks097/quiver/internal/ops/derive"
-	"github.com/raks097/quiver/internal/ops/redact"
-	"github.com/raks097/quiver/internal/ops/store"
+	"github.com/quiver-cli/qvr/internal/ops"
+	"github.com/quiver-cli/qvr/internal/ops/derive"
+	"github.com/quiver-cli/qvr/internal/ops/redact"
+	"github.com/quiver-cli/qvr/internal/ops/store"
 )
 
 // Store is the persistence surface capture needs (defined here, the consumer,

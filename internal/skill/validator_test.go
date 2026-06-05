@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/skill"
-	"github.com/raks097/quiver/pkg/skillspec"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/skill"
+	"github.com/quiver-cli/qvr/pkg/skillspec"
 )
 
 func TestValidate_ValidSkill(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/ops/rawtrace"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/ops/rawtrace"
 	"github.com/spf13/cobra"
 )
 

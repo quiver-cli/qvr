@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 // resetPrinter wires the package-global `printer` to a discard sink for tests

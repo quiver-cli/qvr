@@ -1,7 +1,7 @@
 #!/bin/sh
 # qvr installer for Linux and macOS (also works under WSL / Git Bash on Windows).
 #
-#   curl -fsSL https://raw.githubusercontent.com/raks097/quiver/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/quiver-cli/qvr/main/install.sh | sh
 #
 # Downloads the prebuilt release binary (UI embedded) for your OS/arch from
 # GitHub Releases, verifies its checksum, and installs it to a directory on PATH.
@@ -11,7 +11,7 @@
 #   QVR_INSTALL_DIR   install location (default: /usr/local/bin, ~/.local/bin if unwritable)
 set -eu
 
-REPO="raks097/quiver"
+REPO="quiver-cli/qvr"
 BINARY="qvr"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }

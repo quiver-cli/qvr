@@ -8,7 +8,7 @@
 package ops
 
 import (
-	"github.com/raks097/quiver/internal/config"
+	"github.com/quiver-cli/qvr/internal/config"
 )
 
 // Enabled returns whether the audit pipeline is active. Callers should

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
+	"github.com/quiver-cli/qvr/internal/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

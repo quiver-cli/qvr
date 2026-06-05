@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/registry"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/registry"
 )
 
 func writeFullSkill(t *testing.T, name string) string {
@@ -351,8 +351,8 @@ func TestRenderInfoText_EditModeSourceLabel(t *testing.T) {
 		Commit:         "cf452e1b58135e55b3f9295fcf1e7c94c69ad6ee",
 		Mode:           "edit",
 		EditPath:       ".claude/skills/code-review",
-		Source:         "https://github.com/raks097/quiver_playground.git",
-		SourceUpstream: "https://github.com/raks097/quiver_playground.git",
+		Source:         "https://github.com/quiver-cli/qvr_playground.git",
+		SourceUpstream: "https://github.com/quiver-cli/qvr_playground.git",
 	}
 	renderInfoText(info)
 	outBuf, ok := printer.Out.(interface{ String() string })
@@ -361,7 +361,7 @@ func TestRenderInfoText_EditModeSourceLabel(t *testing.T) {
 	}
 	got := outBuf.String()
 
-	if strings.Contains(got, "Source:      https://github.com/raks097/quiver_playground.git") {
+	if strings.Contains(got, "Source:      https://github.com/quiver-cli/qvr_playground.git") {
 		t.Errorf("info text still shows upstream URL in Source row for edit-mode entry — issue #117 follow-up:\n%s", got)
 	}
 	if !strings.Contains(got, "Source:      edit") {
@@ -370,7 +370,7 @@ func TestRenderInfoText_EditModeSourceLabel(t *testing.T) {
 	if !strings.Contains(got, "EditPath:    .claude/skills/code-review") {
 		t.Errorf("info text missing EditPath row for edit-mode entry:\n%s", got)
 	}
-	if !strings.Contains(got, "Upstream:    https://github.com/raks097/quiver_playground.git") {
+	if !strings.Contains(got, "Upstream:    https://github.com/quiver-cli/qvr_playground.git") {
 		t.Errorf("info text missing Upstream row preserving the original URL:\n%s", got)
 	}
 }

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/model"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/model"
 )
 
 // ProjectsFileName is the on-disk filename for the reachability registry.

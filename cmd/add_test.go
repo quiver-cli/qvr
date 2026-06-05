@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/raks097/quiver/internal/skill"
+	"github.com/quiver-cli/qvr/internal/skill"
 )
 
 // Regression for #66: errTextHandled must be a distinct sentinel value

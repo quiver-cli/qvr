@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/raks097/quiver/internal/config"
-	"github.com/raks097/quiver/internal/manifest"
-	"github.com/raks097/quiver/internal/model"
-	"github.com/raks097/quiver/internal/output"
+	"github.com/quiver-cli/qvr/internal/config"
+	"github.com/quiver-cli/qvr/internal/manifest"
+	"github.com/quiver-cli/qvr/internal/model"
+	"github.com/quiver-cli/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 

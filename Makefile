@@ -1,6 +1,6 @@
 BINARY    := qvr
 BUILD_DIR := bin
-MODULE    := github.com/raks097/quiver
+MODULE    := github.com/quiver-cli/qvr
 
 # --- Version / provenance -------------------------------------------------
 # The version NUMBER is hardcoded in ONE place — the VERSION file — and you
