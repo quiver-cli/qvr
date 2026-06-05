@@ -517,8 +517,9 @@ func (s *uiServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if n, err := s.store.CountRawTraces(ctx, dirs, ""); err == nil {
 			resp.Events = n
 		}
-		if recent, err := s.store.ListRawSessions(ctx, &store.RawSessionFilter{Dirs: dirs, Limit: 5}); err == nil && recent != nil {
+		if recent, err := s.store.ListRawSessions(ctx, &store.RawSessionFilter{Dirs: dirs, SkillsOnly: true, Limit: 5}); err == nil && recent != nil {
 			s.populateTitles(ctx, recent)
+			s.populateSessionSkills(ctx, recent)
 			resp.RecentSessions = recent
 		}
 	}
@@ -568,7 +569,11 @@ func (s *uiServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		Dirs:  sc.auditDirs(),
 		Agent: q.Get("agent"),
 		Skill: q.Get("skill"),
-		Limit: limit,
+		// The dashboard only surfaces skill-attributed sessions; skill-less ones
+		// that escaped capture's retention gate (in-flight, no deriver, ingested)
+		// stay in the DB but never show in the UI.
+		SkillsOnly: true,
+		Limit:      limit,
 	}
 	// Date filters accept a calendar day (YYYY-MM-DD from the UI's date inputs)
 	// or a full RFC3339 instant. `until` is inclusive: a bare day extends to its

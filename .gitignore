@@ -35,3 +35,7 @@ internal/ui/dist/*
 !internal/ui/dist/.gitkeep
 ui/node_modules/
 ui/dist/
+
+# GoReleaser build output (binaries, archives, checksums) — produced on release
+# and by `goreleaser release --snapshot --clean`.
+dist/

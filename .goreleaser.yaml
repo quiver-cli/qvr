@@ -1,0 +1,72 @@
+# GoReleaser builds the prebuilt, multi-platform `qvr` binaries published on each
+# tag. The React dashboard is built once here (before.hooks) and embedded into
+# every binary via //go:embed, so users who install a release get the full UI
+# offline with no Node/npm — `qvr ui` just works. Pure-Go SQLite (modernc.org/
+# sqlite) keeps CGO off, so all OS/arch targets cross-compile on one runner.
+#
+# Local dry run (no publish):  goreleaser release --snapshot --clean
+version: 2
+
+project_name: qvr
+
+before:
+  hooks:
+    # Build the dashboard into internal/ui/dist so the embed picks up the real
+    # bundle instead of the committed stub. Runs from the repo root.
+    - sh -c "cd ui && npm ci && npm run build"
+    - go mod tidy
+
+builds:
+  - id: qvr
+    main: .
+    binary: qvr
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/raks097/quiver/cmd.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: qvr
+    ids: [qvr]
+    formats: [tar.gz]
+    # Names match what the install scripts construct: qvr_Linux_x86_64.tar.gz,
+    # qvr_Darwin_arm64.tar.gz, qvr_Windows_x86_64.zip, ...
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+release:
+  github:
+    owner: raks097
+    name: quiver
+  draft: false
+  prerelease: auto
