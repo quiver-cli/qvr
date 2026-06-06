@@ -42,13 +42,26 @@ carry a usable last segment.
   qvr registry add https://github.com/acme-labs/agent-skills
   qvr registry add git@github.com:org/repo.git --name internal-tools
 
+By default only the remote's default branch is cloned, shallow (latest snapshot,
+no history) — so cold start stays fast even when a repo's other branches carry
+heavy assets. Every skill is still indexed (skills live on the default branch).
+Tags and other branches are NOT fetched, so installing a specific version is not
+possible until you re-add with --full.
+
+  qvr registry add <url> --full          # all branches + tags + history (any version installable)
+  qvr registry add <url> --depth 50      # 50 commits of the default branch's history
+
 GitHub /tree/<ref>/<path> and /blob/<ref>/<path> web URLs are rejected with
 an explanatory error — git can't clone a subdirectory; pass the repo URL.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRegistryAdd,
 }
 
-var registryAddName string
+var (
+	registryAddName  string
+	registryAddDepth int
+	registryAddFull  bool
+)
 
 var registryRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
@@ -84,6 +97,10 @@ var registryUpdateCmd = &cobra.Command{
 func init() {
 	registryAddCmd.Flags().StringVar(&registryAddName, "name", "",
 		"override the auto-inferred <org>/<repo> name (full literal override; pass <alias> or <org>/<alias>)")
+	registryAddCmd.Flags().IntVar(&registryAddDepth, "depth", registry.DefaultCloneDepth,
+		"history depth of the default-branch clone (1 = latest snapshot only). Ignored when --full is set")
+	registryAddCmd.Flags().BoolVar(&registryAddFull, "full", false,
+		"clone all branches, tags, and full history — needed to install specific tags or older versions")
 	registryUpdateCmd.Flags().BoolVar(&registryUpdateCheck, "check", false,
 		"check for upstream changes without downloading")
 	registryUpdateCmd.Flags().BoolVarP(&registryUpdateVerbose, "verbose", "v", false,
@@ -127,12 +144,56 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	gc := git.NewGoGitClient()
 	mgr := newRegistryManager(gc)
 
+	// --full pulls all branches/tags/history; otherwise the fast default clones
+	// just the default branch at --depth (negative normalised to full history of
+	// that one branch).
+	full := registryAddFull
+	depth := registryAddDepth
+	if depth < 0 {
+		depth = 0
+	}
+
+	// Re-adding an already-configured registry: with --full, deepen the existing
+	// latest-only clone in place (fetch all branches + tags into the same bare
+	// clone) instead of erroring. This is the recovery the install-time `--full`
+	// hint promises — previously it dead-ended because `registry add --full`
+	// refused an existing registry and there was no in-place deepen, forcing an
+	// unmentioned `registry remove` first (#184). Without --full it stays a
+	// conflict, now signposting BOTH escape hatches.
+	if _, exists := cfg.Registries[name]; exists {
+		if !full {
+			return fmt.Errorf("registry %q already exists — pass --name <alias> to add it under a different name, or --full to deepen it to all branches and tags", name)
+		}
+		sp := printer.Spinner()
+		sp.Start(fmt.Sprintf("Deepening %s to full (all branches, tags, history) …", name))
+		reg, derr := mgr.Deepen(cmd.Context(), name)
+		sp.Stop()
+		if derr != nil {
+			return fmt.Errorf("deepen registry: %w", derr)
+		}
+		if printer.Format == output.FormatJSON {
+			return printer.JSON(reg)
+		}
+		msg := fmt.Sprintf("Deepened registry %q (%s) to full — %d skills; all branches and tags are now installable",
+			reg.Name, reg.URL, reg.SkillCount)
+		if reg.SkippedCount > 0 {
+			msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
+				reg.SkippedCount, reg.Name)
+		}
+		printer.Success(msg)
+		return nil
+	}
+
 	// Clone + first index happen inside Add and can take seconds on a large
 	// or remote repo. Animate a spinner so the terminal never looks frozen
 	// (no-op in JSON mode / non-TTY — see Printer.Spinner).
 	sp := printer.Spinner()
-	sp.Start(fmt.Sprintf("Cloning %s …", name))
-	reg, err := mgr.Add(cmd.Context(), name, repoURL)
+	if full {
+		sp.Start(fmt.Sprintf("Cloning %s (full — all branches, tags, history) …", name))
+	} else {
+		sp.Start(fmt.Sprintf("Cloning %s (latest, default branch only) …", name))
+	}
+	reg, err := mgr.AddWithOptions(cmd.Context(), name, repoURL, registry.AddOptions{Depth: depth, Full: full})
 	sp.Stop()
 	if err != nil {
 		// Manager.Add surfaces ErrRegistryExists when the name is taken.
@@ -163,6 +224,12 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	}
 	printer.Success(msg)
 	printer.Info(registryTrustSummary(reg, cfg, fetchRegistryOwnerSignals(cmd.Context(), reg, cfg)))
+	// Proactive diagnostic: a default (latest-only) clone can't install tags or
+	// older versions. Tell the user how to get them rather than letting a later
+	// `qvr add skill@v1` fail mysteriously.
+	if !full {
+		printer.Info(fmt.Sprintf("Fetched the default branch only (fast). To install specific tags or older versions, re-add with: qvr registry add %s --full", reg.URL))
+	}
 	return nil
 }
 

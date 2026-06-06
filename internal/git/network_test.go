@@ -33,7 +33,7 @@ func TestBareClone_NoPromptOnMissingAuth(t *testing.T) {
 	// the "fast fail" contract without needing network.
 	client := git.NewGoGitClient()
 	dest := filepath.Join(t.TempDir(), "bare.git")
-	err := client.BareClone(context.Background(), "http://127.0.0.1:1/nonexistent.git", dest)
+	err := client.BareClone(context.Background(), "http://127.0.0.1:1/nonexistent.git", dest, git.CloneOptions{AllRefs: true})
 	if err == nil {
 		t.Fatal("expected error cloning from refused port")
 	}
@@ -61,7 +61,7 @@ func TestBareClone_RejectsDuplicateDestination(t *testing.T) {
 	}
 
 	client := git.NewGoGitClient()
-	err := client.BareClone(context.Background(), src, dest)
+	err := client.BareClone(context.Background(), src, dest, git.CloneOptions{AllRefs: true})
 	if !errors.Is(err, git.ErrAlreadyExists) {
 		t.Errorf("want ErrAlreadyExists, got %v", err)
 	}

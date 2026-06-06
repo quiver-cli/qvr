@@ -93,7 +93,7 @@ export default function FileTree({
 }) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   if (paths.length === 0) {
-    return <div className="text-sm text-gray-400">No files.</div>;
+    return <div className="text-sm text-[#7a8580]">No files.</div>;
   }
   return (
     <ul className="space-y-0.5 text-sm">
@@ -123,11 +123,11 @@ function TreeRow({
           type="button"
           onClick={() => setOpen((v) => !v)}
           style={pad}
-          className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-gray-50"
+          className="flex w-full items-center gap-1.5 rounded-[3px] px-1 py-0.5 text-left hover:bg-[#f4f6f5]"
         >
-          <span className="w-3 shrink-0 text-gray-400">{open ? "▾" : "▸"}</span>
-          <span className="font-medium text-gray-700">{node.name}</span>
-          <span className="text-xs text-gray-300">/</span>
+          <span className="w-3 shrink-0 text-[#708078]">{open ? "▾" : "▸"}</span>
+          <span className="font-medium text-[#34423d]">{node.name}</span>
+          <span className="text-xs text-[#9ba6a1]">/</span>
         </button>
         {open && (
           <ul className="space-y-0.5">
@@ -145,16 +145,16 @@ function TreeRow({
     <li>
       <div
         style={pad}
-        className="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-gray-50"
+        className="flex items-center gap-1.5 rounded-[3px] px-1 py-0.5 hover:bg-[#f4f6f5]"
         title={node.path}
       >
         <span className="w-3 shrink-0" />
-        <span className="font-mono text-[0.8125rem] text-gray-700">{node.name}</span>
-        <span className="text-[0.6875rem] uppercase tracking-wide text-gray-300">
+        <span className="font-mono text-[0.8125rem] text-[#34423d]">{node.name}</span>
+        <span className="text-[0.6875rem] uppercase text-[#9ba6a1]">
           {fileKind(node.name)}
         </span>
         {count > 0 && (
-          <span className="ml-auto inline-flex items-center rounded-md bg-red-100 px-1.5 text-[0.6875rem] font-medium text-red-700 ring-1 ring-inset ring-red-600/20">
+          <span className="ml-auto inline-flex items-center rounded-[3px] bg-[#f8eaea] px-1.5 text-[0.6875rem] font-semibold text-[#9a2f2f] ring-1 ring-inset ring-[#dc9a9a]">
             {count}
           </span>
         )}

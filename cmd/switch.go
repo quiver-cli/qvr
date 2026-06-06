@@ -205,7 +205,14 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 
 		target := ref
 		if mode == modeLatest {
-			loc, err := mgr.FindSkill(canonicalName)
+			// Scope tag discovery to the entry's CURRENT source, not the first
+			// registry that alphabetically shares the skill name. A skill
+			// fork-migrated with `publish --fork --migrate` has its tags on the
+			// fork (entry.Source), while the original registry it was first
+			// added from may carry none — resolving by name alone dead-ends
+			// --latest on every migrated skill (#183). This matches how
+			// outdated/provenance/`switch <ref>` already resolve the entry.
+			loc, err := mgr.FindSkillForSource(canonicalName, entry.Registry, entry.Source)
 			if err != nil {
 				return fmt.Errorf("locate skill: %w", err)
 			}

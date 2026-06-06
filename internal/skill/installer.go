@@ -42,6 +42,12 @@ var (
 	// user gets an actionable "pick a ref where the skill exists" message
 	// instead of a leaked internal .staging path and a raw stat failure (#178).
 	ErrSkillAbsentAtRef = errors.New("skill not present at the resolved ref")
+
+	// ErrVersionNotAvailable means the requested @ref couldn't be checked out
+	// because the registry was cloned latest-only (default branch, no tags/other
+	// branches). The remedy is re-adding the registry with --full, so this is
+	// distinct from a genuinely nonexistent ref in a full clone.
+	ErrVersionNotAvailable = errors.New("version not available in a latest-only registry")
 )
 
 // InstallRequest describes a desired install.
@@ -150,6 +156,10 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Whether the user explicitly pinned a version (`skill@ref`). Drives the
+	// "latest-only registry can't reach this version → use --full" diagnostic:
+	// a missing ref is only "go fetch all versions" when the user asked for one.
+	explicitVersion := version != ""
 	if len(req.Targets) == 0 {
 		return nil, fmt.Errorf("at least one --target is required")
 	}
@@ -338,6 +348,16 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	} else {
 		if err := in.Worktree.Add(loc.RepoPath, stagingPath, checkoutRef); err != nil {
 			_ = os.RemoveAll(stagingPath)
+			// A latest-only registry (default-branch clone) has no tags or other
+			// branches, so an explicitly-pinned version simply isn't on disk.
+			// Point the user at --full instead of dumping a raw git checkout
+			// error. Only when the user actually pinned a version and the
+			// registry isn't a full clone — a missing ref in a full clone is a
+			// genuine "no such ref".
+			if explicitVersion && !git.IsFullClone(loc.RepoPath) {
+				return nil, fmt.Errorf("%w: %q not found in registry %q — it was cloned latest-only (default branch). Re-add with all versions: `qvr registry add %s --full`, then retry",
+					ErrVersionNotAvailable, version, loc.RegistryName, loc.RegistryURL)
+			}
 			return nil, fmt.Errorf("create worktree: %w", err)
 		}
 		// Scope the checkout to the skill's own content so what we install

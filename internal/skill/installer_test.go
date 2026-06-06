@@ -1,6 +1,7 @@
 package skill_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -183,6 +184,33 @@ func TestInstall_AtVersion(t *testing.T) {
 	}
 	if _, err := os.Stat(result.Worktree); err != nil {
 		t.Errorf("worktree at v2 missing: %v", err)
+	}
+}
+
+// TestInstall_AtVersion_LatestOnlyRegistry pins the diagnostic: when a registry
+// was cloned latest-only (default branch, no tags/other branches), pinning a
+// version that lives on another ref fails with ErrVersionNotAvailable and a
+// message pointing at --full — not a raw git checkout error.
+func TestInstall_AtVersion_LatestOnlyRegistry(t *testing.T) {
+	h := newHarness(t)
+	// "v2" is an extra branch in the source; a latest-only clone won't have it.
+	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill}, "v2")
+	// Default (latest-only) clone — NOT via h.addRegistry, which forces --full.
+	if _, err := h.manager.AddWithOptions(context.Background(), "acme", remote,
+		registry.AddOptions{Depth: 1, Full: false}); err != nil {
+		t.Fatalf("latest-only registry add: %v", err)
+	}
+
+	_, err := h.installer.Install(skill.InstallRequest{
+		Skill:       "code-review@v2",
+		Targets:     []string{"claude"},
+		ProjectRoot: h.project,
+	})
+	if !errors.Is(err, skill.ErrVersionNotAvailable) {
+		t.Fatalf("expected ErrVersionNotAvailable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--full") {
+		t.Errorf("error should point at --full, got: %v", err)
 	}
 }
 

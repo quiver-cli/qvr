@@ -91,7 +91,7 @@ export default function Sessions() {
           <button
             type="button"
             onClick={clear}
-            className="rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+            className="rounded-[4px] border border-[#cbd2ce] bg-white px-3 py-1.5 text-sm font-medium text-[#52615a] hover:bg-[#f4f6f5]"
           >
             Clear
           </button>
@@ -107,7 +107,7 @@ export default function Sessions() {
           ) : (
             <>
               No sessions recorded. Enable the audit pipeline with{" "}
-              <code className="rounded bg-gray-100 px-1.5 py-0.5">qvr audit enable</code>.
+              <code className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5">qvr audit enable</code>.
             </>
           )}
         </Empty>
@@ -126,15 +126,15 @@ export default function Sessions() {
           }
         >
           {data.map((s) => (
-            <tr key={s.session_id} className="hover:bg-gray-50">
+            <tr key={s.session_id} className="hover:bg-[#f7f9f8]">
               <Td>
                 <Link
                   to={`/sessions/${s.session_id}`}
-                  className="font-medium text-blue-600 hover:underline"
+                  className="font-medium text-[#2f765d] hover:underline"
                   title={s.title || s.session_id}
                 >
                   {s.title || (
-                    <span className="italic text-gray-400">untitled session</span>
+                    <span className="italic text-[#7a8580]">untitled session</span>
                   )}
                 </Link>
               </Td>
@@ -151,7 +151,7 @@ export default function Sessions() {
                     ))}
                   </span>
                 ) : (
-                  <span className="text-gray-300">—</span>
+                  <span className="text-[#9ba6a1]">—</span>
                 )}
               </Td>
               <Td>{fmtTime(s.started_at)}</Td>
@@ -167,7 +167,7 @@ export default function Sessions() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-1 text-xs font-medium text-gray-500">
+    <label className="flex flex-col gap-1 text-xs font-semibold uppercase text-[#63706a]">
       {label}
       {children}
     </label>
@@ -187,7 +187,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800"
+      className="rounded-[4px] border border-[#cbd2ce] bg-white px-2 py-1.5 text-sm text-[#22302b] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
     >
       {children}
     </select>
@@ -200,7 +200,7 @@ function DateInput({ value, onChange }: { value: string; onChange: (v: string) =
       type="date"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-800"
+      className="rounded-[4px] border border-[#cbd2ce] bg-white px-2 py-1.5 text-sm text-[#22302b] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
     />
   );
 }

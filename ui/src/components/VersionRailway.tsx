@@ -37,7 +37,7 @@ export default function VersionRailway({
 }) {
   if (versions.length === 0) {
     return (
-      <div className="text-sm text-gray-400">
+      <div className="text-sm text-[#7a8580]">
         No branches or tags found in this registry's clone.
       </div>
     );
@@ -63,35 +63,35 @@ export default function VersionRailway({
               <span
                 className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white ${
                   selected
-                    ? "bg-emerald-500"
+                    ? "bg-[#2f765d]"
                     : v.isTag
-                      ? "bg-amber-400"
-                      : "bg-gray-300"
+                      ? "bg-[#d3ba70]"
+                      : "bg-[#aeb8b3]"
                 }`}
               />
-              {!isLast && <span className="mt-1 w-px flex-1 bg-gray-200" />}
+              {!isLast && <span className="mt-1 w-px flex-1 bg-[#d7ddda]" />}
             </div>
 
             {/* node */}
             <div
-              className={`mb-3 min-w-0 flex-1 rounded-lg px-3 py-2 ${
-                selected ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200" : "bg-gray-50"
+              className={`mb-3 min-w-0 flex-1 rounded-[6px] px-3 py-2 ${
+                selected ? "bg-[#e8f4ef] ring-1 ring-inset ring-[#8cc8b0]" : "bg-[#f7f9f8]"
               }`}
             >
               <div className="flex flex-wrap items-center gap-1.5">
                 <Pill tone={v.isTag ? "amber" : "blue"}>{v.isTag ? "tag" : "branch"}</Pill>
                 <span
-                  className={`font-medium ${selected ? "text-emerald-800" : "text-gray-800"}`}
+                  className={`font-medium ${selected ? "text-[#176548]" : "text-[#22302b]"}`}
                 >
                   {v.ref}
                 </span>
                 <Mono title={v.sha}>{short(v.sha)}</Mono>
                 {v.current && <Pill tone="gray">default</Pill>}
                 {selected && <Pill tone="green">current</Pill>}
-                <span className="ml-auto text-xs text-gray-400">{relTime(v.time)}</span>
+                <span className="ml-auto text-xs text-[#708078]">{relTime(v.time)}</span>
               </div>
               {v.subject && (
-                <p className="mt-1 truncate text-xs text-gray-500" title={v.subject}>
+                <p className="mt-1 truncate text-xs text-[#63706a]" title={v.subject}>
                   {v.subject}
                 </p>
               )}

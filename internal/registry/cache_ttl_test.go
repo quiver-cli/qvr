@@ -39,7 +39,7 @@ func seedTinyRegistry(t *testing.T, name string) string {
 		t.Fatalf("mkdir bare parent: %v", err)
 	}
 	gc := git.NewGoGitClient()
-	if err := gc.BareClone(context.Background(), remote, bare); err != nil {
+	if err := gc.BareClone(context.Background(), remote, bare, git.CloneOptions{AllRefs: true}); err != nil {
 		t.Fatalf("bare clone: %v", err)
 	}
 	return bare

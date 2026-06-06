@@ -38,31 +38,31 @@ export default function Provenance() {
           }
         >
           {data.map((p) => (
-            <tr key={p.name} className="hover:bg-gray-50">
+            <tr key={p.name} className="hover:bg-[#f7f9f8]">
               <Td>
                 <span className="font-medium">{p.name}</span>
                 {p.source && (
-                  <div className="text-xs text-gray-400">
+                  <div className="text-xs text-[#708078]">
                     <Mono>{p.source}</Mono>
                   </div>
                 )}
               </Td>
               <Td title={p.resolved}>
                 <Mono>{short(p.resolved)}</Mono>
-                {p.requested && <span className="ml-1 text-xs text-gray-400">@{p.requested}</span>}
+                {p.requested && <span className="ml-1 text-xs text-[#708078]">@{p.requested}</span>}
               </Td>
               <Td title={p.treeOID}>
                 <Mono>{short(p.treeOID)}</Mono>
               </Td>
               <Td>
                 <StatusPill value={p.signatureStatus} />
-                {p.signer && <div className="text-xs text-gray-400">{p.signer}</div>}
+                {p.signer && <div className="text-xs text-[#708078]">{p.signer}</div>}
               </Td>
               <Td>
                 <StatusPill value={p.scanDecision || "none"} />
               </Td>
               <Td>
-                <span className="text-xs text-gray-600">{p.status}</span>
+                <span className="text-xs text-[#52615a]">{p.status}</span>
               </Td>
             </tr>
           ))}

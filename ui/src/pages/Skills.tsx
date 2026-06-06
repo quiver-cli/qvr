@@ -36,11 +36,11 @@ export default function Skills() {
           }
         >
           {data.map((s) => (
-            <tr key={`${s.scope ?? ""}/${s.name}`} className="hover:bg-gray-50">
+            <tr key={`${s.scope ?? ""}/${s.name}`} className="hover:bg-[#f7f9f8]">
               <Td>
                 <Link
                   to={`/skills/${encodeURIComponent(s.name)}`}
-                  className="font-medium text-blue-600 hover:underline"
+                  className="font-medium text-[#2f765d] hover:underline"
                 >
                   {s.name}
                 </Link>
@@ -49,7 +49,7 @@ export default function Skills() {
               <Td>
                 {s.ref || "—"}
                 {s.commit ? (
-                  <span className="ml-1 text-xs text-gray-400">
+                    <span className="ml-1 text-xs text-[#708078]">
                     <Mono>{short(s.commit)}</Mono>
                   </span>
                 ) : null}

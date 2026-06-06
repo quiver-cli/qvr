@@ -308,7 +308,10 @@ func newHarness(t *testing.T) *installerTestHarness {
 
 func (h *installerTestHarness) addRegistry(t *testing.T, name, url string) {
 	t.Helper()
-	if _, err := h.manager.Add(context.Background(), name, url); err != nil {
+	// Full clone: these tests pin specific tags/branches (@v2, etc.), which only
+	// a full registry contains. The default (latest-only) clone and its
+	// "use --full" diagnostic are exercised by dedicated tests.
+	if _, err := h.manager.AddWithOptions(context.Background(), name, url, registry.AddOptions{Full: true}); err != nil {
 		t.Fatalf("registry add: %v", err)
 	}
 }

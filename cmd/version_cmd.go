@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,7 +65,19 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 	skillName := args[0]
 	mgr := newRegistryManager(git.NewGoGitClient())
 
-	loc, err := mgr.FindSkill(skillName)
+	// Scope discovery to the installed entry's CURRENT source so a fork-migrated
+	// skill lists the fork's branches/tags (and prints the fork as the
+	// registry), not the original registry it was first added from — the same
+	// resolution outdated/provenance/`switch <ref>` use (#183). Outside a
+	// project, or for a never-installed skill, entry is nil and we fall back to
+	// the name-only search.
+	entry := currentInstalledEntry(skillName)
+	var entryRegistry, entrySource, current string
+	if entry != nil {
+		entryRegistry, entrySource, current = entry.Registry, entry.Source, entry.Ref
+	}
+
+	loc, err := mgr.FindSkillForSource(skillName, entryRegistry, entrySource)
 	if err != nil {
 		return err
 	}
@@ -80,11 +91,9 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list tags: %w", err)
 	}
 
-	// Current ref comes from the lock file when the skill is installed here.
-	// A missing lock (e.g. running `version list` in an unrelated dir) just
-	// means nothing is marked current — not an error.
-	current := currentInstalledRef(skillName)
-
+	// `current` (the ref this skill is checked out at) came from the same lock
+	// entry we scoped resolution to above; it's "" when nothing is installed
+	// here, which just means no ref is marked current — not an error.
 	vl := &model.VersionList{
 		SkillName:     skillName,
 		Registry:      loc.RegistryName,
@@ -153,27 +162,26 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// currentInstalledRef looks up the skill in the project's lock file and
-// returns the ref it's currently checked out at, or "" when the skill isn't
-// installed here (or no lock file exists yet). Any I/O error is treated as
-// "not installed" — `version list` stays useful even outside a project dir.
-func currentInstalledRef(skillName string) string {
+// currentInstalledEntry looks up the skill in the project's lock file and
+// returns its entry, or nil when the skill isn't installed here (or no lock
+// file exists yet). Any I/O error is treated as "not installed" — `version
+// list` stays useful even outside a project dir. Callers read entry.Ref for the
+// current ref and entry.Registry/entry.Source to scope version discovery to the
+// skill's CURRENT source (e.g. a fork it was migrated to; #183).
+func currentInstalledEntry(skillName string) *model.LockEntry {
 	projectRoot, err := os.Getwd()
 	if err != nil {
-		return ""
+		return nil
 	}
 	lock, err := model.ReadLockFile(filepath.Join(projectRoot, model.LockFileName))
 	if err != nil {
-		return ""
+		return nil
 	}
 	entry, err := lock.Get(skillName)
 	if err != nil {
-		if errors.Is(err, model.ErrLockSkillMissing) {
-			return ""
-		}
-		return ""
+		return nil
 	}
-	return entry.Ref
+	return entry
 }
 
 func shortHash(h string) string {

@@ -204,10 +204,39 @@ func TestParseRemoteSkillSpec(t *testing.T) {
 			wantURL: "git@github.com:org/repo.git", wantSkill: "tdd"},
 		{in: "git@github.com:org/repo/tdd@v2", wantOK: true,
 			wantURL: "git@github.com:org/repo.git", wantSkill: "tdd", wantRef: "v2"},
+		// scp-style with a non-git user — the actual user must be preserved,
+		// not hard-coded back to git@.
+		{in: "deploy@git.acme.com:org/repo/tdd", wantOK: true,
+			wantURL: "deploy@git.acme.com:org/repo.git", wantSkill: "tdd"},
+
+		// ssh:// scheme — user and port must survive into the clone URL so a
+		// private remote keeps its identity.
+		{in: "ssh://git@github.com/org/repo/tdd", wantOK: true,
+			wantURL: "ssh://git@github.com/org/repo.git", wantSkill: "tdd"},
+		{in: "ssh://git@git.acme.com:2222/org/repo", wantOK: true,
+			wantURL: "ssh://git@git.acme.com:2222/org/repo.git", wantSkill: ""},
+		// git:// protocol.
+		{in: "git://github.com/org/repo/tdd", wantOK: true,
+			wantURL: "git://github.com/org/repo.git", wantSkill: "tdd"},
+
+		// Web "tree" URL — the in-path ref is extracted and the skill comes
+		// from the subpath, not the literal "tree" segment.
+		{in: "https://github.com/org/repo/tree/v2/skills/tdd", wantOK: true,
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "v2"},
+		// Web "blob" URL pointing straight at a SKILL.md — the skill is the
+		// file's parent directory.
+		{in: "https://github.com/org/repo/blob/main/skills/tdd/SKILL.md", wantOK: true,
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "main"},
+		// Explicit @ref wins over an in-path tree ref.
+		{in: "https://github.com/org/repo/tree/v2/tdd@v9", wantOK: true,
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "v9"},
 
 		// Deep skill path — the deepest segment names the skill.
 		{in: "github.com/org/repo/sub/dir/tdd", wantOK: true,
 			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd"},
+		// Trailing slash after a bare repo.
+		{in: "https://github.com/org/repo/", wantOK: true,
+			wantURL: "https://github.com/org/repo.git", wantSkill: ""},
 	}
 
 	for _, tt := range tests {

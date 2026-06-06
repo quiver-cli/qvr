@@ -37,10 +37,29 @@ type TreeEntry struct {
 	Hash  string
 }
 
+// CloneOptions controls what BareClone downloads. The two axes are independent:
+// how many refs (breadth) and how much history per ref (depth).
+type CloneOptions struct {
+	// Depth bounds how much history is downloaded per fetched ref:
+	//   - 0 → full history (every commit).
+	//   - N → shallow clone, N commits deep (just the snapshot for N==1).
+	Depth int
+
+	// AllRefs selects breadth:
+	//   - false (default) → clone ONLY the remote's default branch. No tags, no
+	//     other branches. The fast cold-start path: a repo whose non-default
+	//     branches carry heavy assets costs nothing to register. Installing a
+	//     specific tag/older version isn't possible until re-cloned with AllRefs.
+	//   - true → mirror every branch and tag (the `--full` path). Enables
+	//     pinning any version, at the cost of downloading every ref's content.
+	AllRefs bool
+}
+
 // GitClient provides git operations over bare and working repositories.
 type GitClient interface {
-	// BareClone clones a repository as a bare repo to the given path.
-	BareClone(ctx context.Context, url, path string) error
+	// BareClone clones a repository as a bare repo to the given path, with
+	// breadth/depth governed by opts (see CloneOptions).
+	BareClone(ctx context.Context, url, path string, opts CloneOptions) error
 
 	// Clone performs a full clone to the given path.
 	Clone(ctx context.Context, url, path string) error
@@ -53,6 +72,16 @@ type GitClient interface {
 
 	// Fetch fetches all refs from the remote in a bare repository.
 	Fetch(ctx context.Context, repoPath string) error
+
+	// DeepenToFull converts an existing latest-only (shallow, single-branch)
+	// bare clone into a full clone IN PLACE: it rewrites the fetch refspec to
+	// the all-branches + all-tags wildcards and fetches every ref, unshallowing
+	// the history. After it returns, IsFullClone(repoPath) is true and any
+	// tag/branch is installable. This backs `qvr registry add <url> --full` on a
+	// registry that already exists (#184) — the deepen the install-time `--full`
+	// hint promises, without a remove + re-add. A no-op on a clone that is
+	// already full.
+	DeepenToFull(ctx context.Context, repoPath string) error
 
 	// FetchWorktree fetches origin into a non-bare worktree, updating
 	// refs/remotes/origin/* only (does not touch local refs/heads/*).

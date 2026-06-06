@@ -29,8 +29,9 @@ reads skills from a directory).
 - Skills install as **git worktrees + sparse checkout**, symlinked into each
   agent's skills directory. Independent per-skill versioning for free; two
   projects pinning the same SHA share one worktree.
-- The hot path (`qvr read`) is **just follow a symlink**. No git, no network, no
-  runtime.
+- The read path is **just a symlink**: after `qvr add` (or `qvr add --local`),
+  the agent opens `.claude/skills/<skill>/SKILL.md` directly through its own file
+  access. No git, no network, no runtime, no CLI in the loop.
 - Push your edits back upstream. Bidirectional sync, not just pull.
 
 [agent skills]: https://agentskills.io
@@ -477,7 +478,7 @@ Shipping today:
   `search`, `version`, TTL-cached registry index
 - **Project-local install** — `add` (with `--as`, `--frozen`, `--registry`),
   `sync` (with `--strict`), `link`, worktrees, symlinks, `pull`,
-  `upgrade`/`switch`, AGENTS.md auto-sync, `read`,
+  `upgrade`/`switch`, AGENTS.md auto-sync,
   `doctor`/`info`/`list`/`status`/`diff`/`outdated`, `disable`/`enable`,
   private registries
 - **Edit → publish flow** — `edit` (eject), `publish` with installed-skill

@@ -31,12 +31,15 @@ func newMockGitClient() *mockGitClient {
 	}
 }
 
-func (m *mockGitClient) BareClone(ctx context.Context, url, path string) error { return nil }
-func (m *mockGitClient) Clone(ctx context.Context, url, path string) error     { return nil }
+func (m *mockGitClient) BareClone(ctx context.Context, url, path string, opts git.CloneOptions) error {
+	return nil
+}
+func (m *mockGitClient) Clone(ctx context.Context, url, path string) error { return nil }
 func (m *mockGitClient) SubdirClone(ctx context.Context, url, ref, subpath, dest string) error {
 	return nil
 }
-func (m *mockGitClient) Fetch(ctx context.Context, repoPath string) error { return nil }
+func (m *mockGitClient) Fetch(ctx context.Context, repoPath string) error        { return nil }
+func (m *mockGitClient) DeepenToFull(ctx context.Context, repoPath string) error { return nil }
 func (m *mockGitClient) FetchWorktree(ctx context.Context, worktreePath string) error {
 	return nil
 }

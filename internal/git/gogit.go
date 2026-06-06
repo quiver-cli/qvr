@@ -93,18 +93,125 @@ func (g *GoGitClient) SubdirClone(ctx context.Context, url, ref, subpath, dest s
 	return nil
 }
 
-func (g *GoGitClient) BareClone(ctx context.Context, url, path string) error {
+func (g *GoGitClient) BareClone(ctx context.Context, url, path string, opts CloneOptions) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%w: %s", ErrAlreadyExists, path)
 	}
-	// `--mirror` gives us a bare with all remote refs mapped directly into
-	// refs/heads/* and refs/tags/* (not refs/remotes/origin/*). That's the
-	// shape worktree clones from this bare need to see. `--` terminates
-	// option parsing so a hostile URL can't be interpreted as a flag.
-	if _, err := runGit(ctx, "clone", "--mirror", "--", url, path); err != nil {
+	args := []string{"clone"}
+	if opts.AllRefs {
+		// Full mode: every branch and tag, so any version is installable. We
+		// deliberately do NOT use `--mirror`. `--mirror` maps the remote's
+		// ENTIRE ref namespace (+refs/*:refs/*), which on GitHub repos pulls in
+		// `refs/pull/*` — one or two refs for every PR ever opened, plus the
+		// unreachable objects they carry. On a busy repo that's thousands of
+		// refs of pure overhead (anthropics/skills: ~1,600 PR refs vs 14
+		// branches) that grows forever and has nothing to do with installable
+		// versions. A plain bare clone takes refs/heads/* and refs/tags/* and
+		// ignores pull refs.
+		args = append(args, "--bare")
+		if opts.Depth > 0 {
+			// `--depth` alone implies `--single-branch` (drops tags + other
+			// branches), so `--no-single-branch` restores the full ref set
+			// while still skipping deep history.
+			args = append(args, fmt.Sprintf("--depth=%d", opts.Depth), "--no-single-branch")
+		}
+	} else {
+		// Fast default: a bare clone of ONLY the remote's default branch. No
+		// tags, no other branches — so a repo whose non-default branches carry
+		// heavy assets costs almost nothing to register. The go-git indexer
+		// still sees every skill (they live on the default branch) and can read
+		// SKILL.md from the tip's tree.
+		args = append(args, "--bare", "--single-branch")
+		if opts.Depth > 0 {
+			args = append(args, fmt.Sprintf("--depth=%d", opts.Depth))
+		}
+	}
+	// `--` terminates option parsing so a hostile URL can't be read as a flag.
+	args = append(args, "--", url, path)
+	if _, err := runGit(ctx, args...); err != nil {
 		return classifyNetworkErr(err, ErrCloneFailed)
 	}
+	if opts.AllRefs {
+		// `git clone --bare` configures `+refs/heads/*:refs/heads/*` but no tags
+		// refspec, so a later `git fetch` would only follow tags reachable from
+		// fetched branches. Add an explicit tags refspec so `qvr registry
+		// update` keeps every tag (including ones off any branch) — without it
+		// we'd silently miss newly-published versions. We intentionally do NOT
+		// add refs/pull/* — excluding PR refs is the whole point of not using
+		// --mirror.
+		if err := configureFullRefspec(ctx, path); err != nil {
+			_ = os.RemoveAll(path)
+			return err
+		}
+	} else {
+		// A bare single-branch clone leaves remote.origin.fetch unset, so a
+		// later `git fetch origin` (qvr registry update) would update nothing.
+		// Wire up a single-branch refspec for the default branch so updates work
+		// and stay scoped to that one branch.
+		if err := configureSingleBranchFetch(ctx, path); err != nil {
+			_ = os.RemoveAll(path)
+			return err
+		}
+	}
 	return nil
+}
+
+// configureFullRefspec ensures a full (AllRefs) bare clone fetches every branch
+// and tag on update — and nothing else. `git clone --bare` already writes the
+// branches refspec; we add the tags refspec so versions published off any
+// branch are still picked up. The absence of any refs/pull/* refspec is
+// deliberate: that's what keeps full registries from re-pulling PR refs.
+func configureFullRefspec(ctx context.Context, repoPath string) error {
+	// --replace-all collapses the clone's default heads refspec to exactly the
+	// two we want, making the result deterministic regardless of git's defaults.
+	if _, err := runGit(ctx, "-C", repoPath, "config", "--replace-all",
+		"remote.origin.fetch", "+refs/heads/*:refs/heads/*"); err != nil {
+		return fmt.Errorf("configure heads refspec: %w", err)
+	}
+	if _, err := runGit(ctx, "-C", repoPath, "config", "--add",
+		"remote.origin.fetch", "+refs/tags/*:refs/tags/*"); err != nil {
+		return fmt.Errorf("configure tags refspec: %w", err)
+	}
+	return nil
+}
+
+// configureSingleBranchFetch sets remote.origin.fetch to a single-branch
+// refspec for the bare clone's current default branch, so `git fetch origin`
+// updates exactly that branch (git doesn't configure a refspec for bare
+// single-branch clones on its own).
+func configureSingleBranchFetch(ctx context.Context, repoPath string) error {
+	out, err := runGit(ctx, "-C", repoPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve default branch: %w", err)
+	}
+	def := strings.TrimSpace(string(out))
+	if def == "" {
+		return fmt.Errorf("could not determine default branch to configure fetch")
+	}
+	spec := fmt.Sprintf("+refs/heads/%s:refs/heads/%s", def, def)
+	if _, err := runGit(ctx, "-C", repoPath, "config", "remote.origin.fetch", spec); err != nil {
+		return fmt.Errorf("configure fetch refspec: %w", err)
+	}
+	return nil
+}
+
+// IsFullClone reports whether the bare repo at repoPath was cloned in `--full`
+// mode (contains every branch and tag, so any version is installable). A
+// single-branch "latest only" registry returns false. Used to decide whether a
+// missing version means "re-fetch with --full" vs "this ref truly doesn't
+// exist." Local-only; never errors out loud (treats any problem as "not full").
+//
+// Detection is by fetch refspec breadth: a full clone configures a wildcard
+// refspec (+refs/heads/*:... and +refs/tags/*:...), whereas a single-branch
+// clone pins one fully-qualified branch with no wildcard. A `*` in any
+// configured fetch refspec therefore means full. This also recognises older
+// registries that were cloned with `--mirror` (+refs/*:refs/*) as full.
+func IsFullClone(repoPath string) bool {
+	out, err := runGit(context.Background(), "-C", repoPath, "config", "--get-all", "remote.origin.fetch")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "*")
 }
 
 func (g *GoGitClient) Clone(ctx context.Context, url, path string) error {
@@ -118,18 +225,67 @@ func (g *GoGitClient) Clone(ctx context.Context, url, path string) error {
 }
 
 func (g *GoGitClient) Fetch(ctx context.Context, repoPath string) error {
-	// Mirror-style refspecs keep local refs/heads/* and refs/tags/* in sync
-	// with origin so a bare registry reflects upstream exactly. `--prune`
-	// removes refs that were deleted upstream.
-	_, err := runGit(ctx, "-C", repoPath, "fetch", "--prune", "--tags",
-		"origin",
-		"+refs/heads/*:refs/heads/*",
-		"+refs/tags/*:refs/tags/*",
-	)
-	if err != nil {
+	// Update using the clone's OWN configured refspec rather than a hardcoded
+	// `+refs/*:refs/*`. That keeps a registry in whatever mode it was cloned in:
+	// a full registry has wildcard heads + tags refspecs and so syncs every
+	// branch and tag (but not refs/pull/*); a latest-only registry has the
+	// single-branch refspec BareClone wrote, so it stays scoped to its default
+	// branch instead of silently ballooning into a full clone on the first
+	// update. `--prune` removes refs deleted upstream.
+	args := []string{"-C", repoPath, "fetch", "--prune"}
+	// If the registry was cold-started shallow, keep updates shallow too —
+	// otherwise a plain fetch back-fills the deep history we deliberately
+	// skipped, undoing the fast-cold-start property on the first update.
+	if isShallowRepo(repoPath) {
+		args = append(args, "--depth=1")
+	}
+	args = append(args, "origin")
+	if _, err := runGit(ctx, args...); err != nil {
 		return classifyNetworkErr(err, ErrFetchFailed)
 	}
 	return nil
+}
+
+// DeepenToFull turns a latest-only (shallow, single-branch) bare clone into a
+// full clone in place — the in-place counterpart to a fresh `--full` BareClone.
+// Steps: rewrite the fetch refspec to the all-heads + all-tags wildcards (so
+// IsFullClone flips true and future updates stay broad), then fetch every ref,
+// unshallowing when the clone was shallow. PR refs are never configured, so the
+// deepen stays free of refs/pull/* just like a fresh full clone.
+func (g *GoGitClient) DeepenToFull(ctx context.Context, repoPath string) error {
+	if IsFullClone(repoPath) {
+		// Already full — still fetch so a deepen-on-a-full-registry behaves like
+		// an update rather than a silent no-op, but skip the refspec rewrite.
+		return g.Fetch(ctx, repoPath)
+	}
+	if err := configureFullRefspec(ctx, repoPath); err != nil {
+		return err
+	}
+	// Fetch all heads + tags per the just-written refspec. `--unshallow` removes
+	// the shallow marker and back-fills history when the clone was cold-started
+	// shallow; on a full-history clone it's invalid, so only pass it when shallow.
+	args := []string{"-C", repoPath, "fetch", "--prune", "--tags"}
+	if isShallowRepo(repoPath) {
+		args = append(args, "--unshallow")
+	}
+	args = append(args, "origin")
+	if _, err := runGit(ctx, args...); err != nil {
+		return classifyNetworkErr(err, ErrFetchFailed)
+	}
+	return nil
+}
+
+// isShallowRepo reports whether the git repo at repoPath was cloned shallow,
+// by probing for git's `shallow` marker file. Bare repos keep it at
+// <repo>/shallow; non-bare repos at <repo>/.git/shallow.
+func isShallowRepo(repoPath string) bool {
+	if _, err := os.Stat(filepath.Join(repoPath, "shallow")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(repoPath, ".git", "shallow")); err == nil {
+		return true
+	}
+	return false
 }
 
 // FetchWorktree fetches origin into a non-bare worktree, updating

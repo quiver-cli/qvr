@@ -397,15 +397,23 @@ func soleSkillName(mgr *registry.Manager, regName, spec string) (string, error) 
 }
 
 // parseRemoteSkillSpec recognizes a one-step install spec and splits it into a
-// clone URL for the org/repo, the skill name (the path segment past org/repo,
-// empty when the spec points at the bare repo), and an optional `@ref`. It
-// accepts `[scheme://]host/org/repo[/skill...][@ref]` and scp-style
-// `git@host:org/repo[/skill...][@ref]`. ok=false means the arg is a plain skill
-// name (no host/path shape) and should flow through normal registry resolution.
+// clone URL for the org/repo, the skill name (empty when the spec points at the
+// bare repo), and an optional ref. It accepts:
 //
-// Detection is deliberately conservative: an arg with no `/` is always a plain
-// name, and the first path component must look like a host (contain a `.`), so
-// a stray `foo/bar` never silently triggers a network clone.
+//	[scheme://][user@]host[:port]/org/repo[/skill...][@ref]   (https, http, ssh, git)
+//	[user@]host:org/repo[/skill...][@ref]                     (scp-style SSH)
+//	host/org/repo/tree/<ref>/<subpath>                        (web "tree" URL)
+//	host/org/repo/blob/<ref>/<path>/SKILL.md                  (web "blob" URL)
+//
+// The authority (user + host + port) is preserved verbatim in the reconstructed
+// clone URL so private SSH remotes keep their identity and port. Embedded HTTPS
+// credentials are stripped downstream by the registry layer's SanitizeURL.
+//
+// ok=false means the arg is a plain skill name (no host/path shape) and should
+// flow through normal registry resolution. Detection is deliberately
+// conservative: an arg with no `/` is always a plain name, and the host
+// component must look like one (contain a `.`), so a stray `foo/bar` never
+// silently triggers a network clone.
 func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool) {
 	raw := strings.TrimSpace(arg)
 	if raw == "" || !strings.Contains(raw, "/") {
@@ -413,14 +421,16 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 	}
 
 	// Peel a trailing @ref only when the '@' sits after the last '/', so the
-	// user@ in a scp-style git@host:... authority isn't mistaken for a ref.
+	// user@ in a scp-style git@host:... authority isn't mistaken for a ref. An
+	// explicit @ref set here wins over any ref carried in a /tree|blob/ path.
 	if at := strings.LastIndex(raw, "@"); at > strings.LastIndex(raw, "/") {
 		ref = raw[at+1:]
 		raw = raw[:at]
 	}
 
+	// Split off the authority (kept verbatim) and the org/repo[/...] path.
 	scheme := "https"
-	host := ""
+	authority := ""
 	rest := raw
 	switch {
 	case strings.Contains(rest, "://"):
@@ -431,28 +441,23 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 		if slash < 0 {
 			return "", "", "", false
 		}
-		authority := rest[:slash]
-		if a := strings.LastIndex(authority, "@"); a >= 0 {
-			authority = authority[a+1:] // drop user@
-		}
-		host, rest = authority, rest[slash+1:]
-	case strings.Contains(rest, ":") && strings.Index(rest, "@") < strings.Index(rest, ":") && strings.Contains(rest, "@"):
-		// scp-style git@host:org/repo/...
-		at := strings.Index(rest, "@")
+		authority, rest = rest[:slash], rest[slash+1:]
+	case isSCPStyleSpec(rest):
+		// scp-style [user@]host:org/repo/...
 		colon := strings.Index(rest, ":")
-		host, rest = rest[at+1:colon], rest[colon+1:]
+		authority, rest = rest[:colon], rest[colon+1:]
 		scheme = "scp"
 	default:
 		slash := strings.Index(rest, "/")
 		if slash < 0 {
 			return "", "", "", false
 		}
-		host, rest = rest[:slash], rest[slash+1:]
+		authority, rest = rest[:slash], rest[slash+1:]
 	}
 
-	// The host must look like one — guards a bare `org/repo/skill` (no host)
-	// from triggering a clone of a nonexistent remote.
-	if !strings.Contains(host, ".") {
+	// The host (authority minus user@ and :port) must look like one — guards a
+	// bare `org/repo/skill` from triggering a clone of a nonexistent remote.
+	if !strings.Contains(authorityHost(authority), ".") {
 		return "", "", "", false
 	}
 
@@ -470,15 +475,69 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 	if org == "" || repo == "" {
 		return "", "", "", false
 	}
-	if len(segs) > 2 {
-		skillName = segs[len(segs)-1] // deepest segment names the skill
-	}
-	if scheme == "scp" {
-		cloneURL = fmt.Sprintf("git@%s:%s/%s.git", host, org, repo)
+
+	// Everything past org/repo names the skill, with the two web-browse shapes
+	// handled specially: org/repo/(tree|blob)/<ref>/<subpath...>. Their <ref>
+	// becomes the pin (unless an explicit @ref already set one), and the skill
+	// name comes from the subpath rather than the literal "tree"/"blob" segment.
+	tail := segs[2:]
+	if len(tail) >= 2 && (tail[0] == "tree" || tail[0] == "blob") {
+		if ref == "" {
+			ref = tail[1]
+		}
+		skillName = skillFromSubpath(tail[2:])
 	} else {
-		cloneURL = fmt.Sprintf("%s://%s/%s/%s.git", scheme, host, org, repo)
+		skillName = skillFromSubpath(tail)
+	}
+
+	if scheme == "scp" {
+		cloneURL = fmt.Sprintf("%s:%s/%s.git", authority, org, repo)
+	} else {
+		cloneURL = fmt.Sprintf("%s://%s/%s/%s.git", scheme, authority, org, repo)
 	}
 	return cloneURL, skillName, ref, true
+}
+
+// isSCPStyleSpec reports whether s is the scp-style SSH shorthand
+// `[user@]host:path` (as opposed to a `host:port/...` authority, which has no
+// user@). We require a `@` before the first `:` so a port number is never
+// mistaken for the path separator.
+func isSCPStyleSpec(s string) bool {
+	colon := strings.Index(s, ":")
+	if colon < 0 {
+		return false
+	}
+	at := strings.Index(s, "@")
+	return at >= 0 && at < colon
+}
+
+// authorityHost returns the bare host from an authority, dropping any leading
+// `user@` and trailing `:port` so the "looks like a host" dot-check isn't
+// fooled by the username or confused by the port.
+func authorityHost(authority string) string {
+	h := authority
+	if a := strings.LastIndex(h, "@"); a >= 0 {
+		h = h[a+1:]
+	}
+	if c := strings.LastIndex(h, ":"); c >= 0 {
+		h = h[:c]
+	}
+	return h
+}
+
+// skillFromSubpath derives the skill name from the path segments under
+// org/repo. The deepest segment names the skill, except a trailing SKILL.md
+// (from a /blob/.../SKILL.md URL) which defers to its parent directory — the
+// skill dir. Returns "" for an empty subpath (a bare-repo spec).
+func skillFromSubpath(sub []string) string {
+	if len(sub) == 0 {
+		return ""
+	}
+	last := sub[len(sub)-1]
+	if strings.EqualFold(last, "SKILL.md") && len(sub) >= 2 {
+		return sub[len(sub)-2]
+	}
+	return last
 }
 
 // skillDirFor returns the absolute path of the SKILL.md-bearing directory

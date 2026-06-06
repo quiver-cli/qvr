@@ -37,25 +37,25 @@ export default function ScopeSwitcher({
     <div ref={ref} className="relative px-3 pb-3">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-800"
+        className="flex w-full items-center justify-between rounded-[4px] border border-[#cbd2ce] bg-white px-3 py-2 text-left text-sm text-[#22302b] shadow-[0_1px_0_rgba(22,32,28,0.04)] hover:border-[#9fb9af]"
       >
         <span className="truncate">
-          <span className="text-[0.625rem] uppercase tracking-wide text-gray-500">scope</span>
+          <span className="text-[0.625rem] font-semibold uppercase text-[#708078]">scope</span>
           <br />
           <span className="font-medium">{label}</span>
         </span>
-        <span className="ml-2 shrink-0 text-gray-500">▾</span>
+        <span className="ml-2 shrink-0 text-[#708078]">▾</span>
       </button>
       {open && (
-        <div className="absolute left-3 right-3 z-10 mt-1 max-h-80 overflow-auto rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl">
+        <div className="absolute left-3 right-3 z-10 mt-1 max-h-80 overflow-auto rounded-[6px] border border-[#cbd2ce] bg-white py-1 shadow-xl shadow-[#17211d]/10">
           {projects.map((p) => {
             const sel: Scope = p.scope === "global" ? { scope: "global" } : { project: p.path };
             return (
               <button
                 key={p.scope === "global" ? "__global__" : p.path}
                 onClick={() => pick(sel)}
-                className={`block w-full px-3 py-2 text-left text-sm hover:bg-gray-800 ${
-                  isActive(scope, p) ? "bg-gray-800 text-white" : "text-gray-300"
+                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[#f4f6f5] ${
+                  isActive(scope, p) ? "bg-[#e7f1ed] text-[#123a2e]" : "text-[#34423d]"
                 }`}
                 title={p.path || "all projects"}
               >
@@ -63,18 +63,18 @@ export default function ScopeSwitcher({
                   <span className="truncate font-medium">
                     {p.name}
                     {p.current && p.scope === "project" && (
-                      <span className="ml-1 text-[0.625rem] text-blue-400">· here</span>
+                      <span className="ml-1 text-[0.625rem] font-semibold text-[#2f765d]">· here</span>
                     )}
                   </span>
                   {!p.hasLock && p.scope === "project" && (
-                    <span className="shrink-0 text-[0.625rem] text-gray-500">no lock</span>
+                    <span className="shrink-0 text-[0.625rem] text-[#7a8580]">no lock</span>
                   )}
                 </div>
-                <div className="mt-0.5 truncate text-[0.6875rem] text-gray-500">
+                <div className="mt-0.5 truncate text-[0.6875rem] text-[#708078]">
                   {p.scope === "global" ? "all projects" : p.path}
                 </div>
-                <div className="mt-0.5 text-[0.625rem] text-gray-500">
-                  {p.skills} skills · {p.sessions} traces
+                <div className="mt-0.5 font-mono text-[0.625rem] text-[#708078]">
+                  {p.skills} skills / {p.sessions} traces
                 </div>
               </button>
             );

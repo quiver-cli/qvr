@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -138,6 +139,62 @@ func TestManager_Add_AlreadyExists(t *testing.T) {
 	_, err := mgr.Add(context.Background(), "test", srcDir)
 	if !errors.Is(err, registry.ErrRegistryExists) {
 		t.Errorf("expected ErrRegistryExists, got %v", err)
+	}
+}
+
+// TestManager_FindSkillForSource scopes version/tag discovery to a lock entry's
+// CURRENT source (#183). When the same skill name lives in two registries — the
+// original it was first added from and a fork it was migrated to — a name-only
+// FindSkill picks the alphabetically-first (original), but FindSkillForSource
+// must resolve the fork when given the fork's URL (entry.Source), since
+// `--migrate` clears entry.Registry. Falls back to the name-only pick when no
+// source hint is given or the source matches no configured registry.
+func TestManager_FindSkillForSource(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	// Two registries, both exposing skill "code-review". "aaa/orig" sorts first.
+	origURL := setupTestSourceRepo(t)
+	forkURL := setupTestSourceRepo(t)
+	if _, err := mgr.Add(context.Background(), "aaa/orig", origURL); err != nil {
+		t.Fatalf("add orig: %v", err)
+	}
+	if _, err := mgr.Add(context.Background(), "zzz/fork", forkURL); err != nil {
+		t.Fatalf("add fork: %v", err)
+	}
+
+	// Baseline: name-only resolution picks the alphabetically-first registry.
+	base, err := mgr.FindSkill("code-review")
+	if err != nil {
+		t.Fatalf("FindSkill: %v", err)
+	}
+	if base.RegistryName != "aaa/orig" {
+		t.Fatalf("FindSkill picked %q, want the alphabetically-first aaa/orig", base.RegistryName)
+	}
+
+	cases := []struct {
+		name     string
+		registry string
+		source   string
+		wantReg  string
+	}{
+		// entry.Source = fork URL (Registry cleared by --migrate) → resolves fork.
+		{"source-url-resolves-fork", "", forkURL, "zzz/fork"},
+		// entry.Registry set → used directly, takes precedence.
+		{"registry-name-wins", "aaa/orig", forkURL, "aaa/orig"},
+		// No source hint → name-only fallback (original behaviour).
+		{"no-hint-falls-back", "", "", "aaa/orig"},
+		// Source matches no configured registry → name-only fallback.
+		{"unknown-source-falls-back", "", "https://example.com/nobody/repo.git", "aaa/orig"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loc, err := mgr.FindSkillForSource("code-review", tc.registry, tc.source)
+			if err != nil {
+				t.Fatalf("FindSkillForSource: %v", err)
+			}
+			if loc.RegistryName != tc.wantReg {
+				t.Errorf("resolved registry = %q, want %q", loc.RegistryName, tc.wantReg)
+			}
+		})
 	}
 }
 
@@ -697,5 +754,152 @@ func TestInferRegistryName(t *testing.T) {
 				t.Errorf("InferRegistryName(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+// buildMultiSkillVersionedRepo creates a source repo (via system git so tags
+// are trivial) with several skills in varied layouts plus extra commits and
+// tags, so a shallow clone has real history to truncate. Returns its path.
+func buildMultiSkillVersionedRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	mkskill := func(rel, name string) {
+		t.Helper()
+		d := filepath.Join(dir, rel)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		body := "---\nname: " + name + "\ndescription: " + name + " skill\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	run("init", "-q", "-b", "main")
+	// Varied layouts: flat dir, nested, deep, repo-root-adjacent.
+	mkskill("skills/alpha", "alpha")
+	mkskill("packages/beta", "beta")
+	mkskill("deep/nested/path/gamma", "gamma")
+	mkskill("delta", "delta")
+	run("add", "-A")
+	run("commit", "-qm", "c1")
+	run("tag", "v1.0.0")
+	// A second commit + tag so the shallow clone genuinely drops history. Write
+	// distinct content (not a no-op touch) so git has something to commit.
+	if err := os.WriteFile(filepath.Join(dir, "skills", "alpha", "SKILL.md"),
+		[]byte("---\nname: alpha\ndescription: alpha skill v2\n---\nbody2\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-qm", "c2")
+	run("tag", "v2.0.0")
+	return dir
+}
+
+// TestManager_AddShallow_IndexesAllSkills guards the cold-start contract: a
+// shallow (depth>0) clone drops commit history but never files, so its skill
+// index must be exactly as complete as a full clone's. Regression for the
+// worry that going shallow could miss skills.
+func TestManager_AddShallow_IndexesAllSkills(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	mgr, _ := setupManagerTest(t)
+	// file:// (not a bare local path) so git actually honours --depth.
+	url := "file://" + buildMultiSkillVersionedRepo(t)
+
+	regShallow, err := mgr.AddWithOptions(context.Background(), "acme/shallow", url,
+		registry.AddOptions{Depth: 1, Full: false})
+	if err != nil {
+		t.Fatalf("default (latest-only) Add: %v", err)
+	}
+	regFull, err := mgr.AddWithOptions(context.Background(), "acme/full", url,
+		registry.AddOptions{Full: true})
+	if err != nil {
+		t.Fatalf("full Add: %v", err)
+	}
+
+	const wantSkills = 4
+	if regShallow.SkillCount != wantSkills {
+		t.Errorf("latest-only indexed %d skills, want %d (all skills live on the default branch, so none must be missed)",
+			regShallow.SkillCount, wantSkills)
+	}
+	if regShallow.SkillCount != regFull.SkillCount {
+		t.Errorf("latest-only count %d != full count %d — default clone missed skills",
+			regShallow.SkillCount, regFull.SkillCount)
+	}
+
+	// Confirm the default clone really is shallow (otherwise the test proves
+	// nothing about shallow indexing).
+	if _, err := os.Stat(filepath.Join(regShallow.Path, "shallow")); err != nil {
+		t.Errorf("default registry has no shallow marker at %s: %v", regShallow.Path, err)
+	}
+}
+
+// TestManager_Deepen_InPlace covers the in-place `--full` deepen (#184): a
+// registry added latest-only carries no tags, so a pinned version is
+// unresolvable; Deepen turns the SAME clone full (config entry and path
+// unchanged) so every tag is on disk and IsFullClone flips true — no remove +
+// re-add. This is the recovery the install-time `--full` hint promises.
+func TestManager_Deepen_InPlace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	mgr, _ := setupManagerTest(t)
+	url := "file://" + buildMultiSkillVersionedRepo(t)
+
+	reg, err := mgr.AddWithOptions(context.Background(), "acme/skills", url,
+		registry.AddOptions{Depth: 1, Full: false})
+	if err != nil {
+		t.Fatalf("latest-only Add: %v", err)
+	}
+	if git.IsFullClone(reg.Path) {
+		t.Fatalf("precondition: latest-only registry must not report full")
+	}
+	// A latest-only clone tags the cloned tip (main HEAD = v2.0.0) but cannot
+	// reach v1.0.0, which sits behind the shallow boundary — so the off-tip
+	// version is unresolvable until we deepen.
+	if _, err := mgr.Git.ResolveRef(reg.Path, "v1.0.0"); err == nil {
+		t.Fatalf("precondition: off-tip tag v1.0.0 must be unresolvable in a latest-only clone")
+	}
+
+	// Deepen the EXISTING registry — accepts the bare leaf name too.
+	deep, err := mgr.Deepen(context.Background(), "skills")
+	if err != nil {
+		t.Fatalf("Deepen: %v", err)
+	}
+	if deep.Path != reg.Path {
+		t.Errorf("deepen moved the clone: %s -> %s (should be in place)", reg.Path, deep.Path)
+	}
+	if !git.IsFullClone(deep.Path) {
+		t.Errorf("registry should report full after deepen")
+	}
+	tags, err := mgr.Git.ListTags(deep.Path)
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tg := range tags {
+		got[tg.Name] = true
+	}
+	for _, want := range []string{"v1.0.0", "v2.0.0"} {
+		if !got[want] {
+			t.Errorf("tag %q missing after deepen (got %v)", want, tags)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(deep.Path, "shallow")); err == nil {
+		t.Errorf("deepened registry should no longer be shallow")
 	}
 }

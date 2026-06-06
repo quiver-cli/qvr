@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 import ScopeSwitcher from "./ScopeSwitcher";
 import type { Scope } from "../api";
 
-// Dashboard chrome: a dark left sidebar of sections + a light content area.
+// Dashboard chrome: a precise left rail of sections + a calibrated content area.
 // Registries are global (top, above the project switcher); the rest of the nav
 // is scoped to whichever project the switcher has selected.
 
@@ -15,8 +15,10 @@ const scopedNav = [
 ];
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
-  `block rounded-lg px-3 py-2 text-sm font-medium transition ${
-    isActive ? "bg-gray-800 text-white" : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
+  `block rounded-[4px] border px-3 py-2 text-sm font-medium transition ${
+    isActive
+      ? "border-[#92b7aa] bg-[#e7f1ed] text-[#123a2e]"
+      : "border-transparent text-[#5f6d67] hover:border-[#d7ddda] hover:bg-white hover:text-[#17211d]"
   }`;
 
 export default function Layout({
@@ -29,24 +31,32 @@ export default function Layout({
   onScopeChange: (s: Scope) => void;
 }) {
   return (
-    <div className="flex min-h-full bg-gray-50 text-gray-900">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-gray-800 bg-gray-900 text-gray-300">
-        <div className="flex items-center gap-2 px-5 py-5">
-          <span className="text-lg font-semibold text-white">quiver</span>
-          <span className="rounded bg-gray-700 px-1.5 py-0.5 text-[0.625rem] font-medium text-gray-300">
-            ui
-          </span>
+    <div className="flex min-h-full bg-[#f7f8f8] text-[#17211d]">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-[#cfd6d2] bg-[#eef2f0] text-[#4f5d57]">
+        <div className="border-b border-[#d7ddda] px-5 py-5">
+          <div className="flex items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#9fb9af] bg-white font-mono text-sm font-semibold text-[#23483d]">
+              q
+            </span>
+            <span className="text-lg font-semibold text-[#121816]">quiver</span>
+          </div>
+          <div className="mt-2 text-[0.6875rem] font-semibold uppercase text-[#708078]">
+            local skill operations
+          </div>
         </div>
 
         {/* Global section — spans all projects. */}
-        <nav className="space-y-1 px-3">
+        <div className="px-3 pt-4 text-[0.6875rem] font-semibold uppercase text-[#7a8580]">
+          Global
+        </div>
+        <nav className="mt-1 space-y-1 px-3">
           <NavLink to="/registries" className={navClass}>
             Registries
           </NavLink>
         </nav>
 
         {/* Project switcher + scoped pages. */}
-        <div className="mt-4 px-3 text-[0.625rem] font-semibold uppercase tracking-wide text-gray-600">
+        <div className="mt-4 px-3 text-[0.6875rem] font-semibold uppercase text-[#7a8580]">
           Project
         </div>
         <div className="mt-1">
@@ -60,10 +70,10 @@ export default function Layout({
           ))}
         </nav>
 
-        <div className="px-5 py-4 text-[0.6875rem] leading-relaxed text-gray-500">
-          read-only · local
+        <div className="border-t border-[#d7ddda] px-5 py-4 font-mono text-[0.6875rem] leading-relaxed text-[#708078]">
+          read-only / local
           <br />
-          uv for agent skills
+          qvr dashboard
         </div>
       </aside>
       <main className="flex-1 overflow-x-hidden">

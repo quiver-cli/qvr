@@ -21,7 +21,7 @@ func TestBareClone(t *testing.T) {
 	destDir := filepath.Join(t.TempDir(), "bare.git")
 
 	client := git.NewGoGitClient()
-	err := client.BareClone(context.Background(), srcDir, destDir)
+	err := client.BareClone(context.Background(), srcDir, destDir, git.CloneOptions{AllRefs: true})
 	if err != nil {
 		t.Fatalf("BareClone: %v", err)
 	}
@@ -42,10 +42,10 @@ func TestBareClone_AlreadyExists(t *testing.T) {
 	destDir := filepath.Join(t.TempDir(), "bare.git")
 
 	client := git.NewGoGitClient()
-	if err := client.BareClone(context.Background(), srcDir, destDir); err != nil {
+	if err := client.BareClone(context.Background(), srcDir, destDir, git.CloneOptions{AllRefs: true}); err != nil {
 		t.Fatalf("first BareClone: %v", err)
 	}
-	err := client.BareClone(context.Background(), srcDir, destDir)
+	err := client.BareClone(context.Background(), srcDir, destDir, git.CloneOptions{AllRefs: true})
 	if !errors.Is(err, git.ErrAlreadyExists) {
 		t.Errorf("expected ErrAlreadyExists, got %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFetch(t *testing.T) {
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
 
 	client := git.NewGoGitClient()
-	if err := client.BareClone(context.Background(), srcDir, bareDir); err != nil {
+	if err := client.BareClone(context.Background(), srcDir, bareDir, git.CloneOptions{AllRefs: true}); err != nil {
 		t.Fatalf("BareClone: %v", err)
 	}
 

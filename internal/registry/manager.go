@@ -17,6 +17,23 @@ import (
 
 const defaultBranchFallback = "main"
 
+// DefaultCloneDepth is the history depth `qvr registry add` uses by default — a
+// shallow depth-1 clone of just the default branch's latest snapshot, the
+// cold-start fast path.
+const DefaultCloneDepth = 1
+
+// AddOptions tunes a single registry Add.
+type AddOptions struct {
+	// Depth bounds clone history: 0 = full history, N>0 = shallow to N commits.
+	// Ignored when Full is set (a full clone always takes complete history).
+	Depth int
+
+	// Full fetches every branch and tag (so any version can be installed). When
+	// false (default), only the remote's default branch is cloned — fast, but a
+	// specific tag/older version requires re-cloning with Full.
+	Full bool
+}
+
 var (
 	ErrRegistryNotFound    = errors.New("registry not found")
 	ErrRegistryExists      = errors.New("registry already exists")
@@ -90,12 +107,19 @@ func (m *Manager) IndexWithOptions(name, repoPath string, opts IndexOptions) ([]
 	return skills, skipped, nil
 }
 
-// Add clones a registry as a bare repo and saves it to config.
+// Add clones a registry as a bare repo and saves it to config, using the
+// default (shallow) clone depth. See AddWithOptions for depth control.
 //
 // Any embedded credentials in `url` are stripped before the URL is used for
 // cloning or persisted to config. The clone itself relies on the user's
 // credential helper / SSH agent for auth — we never store tokens on disk.
 func (m *Manager) Add(ctx context.Context, name, url string) (*model.Registry, error) {
+	return m.AddWithOptions(ctx, name, url, AddOptions{Depth: DefaultCloneDepth, Full: false})
+}
+
+// AddWithOptions is Add with caller-supplied clone behaviour (e.g. history
+// depth). Add delegates here with the shallow-by-default depth.
+func (m *Manager) AddWithOptions(ctx context.Context, name, url string, opts AddOptions) (*model.Registry, error) {
 	if err := ValidateRegistryName(name); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidRegistryName, err)
 	}
@@ -123,7 +147,11 @@ func (m *Manager) Add(ctx context.Context, name, url string) (*model.Registry, e
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create registry parent dir: %w", err)
 	}
-	if err := m.Git.BareClone(ctx, cleanURL, repoPath); err != nil {
+	depth := opts.Depth
+	if opts.Full {
+		depth = 0 // a full clone always takes complete history
+	}
+	if err := m.Git.BareClone(ctx, cleanURL, repoPath, git.CloneOptions{Depth: depth, AllRefs: opts.Full}); err != nil {
 		return nil, fmt.Errorf("clone registry %s: %w", name, err)
 	}
 
@@ -146,6 +174,53 @@ func (m *Manager) Add(ctx context.Context, name, url string) (*model.Registry, e
 		LastFetched:         time.Now(),
 		DefaultBranch:       defaultBranch,
 		CredentialsStripped: hadCreds,
+	}
+	if indexErr != nil {
+		reg.SkillCount = 0
+	}
+	return reg, nil
+}
+
+// Deepen converts an existing latest-only (shallow, single-branch) registry
+// clone into a full clone in place — all branches and tags, so any version
+// becomes installable — without a remove + re-add. This backs the `--full`
+// re-add path (#184): `qvr registry add <url> --full` on a registry that's
+// already configured deepens it here instead of erroring. The bare clone
+// directory and config entry are unchanged; only the on-disk refspec and
+// fetched history grow. Idempotent: a clone that's already full is just
+// fetched (an update), not rebuilt. Accepts a bare leaf name (e.g. `skills`
+// for `acme/skills`).
+func (m *Manager) Deepen(ctx context.Context, name string) (*model.Registry, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	name, err = ResolveName(cfg, name)
+	if err != nil {
+		return nil, err
+	}
+	regCfg := cfg.Registries[name]
+	repoPath := RegistryPath(name)
+
+	if err := m.Git.DeepenToFull(ctx, repoPath); err != nil {
+		return nil, fmt.Errorf("deepen registry %s: %w", name, err)
+	}
+
+	// The deepen brought new branches/tags (and possibly skills that only
+	// existed off the default branch) into view — rebuild the index so the
+	// reported count and subsequent lookups reflect them.
+	_ = Invalidate(name)
+	skills, skipped, indexErr := m.Index(name, repoPath)
+	defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+
+	reg := &model.Registry{
+		Name:          name,
+		URL:           regCfg.URL,
+		Path:          repoPath,
+		SkillCount:    len(skills),
+		SkippedCount:  len(skipped),
+		LastFetched:   time.Now(),
+		DefaultBranch: defaultBranch,
 	}
 	if indexErr != nil {
 		reg.SkillCount = 0
@@ -491,6 +566,70 @@ func (m *Manager) FindSkillIn(skillName, registryName string) (*SkillLocation, e
 		}
 	}
 	return nil, fmt.Errorf("skill %q not found in any registry", skillName)
+}
+
+// FindSkillForSource resolves a skill scoped to a lock entry's recorded origin
+// so version/tag discovery follows the entry's CURRENT registry — e.g. a fork it
+// was migrated to via `qvr publish --fork --migrate` — instead of the first
+// registry that alphabetically shares the skill name. Resolution order:
+//
+//  1. registryName (the entry's Registry) when set — the stable display name.
+//  2. sourceURL (the entry's Source) when set — matched against configured
+//     registries by canonical URL, so a migrated fork resolves to its own clone
+//     even though `--migrate` clears Registry (#85). This is what keeps
+//     `switch --latest` and `version list` consistent with `outdated`,
+//     `provenance`, and explicit `switch <ref>` (#183).
+//  3. a name-only search (FindSkill) when the entry carries no origin hint, or
+//     when its source matches no configured registry — preserving behaviour for
+//     never-migrated skills and for running outside a project (no lock entry).
+func (m *Manager) FindSkillForSource(skillName, registryName, sourceURL string) (*SkillLocation, error) {
+	if registryName != "" {
+		return m.FindSkillIn(skillName, registryName)
+	}
+	if sourceURL != "" {
+		cfg, err := config.Load()
+		if err != nil {
+			return nil, fmt.Errorf("load config: %w", err)
+		}
+		if regName := registryNameForURL(cfg, sourceURL); regName != "" {
+			return m.FindSkillIn(skillName, regName)
+		}
+	}
+	return m.FindSkill(skillName)
+}
+
+// registryNameForURL returns the configured registry whose clone URL refers to
+// the same repo as want, or "" when none match. Comparison is canonicalised
+// (credentials stripped, lowercased, trailing "/" and ".git" ignored) so a lock
+// entry's Source resolves to its registry despite cosmetic URL differences.
+func registryNameForURL(cfg *config.Config, want string) string {
+	target := canonicalRepoURL(want)
+	if target == "" {
+		return ""
+	}
+	for name, rc := range cfg.Registries {
+		if canonicalRepoURL(rc.URL) == target {
+			return name
+		}
+	}
+	return ""
+}
+
+// canonicalRepoURL reduces a clone URL to a comparison key: credentials
+// stripped, lowercased, trailing slash and ".git" suffix removed. Best-effort —
+// a URL that won't sanitize (e.g. a local path used in tests) falls back to a
+// trimmed/lowercased form so matching still has a chance.
+func canonicalRepoURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if clean, _, err := git.SanitizeURL(s); err == nil && clean != "" {
+		s = clean
+	}
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".git")
+	return strings.ToLower(s)
 }
 
 // FindAllSkillLocations returns every registry that exposes a skill of the

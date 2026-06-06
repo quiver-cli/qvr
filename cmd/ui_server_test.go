@@ -791,7 +791,7 @@ func seedBareRegistry(t *testing.T, name string) {
 	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
 		t.Fatalf("mkdir bare parent: %v", err)
 	}
-	if err := git.NewGoGitClient().BareClone(context.Background(), remote, bare); err != nil {
+	if err := git.NewGoGitClient().BareClone(context.Background(), remote, bare, git.CloneOptions{AllRefs: true}); err != nil {
 		t.Fatalf("bare clone: %v", err)
 	}
 
