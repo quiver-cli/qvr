@@ -9,7 +9,7 @@ env var.
 # Registries
 registries:
   community:
-    url: https://github.com/quiver-sh/community-skills.git
+    url: https://github.com/astra-sh/community-skills.git
   acme:
     url: git@github.com:acme/skills.git
 

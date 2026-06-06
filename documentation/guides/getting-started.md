@@ -27,7 +27,7 @@ go install github.com/astra-sh/qvr@latest
 qvr registry add team git@github.com:your-org/skills.git
 
 # Or add the community registry
-qvr registry add community https://github.com/quiver-sh/community-skills.git
+qvr registry add community https://github.com/astra-sh/community-skills.git
 ```
 
 ### 2. Search for skills
