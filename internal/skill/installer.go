@@ -97,6 +97,15 @@ type InstallRequest struct {
 	// TrustedAuthorsByRegistry applies author pins after the registry is
 	// resolved. Used by bare installs that search all registries.
 	TrustedAuthorsByRegistry map[string][]string
+	// SkillPath is the repo-relative directory of the skill within its
+	// registry, when the caller already knows it — the one-step `qvr add
+	// <blob-url>` path derives it from the URL. Set together with Registry, it
+	// lets resolution read just that one SKILL.md (FindSkillAtPath) instead of
+	// indexing the whole registry. Empty for name-based adds. If the pinned
+	// path turns out to be stale or root-level, resolution silently falls back
+	// to the by-name full-index lookup, so this is a pure speedup, never a
+	// correctness change.
+	SkillPath string
 }
 
 // InstallResult holds the outcome for a single skill install.
@@ -228,7 +237,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		localName = req.As
 	}
 
-	loc, ambiguityWarning, err := in.resolveSkill(name, version, req.Registry)
+	loc, ambiguityWarning, err := in.resolveSkill(name, version, req.Registry, req.SkillPath)
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +621,17 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 //     so the user sees who has what instead of the misleading
 //     "create worktree: reference not found" from the old single-pick
 //     path. Closes the wrong-pick-then-error half of issue #101.
-func (in *Installer) resolveSkill(name, version, registryName string) (*registry.SkillLocation, string, error) {
+func (in *Installer) resolveSkill(name, version, registryName, skillPath string) (*registry.SkillLocation, string, error) {
+	// Fast path: the caller pinned an exact skill directory (e.g. from a
+	// `qvr add <blob-url>` spec) under a single registry. Resolve just that
+	// SKILL.md instead of indexing the entire registry. A miss (stale path,
+	// root-level skill, name↔dir mismatch) falls through to the by-name lookup
+	// below, so this is a pure speedup and never changes what resolves.
+	if skillPath != "" && registryName != "" {
+		if loc, err := in.Registry.FindSkillAtPath(registryName, skillPath); err == nil {
+			return loc, "", nil
+		}
+	}
 	if registryName != "" {
 		loc, err := in.Registry.FindSkillIn(name, registryName)
 		if err != nil {

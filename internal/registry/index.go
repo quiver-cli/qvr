@@ -183,6 +183,53 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 	return skills, skipped, nil
 }
 
+// BuildEntry indexes a SINGLE skill at a known repo-relative directory without
+// walking the rest of the tree. It reads only <skillDir>/SKILL.md, parses and
+// validates it, and populates that skill's version info. This is the targeted
+// fast path behind `qvr add <blob-url>`: when the spec pins an exact skill
+// directory, there's no need to read and YAML-parse every SKILL.md in a large
+// registry just to install one.
+//
+// skillDir is the repo-relative directory holding SKILL.md (e.g.
+// "skills/create-readme"). The repo root ("." or "") is rejected — a root skill
+// can coexist with siblings (RootCoexists), which only the full index can
+// detect, so those go through BuildIndex.
+func (idx *Indexer) BuildEntry(repoPath, skillDir string) (SkillIndexEntry, error) {
+	skillDir = strings.Trim(skillDir, "/")
+	if skillDir == "" || skillDir == "." {
+		return SkillIndexEntry{}, fmt.Errorf("%w: targeted index needs a non-root skill directory", ErrIndexBuildFailed)
+	}
+
+	mdPath := skillDir + "/SKILL.md"
+	blob, err := idx.Git.ReadBlob(repoPath, "HEAD", mdPath)
+	if err != nil {
+		return SkillIndexEntry{}, fmt.Errorf("%w: read %s: %v", ErrIndexBuildFailed, mdPath, err)
+	}
+	parsed, err := skillspec.Parse(string(blob))
+	if err != nil {
+		return SkillIndexEntry{}, fmt.Errorf("%w: parse %s: %v", ErrIndexBuildFailed, mdPath, err)
+	}
+	// Same name↔directory invariant BuildIndex enforces (index.go's main loop):
+	// a non-root skill must live in a directory matching its frontmatter name,
+	// else the install-time validator would reject it. Surfacing it here keeps
+	// the fast path's failure mode identical to the full index's "skipped".
+	if parsed.Frontmatter.Name != path.Base(skillDir) {
+		return SkillIndexEntry{}, fmt.Errorf("%w: frontmatter name %q does not match directory %q",
+			ErrIndexBuildFailed, parsed.Frontmatter.Name, path.Base(skillDir))
+	}
+
+	entries := []SkillIndexEntry{{
+		Name:        parsed.Frontmatter.Name,
+		Description: parsed.Frontmatter.Description,
+		Path:        skillDir,
+		Metadata:    parsed.Frontmatter.Metadata,
+	}}
+	// RootCoexists stays false: a non-root skill is always scoped to its own
+	// subtree. populateVersions mutates the slice in place, so read back [0].
+	idx.populateVersions(repoPath, entries)
+	return entries[0], nil
+}
+
 func (idx *Indexer) populateVersions(repoPath string, skills []SkillIndexEntry) {
 	branches, _ := idx.Git.ListBranches(repoPath)
 	tags, _ := idx.Git.ListTags(repoPath)

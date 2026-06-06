@@ -20,6 +20,7 @@ type mockGitClient struct {
 	tags          []git.RefInfo
 	defaultBranch string
 	headCommit    string
+	readBlobCalls int // ReadBlob invocations, to prove the fast path is targeted
 }
 
 func newMockGitClient() *mockGitClient {
@@ -76,6 +77,7 @@ func (m *mockGitClient) DefaultBranch(repoPath string) (string, error) {
 }
 
 func (m *mockGitClient) ReadBlob(repoPath, ref, filePath string) ([]byte, error) {
+	m.readBlobCalls++
 	key := ref + ":" + filePath
 	data, ok := m.blobs[key]
 	if !ok {
@@ -469,6 +471,75 @@ func TestBuildIndex_DuplicateNameSkipped(t *testing.T) {
 	}
 	if len(skipped) != 1 || !strings.Contains(skipped[0].Reason, "duplicate skill name") {
 		t.Fatalf("expected duplicate skipped, got %+v", skipped)
+	}
+}
+
+// TestBuildEntry_Targeted is the fast path behind `qvr add <blob-url>`: it
+// resolves one skill at a known directory by reading ONLY that SKILL.md, even
+// when the registry holds many other skills. The ReadBlob counter proves the
+// rest of the tree is never parsed.
+func TestBuildEntry_Targeted(t *testing.T) {
+	mock := newMockGitClient()
+	// A registry with several skills — the full index would parse all of them.
+	for _, n := range []string{"alpha", "beta", "create-readme", "delta", "echo"} {
+		mock.blobs["HEAD:skills/"+n+"/SKILL.md"] = []byte(
+			"---\nname: " + n + "\ndescription: The " + n + " skill.\n---\n")
+	}
+	mock.branches = []git.RefInfo{{Name: "main", Hash: "aaa"}}
+	mock.tags = []git.RefInfo{{Name: "v1.0.0", Hash: "bbb", IsTag: true}}
+
+	entry, err := registry.NewIndexer(mock).BuildEntry("/fake/path", "skills/create-readme")
+	if err != nil {
+		t.Fatalf("BuildEntry: %v", err)
+	}
+	if entry.Name != "create-readme" {
+		t.Errorf("Name = %q, want create-readme", entry.Name)
+	}
+	if entry.Path != "skills/create-readme" {
+		t.Errorf("Path = %q, want skills/create-readme", entry.Path)
+	}
+	if entry.RootCoexists {
+		t.Error("a non-root skill must not be flagged RootCoexists")
+	}
+	if len(entry.Versions.Branches) != 1 || entry.Versions.Branches[0] != "main" {
+		t.Errorf("Versions.Branches = %v, want [main]", entry.Versions.Branches)
+	}
+	// The whole point: exactly one SKILL.md read, not one per skill in the repo.
+	if mock.readBlobCalls != 1 {
+		t.Errorf("readBlobCalls = %d, want 1 (only the targeted SKILL.md)", mock.readBlobCalls)
+	}
+}
+
+// TestBuildEntry_RejectsRoot keeps root skills on the full-index path, where
+// sibling coexistence (RootCoexists) is detected.
+func TestBuildEntry_RejectsRoot(t *testing.T) {
+	mock := newMockGitClient()
+	for _, dir := range []string{".", ""} {
+		if _, err := registry.NewIndexer(mock).BuildEntry("/fake/path", dir); err == nil {
+			t.Errorf("BuildEntry(%q) = nil error, want rejection of a root dir", dir)
+		}
+	}
+}
+
+// TestBuildEntry_NameDirMismatch surfaces the same install-blocking mismatch the
+// full index skips, so the caller can fall back instead of installing a skill
+// that would fail validation.
+func TestBuildEntry_NameDirMismatch(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:skills/browse/SKILL.md"] = []byte(
+		"---\nname: not-browse\ndescription: Misnamed.\n---\n")
+
+	if _, err := registry.NewIndexer(mock).BuildEntry("/fake/path", "skills/browse"); err == nil {
+		t.Fatal("expected a name/dir mismatch error, got nil")
+	}
+}
+
+// TestBuildEntry_Missing errors when the pinned directory has no SKILL.md, so
+// the resolver falls back to the by-name lookup.
+func TestBuildEntry_Missing(t *testing.T) {
+	mock := newMockGitClient()
+	if _, err := registry.NewIndexer(mock).BuildEntry("/fake/path", "skills/ghost"); err == nil {
+		t.Fatal("expected an error for a missing SKILL.md, got nil")
 	}
 }
 

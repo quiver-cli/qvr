@@ -1,6 +1,36 @@
 version = 5
 
 [skills]
+[skills.create-readme]
+registry = 'github/awesome-copilot'
+source = 'https://github.com/github/awesome-copilot.git'
+path = 'skills/create-readme'
+ref = 'main'
+commit = '07b34ec9cf66c55c1deae1f1ac7248dca6d3fa9e'
+installCommit = '07b34ec9cf66c55c1deae1f1ac7248dca6d3fa9e'
+commitAuthor = 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
+subtreeHash = 'sha256:c1bd300b8d2b2d16e3eece70840222127fd2fdefb359ca2fab17c465c5407d28'
+treeOID = 'f65537a3461b663121fe195697979c17a8004ea5'
+targets = ['claude']
+installedAt = 2026-06-06T05:49:41.276013Z
+
+[skills.create-readme.verification]
+[skills.create-readme.verification.scan]
+reportSHA = 'sha256:8e861d1c0c08bc27596a10dcfb4b644e044073e1fc760b047f09e143e872b6ea'
+scannerVersion = '0.7.0'
+decision = 'allowed'
+
+[skills.create-readme.verification.scan.counts]
+critical = 0
+high = 0
+medium = 0
+low = 0
+info = 0
+
+[skills.create-readme.verification.provenance]
+provider = 'git'
+signatureStatus = 'none'
+
 [skills.frontend-design]
 registry = 'anthropics/skills'
 source = 'https://github.com/anthropics/skills.git'

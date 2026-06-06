@@ -172,6 +172,7 @@ func TestParseRemoteSkillSpec(t *testing.T) {
 		wantOK    bool
 		wantURL   string
 		wantSkill string
+		wantPath  string // asserted only when non-empty
 		wantRef   string
 	}{
 		// Plain skill names — NOT remote specs.
@@ -220,20 +221,22 @@ func TestParseRemoteSkillSpec(t *testing.T) {
 			wantURL: "git://github.com/org/repo.git", wantSkill: "tdd"},
 
 		// Web "tree" URL — the in-path ref is extracted and the skill comes
-		// from the subpath, not the literal "tree" segment.
+		// from the subpath, not the literal "tree" segment. The full subpath is
+		// the skill directory (drives the single-skill fast path).
 		{in: "https://github.com/org/repo/tree/v2/skills/tdd", wantOK: true,
-			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "v2"},
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantPath: "skills/tdd", wantRef: "v2"},
 		// Web "blob" URL pointing straight at a SKILL.md — the skill is the
-		// file's parent directory.
+		// file's parent directory, and so is the skill directory.
 		{in: "https://github.com/org/repo/blob/main/skills/tdd/SKILL.md", wantOK: true,
-			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "main"},
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantPath: "skills/tdd", wantRef: "main"},
 		// Explicit @ref wins over an in-path tree ref.
 		{in: "https://github.com/org/repo/tree/v2/tdd@v9", wantOK: true,
-			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantRef: "v9"},
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantPath: "tdd", wantRef: "v9"},
 
-		// Deep skill path — the deepest segment names the skill.
+		// Deep skill path — the deepest segment names the skill, the full path
+		// locates it.
 		{in: "github.com/org/repo/sub/dir/tdd", wantOK: true,
-			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd"},
+			wantURL: "https://github.com/org/repo.git", wantSkill: "tdd", wantPath: "sub/dir/tdd"},
 		// Trailing slash after a bare repo.
 		{in: "https://github.com/org/repo/", wantOK: true,
 			wantURL: "https://github.com/org/repo.git", wantSkill: ""},
@@ -241,9 +244,9 @@ func TestParseRemoteSkillSpec(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			url, skill, ref, ok := parseRemoteSkillSpec(tt.in)
+			url, skill, skillPath, ref, ok := parseRemoteSkillSpec(tt.in)
 			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v (url=%q skill=%q ref=%q)", ok, tt.wantOK, url, skill, ref)
+				t.Fatalf("ok = %v, want %v (url=%q skill=%q path=%q ref=%q)", ok, tt.wantOK, url, skill, skillPath, ref)
 			}
 			if !ok {
 				return
@@ -253,6 +256,9 @@ func TestParseRemoteSkillSpec(t *testing.T) {
 			}
 			if skill != tt.wantSkill {
 				t.Errorf("skill = %q, want %q", skill, tt.wantSkill)
+			}
+			if tt.wantPath != "" && skillPath != tt.wantPath {
+				t.Errorf("skillPath = %q, want %q", skillPath, tt.wantPath)
 			}
 			if ref != tt.wantRef {
 				t.Errorf("ref = %q, want %q", ref, tt.wantRef)

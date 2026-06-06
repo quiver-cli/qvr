@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="Quiver">
+  <rect x="0.5" y="0.5" width="63" height="63" rx="15" fill="#0f131a" stroke="#2d3643"></rect>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="15" fill="url(#g)"></rect>
+  <g stroke="#a3e635" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 32 H37"></path>
+    <path d="M31 22 L43 32 L31 42"></path>
+    <path d="M16 26.5 L20 32 L16 37.5" opacity="0.5"></path>
+  </g>
+  <defs>
+    <radialGradient id="g" cx="0.7" cy="0.2" r="0.9">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.12"></stop>
+      <stop offset="0.6" stop-color="#a3e635" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+</svg>

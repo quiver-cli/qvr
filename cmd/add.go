@@ -158,6 +158,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				Force:                    addForce,
 				Frozen:                   addFrozen,
 				Registry:                 item.registry,
+				SkillPath:                item.skillPath,
 				As:                       addAs,
 				RequireSigned:            cfg.Security.RequireSigned,
 				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
@@ -307,6 +308,11 @@ func buildAddJSONEnvelope(results []*skill.InstallResult, err error) addJSONEnve
 type addItem struct {
 	skillRef string
 	registry string
+	// skillPath is the repo-relative skill directory when the spec pinned one
+	// (a /blob/ or /tree/ URL, or a deep skill path). It lets the installer
+	// resolve that single SKILL.md without indexing the whole registry. Empty
+	// for plain names and bare-repo specs.
+	skillPath string
 }
 
 // resolveAddItems turns the raw `qvr add` positional args into install targets.
@@ -320,12 +326,15 @@ type addItem struct {
 func resolveAddItems(ctx context.Context, mgr *registry.Manager, args []string) ([]addItem, error) {
 	items := make([]addItem, 0, len(args))
 	for _, arg := range args {
-		cloneURL, skillName, ref, ok := parseRemoteSkillSpec(arg)
+		cloneURL, skillName, skillPath, ref, ok := parseRemoteSkillSpec(arg)
 		if !ok {
 			items = append(items, addItem{skillRef: arg, registry: addRegistry})
 			continue
 		}
-		regName, err := ensureRegistryFor(ctx, mgr, cloneURL)
+		// A pinned skill directory means we can resolve that one SKILL.md
+		// directly downstream, so register the clone without building the
+		// registry-wide index (the slow part for a 348-skill repo).
+		regName, err := ensureRegistryFor(ctx, mgr, cloneURL, skillPath != "")
 		if err != nil {
 			return nil, err
 		}
@@ -341,7 +350,7 @@ func resolveAddItems(ctx context.Context, mgr *registry.Manager, args []string) 
 		if ref != "" {
 			skillRef = skillName + "@" + ref
 		}
-		items = append(items, addItem{skillRef: skillRef, registry: regName})
+		items = append(items, addItem{skillRef: skillRef, registry: regName, skillPath: skillPath})
 	}
 	return items, nil
 }
@@ -350,7 +359,7 @@ func resolveAddItems(ctx context.Context, mgr *registry.Manager, args []string) 
 // configured, returning its inferred `<org>/<repo>` name. An already-registered
 // source is reused as-is (no re-clone). The per-skill install scan still runs
 // downstream, so we skip the registry-wide scan pass `qvr registry add` does.
-func ensureRegistryFor(ctx context.Context, mgr *registry.Manager, cloneURL string) (string, error) {
+func ensureRegistryFor(ctx context.Context, mgr *registry.Manager, cloneURL string, skipIndex bool) (string, error) {
 	name := registry.InferRegistryName(cloneURL)
 	if name == "" {
 		return "", fmt.Errorf("could not infer a registry name from %q", cloneURL)
@@ -362,12 +371,23 @@ func ensureRegistryFor(ctx context.Context, mgr *registry.Manager, cloneURL stri
 	if _, ok := cfg.Registries[name]; ok {
 		return name, nil
 	}
-	reg, err := mgr.Add(ctx, name, cloneURL)
+	// When the add spec pinned a single skill, skip the registry-wide index
+	// build — resolving that one SKILL.md doesn't need every skill parsed, and
+	// the index is rebuilt lazily on the next list/search. The reported count
+	// is unknown (-1) in that mode, so the message omits it.
+	reg, err := mgr.AddWithOptions(ctx, name, cloneURL, registry.AddOptions{
+		Depth:     registry.DefaultCloneDepth,
+		SkipIndex: skipIndex,
+	})
 	if err != nil {
 		return "", fmt.Errorf("auto-register %s: %w", cloneURL, err)
 	}
 	if printer.Format != output.FormatJSON {
-		printer.Info(fmt.Sprintf("Registered %s as %q (%d skills)", reg.URL, reg.Name, reg.SkillCount))
+		if reg.SkillCount < 0 {
+			printer.Info(fmt.Sprintf("Registered %s as %q", reg.URL, reg.Name))
+		} else {
+			printer.Info(fmt.Sprintf("Registered %s as %q (%d skills)", reg.URL, reg.Name, reg.SkillCount))
+		}
 	}
 	return name, nil
 }
@@ -414,10 +434,10 @@ func soleSkillName(mgr *registry.Manager, regName, spec string) (string, error) 
 // conservative: an arg with no `/` is always a plain name, and the host
 // component must look like one (contain a `.`), so a stray `foo/bar` never
 // silently triggers a network clone.
-func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool) {
+func parseRemoteSkillSpec(arg string) (cloneURL, skillName, skillPath, ref string, ok bool) {
 	raw := strings.TrimSpace(arg)
 	if raw == "" || !strings.Contains(raw, "/") {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 
 	// Peel a trailing @ref only when the '@' sits after the last '/', so the
@@ -439,7 +459,7 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 		rest = rest[i+3:]
 		slash := strings.Index(rest, "/")
 		if slash < 0 {
-			return "", "", "", false
+			return "", "", "", "", false
 		}
 		authority, rest = rest[:slash], rest[slash+1:]
 	case isSCPStyleSpec(rest):
@@ -450,7 +470,7 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 	default:
 		slash := strings.Index(rest, "/")
 		if slash < 0 {
-			return "", "", "", false
+			return "", "", "", "", false
 		}
 		authority, rest = rest[:slash], rest[slash+1:]
 	}
@@ -458,7 +478,7 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 	// The host (authority minus user@ and :port) must look like one — guards a
 	// bare `org/repo/skill` from triggering a clone of a nonexistent remote.
 	if !strings.Contains(authorityHost(authority), ".") {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 
 	var segs []string
@@ -468,12 +488,12 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 		}
 	}
 	if len(segs) < 2 {
-		return "", "", "", false // need at least org/repo
+		return "", "", "", "", false // need at least org/repo
 	}
 	org := segs[0]
 	repo := strings.TrimSuffix(segs[1], ".git")
 	if org == "" || repo == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 
 	// Everything past org/repo names the skill, with the two web-browse shapes
@@ -481,21 +501,22 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, ref string, ok bool)
 	// becomes the pin (unless an explicit @ref already set one), and the skill
 	// name comes from the subpath rather than the literal "tree"/"blob" segment.
 	tail := segs[2:]
+	sub := tail
 	if len(tail) >= 2 && (tail[0] == "tree" || tail[0] == "blob") {
 		if ref == "" {
 			ref = tail[1]
 		}
-		skillName = skillFromSubpath(tail[2:])
-	} else {
-		skillName = skillFromSubpath(tail)
+		sub = tail[2:]
 	}
+	skillName = skillFromSubpath(sub)
+	skillPath = skillDirFromSubpath(sub)
 
 	if scheme == "scp" {
 		cloneURL = fmt.Sprintf("%s:%s/%s.git", authority, org, repo)
 	} else {
 		cloneURL = fmt.Sprintf("%s://%s/%s/%s.git", scheme, authority, org, repo)
 	}
-	return cloneURL, skillName, ref, true
+	return cloneURL, skillName, skillPath, ref, true
 }
 
 // isSCPStyleSpec reports whether s is the scp-style SSH shorthand
@@ -538,6 +559,26 @@ func skillFromSubpath(sub []string) string {
 		return sub[len(sub)-2]
 	}
 	return last
+}
+
+// skillDirFromSubpath returns the repo-relative directory that holds the skill's
+// SKILL.md, derived from the path segments under org/repo. A trailing SKILL.md
+// segment (from a /blob/.../SKILL.md URL) is dropped to reach its parent dir.
+// Returns "" when the subpath is empty (bare repo) or resolves to the repo root
+// — those must go through the full index (sole-skill disambiguation / root
+// coexistence), not the single-skill fast path. The result feeds
+// registry.FindSkillAtPath, so it names a directory, not the SKILL.md file.
+func skillDirFromSubpath(sub []string) string {
+	if len(sub) == 0 {
+		return ""
+	}
+	if strings.EqualFold(sub[len(sub)-1], "SKILL.md") {
+		sub = sub[:len(sub)-1]
+	}
+	if len(sub) == 0 {
+		return ""
+	}
+	return strings.Join(sub, "/")
 }
 
 // skillDirFor returns the absolute path of the SKILL.md-bearing directory

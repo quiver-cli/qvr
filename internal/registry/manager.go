@@ -32,6 +32,15 @@ type AddOptions struct {
 	// false (default), only the remote's default branch is cloned — fast, but a
 	// specific tag/older version requires re-cloning with Full.
 	Full bool
+
+	// SkipIndex registers the clone WITHOUT building the full skill index. The
+	// one-step `qvr add <blob-url>` fast path sets this: the URL pins an exact
+	// skill directory, so the install resolves that one SKILL.md directly
+	// (FindSkillAtPath) and never needs every SKILL.md in a large registry
+	// parsed up front. The index is still built lazily on the next
+	// list/search/status. The returned Registry's SkillCount is -1 (not
+	// counted) in this mode.
+	SkipIndex bool
 }
 
 var (
@@ -155,8 +164,15 @@ func (m *Manager) AddWithOptions(ctx context.Context, name, url string, opts Add
 		return nil, fmt.Errorf("clone registry %s: %w", name, err)
 	}
 
-	// Build + populate the cache on first clone; non-fatal if it fails.
-	skills, skipped, indexErr := m.Index(name, repoPath)
+	// Build + populate the cache on first clone; non-fatal if it fails. Skipped
+	// for the single-skill fast path (SkipIndex), which resolves one known
+	// SKILL.md instead of parsing every skill in the repo.
+	var skills []SkillIndexEntry
+	var skipped []SkippedSkill
+	var indexErr error
+	if !opts.SkipIndex {
+		skills, skipped, indexErr = m.Index(name, repoPath)
+	}
 
 	cfg.Registries[name] = config.RegistryConfig{URL: cleanURL}
 	if err := config.Save(cfg); err != nil {
@@ -175,7 +191,10 @@ func (m *Manager) AddWithOptions(ctx context.Context, name, url string, opts Add
 		DefaultBranch:       defaultBranch,
 		CredentialsStripped: hadCreds,
 	}
-	if indexErr != nil {
+	switch {
+	case opts.SkipIndex:
+		reg.SkillCount = -1 // not counted — index built lazily on first read
+	case indexErr != nil:
 		reg.SkillCount = 0
 	}
 	return reg, nil
@@ -566,6 +585,46 @@ func (m *Manager) FindSkillIn(skillName, registryName string) (*SkillLocation, e
 		}
 	}
 	return nil, fmt.Errorf("skill %q not found in any registry", skillName)
+}
+
+// FindSkillAtPath resolves a single skill at a known repo-relative directory in
+// the named registry WITHOUT building the registry's full index. It backs the
+// one-step `qvr add <blob-url>` fast path: the URL pins an exact skill
+// directory, so we read just that one SKILL.md instead of parsing every skill
+// in a large registry. registryName may be a bare leaf (e.g. `skills` for
+// `acme/skills`). Returns an error when the directory holds no installable
+// skill — callers fall back to the by-name full-index lookup, so a stale or
+// root-level path still resolves, just without the speedup.
+func (m *Manager) FindSkillAtPath(registryName, skillDir string) (*SkillLocation, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	resolved, rerr := ResolveName(cfg, registryName)
+	if rerr != nil {
+		if errors.Is(rerr, ErrRegistryNotFound) {
+			return nil, fmt.Errorf("registry %q is not configured — run `qvr registry list`", registryName)
+		}
+		return nil, rerr
+	}
+
+	repoPath := RegistryPath(resolved)
+	entry, err := m.Indexer.BuildEntry(repoPath, skillDir)
+	if err != nil {
+		return nil, fmt.Errorf("no skill at %q in registry %q: %w", skillDir, resolved, err)
+	}
+
+	defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+	if defaultBranch == "" {
+		defaultBranch = defaultBranchFallback
+	}
+	return &SkillLocation{
+		Entry:         entry,
+		RegistryName:  resolved,
+		RegistryURL:   cfg.Registries[resolved].URL,
+		RepoPath:      repoPath,
+		DefaultBranch: defaultBranch,
+	}, nil
 }
 
 // FindSkillForSource resolves a skill scoped to a lock entry's recorded origin
