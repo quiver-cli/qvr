@@ -22,7 +22,7 @@ export default function RegistryDetail() {
   return (
     <>
       <div className="mb-4">
-        <Link to="/registries" className="text-sm text-blue-600 hover:underline">
+        <Link to="/registries" className="text-sm font-medium text-[#2f765d] hover:underline">
           ← Registries
         </Link>
       </div>
@@ -43,7 +43,7 @@ export default function RegistryDetail() {
             {data.skills.length === 0 ? (
               <Empty>This registry has no indexable skills.</Empty>
             ) : (
-              <ul className="divide-y divide-gray-100">
+              <ul className="divide-y divide-[#eef0ef]">
                 {data.skills.map((s) => (
                   <SkillItem
                     key={s.name}
@@ -55,7 +55,7 @@ export default function RegistryDetail() {
               </ul>
             )}
             {data.defaultBranch && (
-              <p className="mt-3 text-xs text-gray-400">
+              <p className="mt-3 text-xs text-[#708078]">
                 Default branch: <Mono>{data.defaultBranch}</Mono>
               </p>
             )}
@@ -83,7 +83,7 @@ function SkillItem({
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-label={open ? "Collapse versions" : "Expand versions"}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-[#708078] hover:text-[#22302b]"
         >
           {open ? "▾" : "▸"}
         </button>
@@ -91,7 +91,7 @@ function SkillItem({
           to={`/registries/${encodeURIComponent(registry)}/skills/${encodeURIComponent(
             skill.name,
           )}`}
-          className="font-medium text-gray-800 hover:text-blue-600 hover:underline"
+          className="font-medium text-[#22302b] hover:text-[#2f765d] hover:underline"
         >
           {skill.name}
         </Link>
@@ -107,11 +107,11 @@ function SkillItem({
         )}
       </div>
       {skill.description && (
-        <p className="mt-0.5 pl-6 text-sm text-gray-500">{skill.description}</p>
+        <p className="mt-0.5 pl-6 text-sm text-[#66736d]">{skill.description}</p>
       )}
       {open && (
         <div className="mt-2 pl-6">
-          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+          <div className="mb-1 text-xs font-semibold uppercase text-[#708078]">
             Versions {skill.installed ? "(installed one highlighted)" : ""}
           </div>
           {versions.length === 0 ? (
@@ -152,15 +152,15 @@ function SkillVersions({
         return (
           <li
             key={`${v.isTag ? "tag" : "branch"}:${v.ref}`}
-            className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-sm ${
+            className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-sm ${
               isCurrent
-                ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200"
-                : "bg-gray-50"
+                ? "bg-[#e8f4ef] ring-1 ring-inset ring-[#8cc8b0]"
+                : "bg-[#f7f9f8]"
             }`}
           >
             <Pill tone={v.isTag ? "amber" : "blue"}>{v.isTag ? "tag" : "branch"}</Pill>
             <span
-              className={`font-medium ${isCurrent ? "text-emerald-800" : "text-gray-800"}`}
+              className={`font-medium ${isCurrent ? "text-[#176548]" : "text-[#22302b]"}`}
             >
               {v.ref}
             </span>

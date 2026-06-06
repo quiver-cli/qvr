@@ -1,6 +1,6 @@
 module github.com/quiver-cli/qvr
 
-go 1.26.1
+go 1.25.0
 
 require (
 	github.com/go-git/go-git/v5 v5.17.2

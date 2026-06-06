@@ -28,7 +28,7 @@ export default function SessionDetail() {
   return (
     <>
       <div className="mb-4">
-        <Link to="/sessions" className="text-sm text-blue-600 hover:underline">
+        <Link to="/sessions" className="text-sm font-medium text-[#2f765d] hover:underline">
           ← Sessions
         </Link>
       </div>
@@ -61,7 +61,7 @@ export default function SessionDetail() {
           {/* Toggle between the processed (derived span) view and the lossless
               raw rows — the two representations of the same session. */}
           <div className="mt-8 mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-800">
+            <h2 className="text-sm font-semibold uppercase text-[#4d5853]">
               {view === "spans"
                 ? `Processed spans (${data.spans.length})`
                 : `Raw traces (${data.traces.length})`}
@@ -86,14 +86,16 @@ function Toggle({ view, onChange }: { view: View; onChange: (v: View) => void })
       type="button"
       onClick={() => onChange(v)}
       className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-        view === v ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+        view === v
+          ? "bg-white text-[#121816] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
+          : "text-[#63706a] hover:text-[#22302b]"
       }`}
     >
       {label}
     </button>
   );
   return (
-    <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5">
+    <div className="inline-flex rounded-[6px] border border-[#cbd2ce] bg-[#ecefed] p-0.5">
       {opt("spans", "Processed spans")}
       {opt("raw", "Raw traces")}
     </div>
@@ -211,7 +213,7 @@ function SpansView({ spans }: { spans: SpanRow[] }) {
       <Empty>
         No processed spans for this session. Spans are derived from the transcript —
         switch to <strong>Raw traces</strong> to see the captured bytes, or run{" "}
-        <code className="rounded bg-gray-100 px-1.5 py-0.5">qvr audit derive</code>.
+        <code className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5">qvr audit derive</code>.
       </Empty>
     );
   }
@@ -228,19 +230,19 @@ function TurnCard({ turn, index }: { turn: Turn; index: number }) {
   const a = parseAttrs(turn.llm.attributes);
   const dur = turn.llm.end_ms - turn.llm.start_ms;
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-5 py-3">
-        <span className="text-xs font-semibold text-gray-400">#{index}</span>
+    <div className="rounded-[6px] border border-[#d7ddda] bg-white shadow-[0_1px_0_rgba(22,32,28,0.04)]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-[#e6e9e7] bg-[#fbfbfa] px-4 py-3">
+        <span className="font-mono text-xs font-semibold text-[#708078]">#{index}</span>
         <Pill tone="blue">LLM</Pill>
-        <span className="font-medium text-gray-800">{a.model || "chat"}</span>
+        <span className="font-medium text-[#22302b]">{a.model || "chat"}</span>
         {(a.inTokens != null || a.outTokens != null) && (
-          <span className="text-xs text-gray-400">
+          <span className="font-mono text-xs text-[#708078]">
             {a.inTokens ?? 0} in / {a.outTokens ?? 0} out tokens
           </span>
         )}
-        {dur > 0 && <span className="text-xs text-gray-400">{(dur / 1000).toFixed(1)}s</span>}
+        {dur > 0 && <span className="font-mono text-xs text-[#708078]">{(dur / 1000).toFixed(1)}s</span>}
       </div>
-      <div className="space-y-3 p-5">
+      <div className="space-y-3 p-4">
         {a.prompt && <MessageBlock label="Prompt" tone="user" text={a.prompt} />}
         {a.output && <MessageBlock label="Response" tone="assistant" text={a.output} />}
         {turn.children.length > 0 && (
@@ -264,13 +266,13 @@ function MessageBlock({
   tone: "user" | "assistant";
   text: string;
 }) {
-  const bar = tone === "user" ? "border-blue-300" : "border-emerald-300";
+  const bar = tone === "user" ? "border-[#9bb9c8]" : "border-[#8cc8b0]";
   return (
     <div className={`border-l-2 ${bar} pl-3`}>
-      <div className="mb-0.5 text-xs font-medium uppercase tracking-wide text-gray-400">
+      <div className="mb-0.5 text-xs font-semibold uppercase text-[#708078]">
         {label}
       </div>
-      <div className="whitespace-pre-wrap break-words text-sm text-gray-700">{text}</div>
+      <div className="whitespace-pre-wrap break-words text-sm leading-6 text-[#34423d]">{text}</div>
     </div>
   );
 }
@@ -281,26 +283,26 @@ function ToolSpan({ span }: { span: SpanRow }) {
   const isSkill = span.kind === "SKILL";
   const hasDetail = !!(a.toolArgs || a.toolResult);
   return (
-    <div className="rounded-lg border border-gray-100 bg-gray-50/60">
+    <div className="rounded-[6px] border border-[#e1e5e3] bg-[#f7f9f8]">
       <button
         type="button"
         onClick={() => hasDetail && setOpen((v) => !v)}
         className={`flex w-full items-center gap-2 px-3 py-2 text-left ${
-          hasDetail ? "cursor-pointer hover:bg-gray-100/60" : "cursor-default"
+          hasDetail ? "cursor-pointer hover:bg-[#eef2f0]" : "cursor-default"
         }`}
       >
-        <span className="text-gray-400">{hasDetail ? (open ? "▾" : "▸") : "•"}</span>
+        <span className="text-[#708078]">{hasDetail ? (open ? "▾" : "▸") : "•"}</span>
         <Pill tone={isSkill ? "amber" : "gray"}>{span.kind}</Pill>
-        <span className="font-medium text-gray-800">{a.toolName || span.name}</span>
+        <span className="font-medium text-[#22302b]">{a.toolName || span.name}</span>
         {isSkill && a.skillName && (
-          <span className="text-xs text-gray-500">→ {a.skillName}</span>
+          <span className="text-xs text-[#63706a]">→ {a.skillName}</span>
         )}
         {isSkill && skillIdentity(a) && (
           <span
             className={
               a.skillVerified === false
-                ? "rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500"
-                : "rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[11px] text-amber-700"
+                ? "rounded-[3px] bg-[#ecefed] px-1.5 py-0.5 font-mono text-[11px] text-[#63706a]"
+                : "rounded-[3px] bg-[#f7efd9] px-1.5 py-0.5 font-mono text-[11px] text-[#77560f]"
             }
             title={
               a.skillVerified === false
@@ -314,14 +316,14 @@ function ToolSpan({ span }: { span: SpanRow }) {
         )}
         {isSkill && !skillIdentity(a) && a.skillVerified === false && (
           <span
-            className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500"
+            className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5 text-[11px] text-[#63706a]"
             title="qvr could not resolve the loaded copy to a locked skill (e.g. a global eject or a shadowing install)"
           >
             unverified
           </span>
         )}
         {!isSkill && a.toolDesc && (
-          <span className="truncate text-xs text-gray-400">{a.toolDesc}</span>
+          <span className="truncate text-xs text-[#708078]">{a.toolDesc}</span>
         )}
         {a.error && <Pill tone="red">{a.error}</Pill>}
       </button>
@@ -362,25 +364,25 @@ function RawView({ traces }: { traces: RawTraceView[] }) {
 function RawRow({ trace }: { trace: RawTraceView }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+    <div className="rounded-[6px] border border-[#d7ddda] bg-white shadow-[0_1px_0_rgba(22,32,28,0.04)]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50"
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-[#f7f9f8]"
       >
-        <span className="text-gray-400">{open ? "▾" : "▸"}</span>
-        <span className="w-10 shrink-0 text-xs text-gray-400">#{trace.seq}</span>
+        <span className="text-[#708078]">{open ? "▾" : "▸"}</span>
+        <span className="w-10 shrink-0 font-mono text-xs text-[#708078]">#{trace.seq}</span>
         <Pill tone={trace.source === "transcript" ? "blue" : "amber"}>
           {trace.source === "hook_payload" ? "hook" : "transcript"}
         </Pill>
         {trace.hook_type && <Mono>{trace.hook_type}</Mono>}
-        <span className="ml-auto text-xs text-gray-400">{fmtTime(trace.captured_at)}</span>
+        <span className="ml-auto text-xs text-[#708078]">{fmtTime(trace.captured_at)}</span>
       </button>
       {open && (
         <div className="px-4 pb-3">
           <CodeBlock value={prettyJSON(trace.raw)} label="raw" />
           {trace.source_path && (
-            <div className="mt-1 text-xs text-gray-400">
+            <div className="mt-1 text-xs text-[#708078]">
               <Mono>{trace.source_path}</Mono>
             </div>
           )}

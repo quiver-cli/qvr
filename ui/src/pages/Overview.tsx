@@ -33,9 +33,9 @@ export default function Overview() {
       {data && (
         <>
           {!data.audit_enabled && (
-            <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <div className="mb-6 rounded-[6px] border border-[#d3ba70] bg-[#f7efd9] px-4 py-3 text-sm text-[#6c5012]">
               Audit pipeline not enabled — session history is empty. Run{" "}
-              <code className="rounded bg-amber-100 px-1.5 py-0.5">qvr audit enable</code> to start
+              <code className="rounded-[3px] bg-white/70 px-1.5 py-0.5">qvr audit enable</code> to start
               recording agent sessions.
             </div>
           )}
@@ -47,10 +47,10 @@ export default function Overview() {
             <StatCard label="Registries" value={data.registries} />
           </div>
           {data.project_root && (
-            <p className="mt-2 text-xs text-gray-400">
+            <p className="mt-2 text-xs text-[#708078]">
               Sessions and events scoped to{" "}
-              <code className="rounded bg-gray-100 px-1 py-0.5">{data.project_root}</code> — run{" "}
-              <code className="rounded bg-gray-100 px-1 py-0.5">qvr ui --global</code> for all activity.
+              <code className="rounded-[3px] bg-[#ecefed] px-1 py-0.5">{data.project_root}</code> — run{" "}
+              <code className="rounded-[3px] bg-[#ecefed] px-1 py-0.5">qvr ui --global</code> for all activity.
             </p>
           )}
 
@@ -61,9 +61,9 @@ export default function Overview() {
                 <GateStat label="Blocked" value={data.gate_blocked} tone="red" />
                 <GateStat label="Unscanned" value={data.gate_unscanned} tone="gray" />
               </div>
-              <p className="mt-4 text-xs text-gray-500">
+              <p className="mt-4 text-xs text-[#63706a]">
                 Recorded at install time. Open a{" "}
-                <Link className="text-blue-600 hover:underline" to="/skills">
+                <Link className="font-medium text-[#2f765d] hover:underline" to="/skills">
                   skill
                 </Link>{" "}
                 to run a live scan.
@@ -74,7 +74,7 @@ export default function Overview() {
               {data.recent_sessions.length === 0 ? (
                 <Empty>No sessions recorded yet.</Empty>
               ) : (
-                <ul className="divide-y divide-gray-100">
+                <ul className="divide-y divide-[#eef0ef]">
                   {data.recent_sessions.map((s) => (
                     <li
                       key={s.session_id}
@@ -82,14 +82,14 @@ export default function Overview() {
                     >
                       <Link
                         to={`/sessions/${s.session_id}`}
-                        className="min-w-0 truncate text-sm font-medium text-blue-600 hover:underline"
+                        className="min-w-0 truncate text-sm font-medium text-[#2f765d] hover:underline"
                         title={s.title || s.session_id}
                       >
                         {s.title || "untitled session"}
                       </Link>
                       <span className="flex shrink-0 items-center gap-2">
                         <Pill tone="blue">{prettyAgent(s.agent_name)}</Pill>
-                        <span className="text-xs text-gray-400">{fmtTime(s.started_at)}</span>
+                        <span className="text-xs text-[#708078]">{fmtTime(s.started_at)}</span>
                       </span>
                     </li>
                   ))}
@@ -114,7 +114,7 @@ function GateStat({
 }) {
   return (
     <div>
-      <div className="text-2xl font-semibold text-gray-900">{value}</div>
+      <div className="font-mono text-2xl font-semibold text-[#121816]">{value}</div>
       <Pill tone={tone}>{label}</Pill>
     </div>
   );

@@ -71,7 +71,7 @@ export default function SkillView({ mode }: { mode: "project" | "registry" }) {
   return (
     <>
       <div className="mb-4">
-        <Link to={back.to} className="text-sm text-blue-600 hover:underline">
+        <Link to={back.to} className="text-sm font-medium text-[#2f765d] hover:underline">
           {back.label}
         </Link>
       </div>
@@ -180,9 +180,9 @@ function ProjectScanPanel({
     <div className="space-y-4">
       {/* Recorded install-time gate — instant, no scan needed. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-gray-400">
-          Recorded gate
-        </span>
+            <span className="text-xs font-semibold uppercase text-[#708078]">
+              Recorded gate
+            </span>
         {recorded ? (
           <>
             <StatusPill value={recorded.decision} />
@@ -196,19 +196,19 @@ function ProjectScanPanel({
               ]}
             />
             {recorded.scannerVersion && (
-              <span className="text-xs text-gray-400">
+              <span className="text-xs text-[#708078]">
                 scanner {recorded.scannerVersion}
               </span>
             )}
           </>
         ) : (
-          <span className="text-sm text-gray-400">not scanned at install</span>
+          <span className="text-sm text-[#708078]">not scanned at install</span>
         )}
         <button
           type="button"
           onClick={run}
           disabled={busy}
-          className="ml-auto rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+          className="ml-auto rounded-[4px] bg-[#123a2e] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1d513f] disabled:opacity-50"
         >
           {busy ? "scanning…" : scan ? "re-scan" : "run live scan"}
         </button>
@@ -216,19 +216,19 @@ function ProjectScanPanel({
 
       {err && <ErrorBox message={err} />}
       {drift && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className="rounded-[6px] border border-[#d3ba70] bg-[#f7efd9] px-3 py-2 text-sm text-[#6c5012]">
           {drift}
         </div>
       )}
 
       {scan && (
-        <div className="space-y-3 border-t border-gray-100 pt-3">
+        <div className="space-y-3 border-t border-[#e6e9e7] pt-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">
+            <span className="text-xs font-semibold uppercase text-[#708078]">
               Live scan
             </span>
             <StatusPill value={scan.gate.decision} />
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-[#708078]">
               threshold {scan.gate.threshold}
             </span>
             <SeverityCounts
@@ -291,7 +291,7 @@ function RegistryView({ detail }: { detail: import("../api").RegistrySkillDetail
         scanPanel={
           <div className="space-y-3">
             <Inventory files={detail.files ?? []} />
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-[#708078]">
               Full security scan runs at install. Install this skill to record a
               gate decision and enable a live re-scan.
             </p>
@@ -318,10 +318,10 @@ function Header({
   return (
     <div className="mb-6">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold text-gray-900">{name}</h1>
+        <h1 className="text-2xl font-semibold text-[#121816]">{name}</h1>
         {badge}
       </div>
-      {description && <p className="mt-1 text-sm text-gray-500">{description}</p>}
+      {description && <p className="mt-1 max-w-3xl text-sm leading-6 text-[#66736d]">{description}</p>}
       <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5">{chips}</div>
     </div>
   );
@@ -360,7 +360,7 @@ function Workbench({
                   key={t.target}
                   className="flex items-center justify-between text-sm"
                 >
-                  <span className="font-medium text-gray-700">{t.target}</span>
+                  <span className="font-medium text-[#34423d]">{t.target}</span>
                   <StatusPill value={t.ok ? "success" : "error"} />
                 </li>
               ))}
@@ -404,13 +404,13 @@ function ChipRow({
   const shown = doShort ? short(value) : value;
   return (
     <span className="flex items-center gap-1.5 text-xs">
-      <span className="uppercase tracking-wide text-gray-400">{label}</span>
+      <span className="font-semibold uppercase text-[#708078]">{label}</span>
       {tone === "amber" ? (
         <Pill tone="amber">{value}</Pill>
       ) : mono ? (
         <Mono title={value}>{shown}</Mono>
       ) : (
-        <span className="text-gray-700">{shown}</span>
+        <span className="text-[#34423d]">{shown}</span>
       )}
       {copy && <CopyButton value={value} />}
     </span>
@@ -425,16 +425,16 @@ function SeverityCounts({ counts }: { counts: [string, number, CountTone][] }) {
     return <Pill tone="green">clean</Pill>;
   }
   const tones: Record<CountTone, string> = {
-    red: "bg-red-100 text-red-800 ring-red-600/20",
-    amber: "bg-amber-100 text-amber-800 ring-amber-600/20",
-    gray: "bg-gray-100 text-gray-700 ring-gray-500/20",
+    red: "bg-[#f8eaea] text-[#9a2f2f] ring-[#dc9a9a]",
+    amber: "bg-[#f7efd9] text-[#77560f] ring-[#d3ba70]",
+    gray: "bg-[#ecefed] text-[#47504c] ring-[#c8cecb]",
   };
   return (
     <span className="flex flex-wrap items-center gap-1">
       {nonzero.map(([label, n, tone]) => (
         <span
           key={label}
-          className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]}`}
+          className={`inline-flex items-center gap-1 rounded-[3px] px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${tones[tone]}`}
         >
           <span className="font-semibold">{n}</span>
           {label}
@@ -459,7 +459,7 @@ function FindingsList({ findings }: { findings: Finding[] | null }) {
   const tone = (s: string) =>
     s === "critical" || s === "error" ? "red" : s === "warning" ? "amber" : "gray";
   return (
-    <ul className="divide-y divide-gray-100">
+    <ul className="divide-y divide-[#eef0ef]">
       {sorted.map((f, i) => (
         <li key={i} className="py-2.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -472,14 +472,14 @@ function FindingsList({ findings }: { findings: Finding[] | null }) {
               </Mono>
             )}
           </div>
-          <p className="mt-1 text-sm text-gray-700">{f.message}</p>
+          <p className="mt-1 text-sm text-[#34423d]">{f.message}</p>
           {f.evidence && (
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded bg-gray-100 px-2 py-1 font-mono text-xs text-gray-600">
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-[4px] bg-[#f6f8f7] px-2 py-1 font-mono text-xs text-[#52615a]">
               {f.evidence}
             </pre>
           )}
           {f.remediation && (
-            <p className="mt-0.5 text-xs text-gray-500">↳ {f.remediation}</p>
+            <p className="mt-0.5 text-xs text-[#63706a]">↳ {f.remediation}</p>
           )}
         </li>
       ))}
@@ -499,15 +499,15 @@ function Inventory({ files }: { files: string[] }) {
   if (groups.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-gray-400">
+      <span className="text-xs font-semibold uppercase text-[#708078]">
         Inventory
       </span>
       {groups.map(([kind, n]) => (
         <span
           key={kind}
-          className="inline-flex items-center gap-1 rounded-md bg-gray-50 px-2 py-0.5 text-xs text-gray-600 ring-1 ring-inset ring-gray-200"
+          className="inline-flex items-center gap-1 rounded-[3px] bg-[#f7f9f8] px-2 py-0.5 text-xs text-[#52615a] ring-1 ring-inset ring-[#d7ddda]"
         >
-          <span className="font-semibold text-gray-800">{n}</span>
+          <span className="font-mono font-semibold text-[#22302b]">{n}</span>
           {kind}
         </span>
       ))}
