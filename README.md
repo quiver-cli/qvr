@@ -241,7 +241,7 @@ gate every consumer's install went through.
 ```
 source ─► registry add ─► scan ─► validate ─► add ─► edit ─► publish ─┐
                           ▲                                           │
-                          └──────────────── re-gate ◄────────────────┘
+                          └──────────────── re-gate ◄─────────────────┘
               (authoring a new version re-enters the gate at scan)
 ```
 
