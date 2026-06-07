@@ -14,6 +14,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	gogitcfg "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -139,7 +140,7 @@ func (g *GoGitClient) BareClone(ctx context.Context, url, path string, opts Clon
 		// we'd silently miss newly-published versions. We intentionally do NOT
 		// add refs/pull/* — excluding PR refs is the whole point of not using
 		// --mirror.
-		if err := configureFullRefspec(ctx, path); err != nil {
+		if err := configureFullRefspec(path); err != nil {
 			_ = os.RemoveAll(path)
 			return err
 		}
@@ -148,7 +149,7 @@ func (g *GoGitClient) BareClone(ctx context.Context, url, path string, opts Clon
 		// later `git fetch origin` (qvr registry update) would update nothing.
 		// Wire up a single-branch refspec for the default branch so updates work
 		// and stay scoped to that one branch.
-		if err := configureSingleBranchFetch(ctx, path); err != nil {
+		if err := configureSingleBranchFetch(path); err != nil {
 			_ = os.RemoveAll(path)
 			return err
 		}
@@ -158,38 +159,82 @@ func (g *GoGitClient) BareClone(ctx context.Context, url, path string, opts Clon
 
 // configureFullRefspec ensures a full (AllRefs) bare clone fetches every branch
 // and tag on update — and nothing else. `git clone --bare` already writes the
-// branches refspec; we add the tags refspec so versions published off any
-// branch are still picked up. The absence of any refs/pull/* refspec is
-// deliberate: that's what keeps full registries from re-pulling PR refs.
-func configureFullRefspec(ctx context.Context, repoPath string) error {
-	// --replace-all collapses the clone's default heads refspec to exactly the
-	// two we want, making the result deterministic regardless of git's defaults.
-	if _, err := runGit(ctx, "-C", repoPath, "config", "--replace-all",
-		"remote.origin.fetch", "+refs/heads/*:refs/heads/*"); err != nil {
-		return fmt.Errorf("configure heads refspec: %w", err)
-	}
-	if _, err := runGit(ctx, "-C", repoPath, "config", "--add",
-		"remote.origin.fetch", "+refs/tags/*:refs/tags/*"); err != nil {
-		return fmt.Errorf("configure tags refspec: %w", err)
-	}
-	return nil
+// branches refspec; we set heads+tags so versions published off any branch are
+// still picked up. The absence of any refs/pull/* refspec is deliberate: that's
+// what keeps full registries from re-pulling PR refs.
+//
+// This rewrites the local repo's config in-process via go-git rather than
+// spawning `git config` subprocesses (#209/#203) — the repo is local, no auth
+// is involved, and the proven precedent is internal/git/worktree.go's
+// setOriginURL / setBranchTracking. Setting the Fetch slice wholesale is the
+// deterministic equivalent of the old `--replace-all` + `--add`.
+func configureFullRefspec(repoPath string) error {
+	return setOriginFetch(repoPath, []gogitcfg.RefSpec{
+		"+refs/heads/*:refs/heads/*",
+		"+refs/tags/*:refs/tags/*",
+	})
 }
 
 // configureSingleBranchFetch sets remote.origin.fetch to a single-branch
 // refspec for the bare clone's current default branch, so `git fetch origin`
 // updates exactly that branch (git doesn't configure a refspec for bare
-// single-branch clones on its own).
-func configureSingleBranchFetch(ctx context.Context, repoPath string) error {
-	out, err := runGit(ctx, "-C", repoPath, "symbolic-ref", "--short", "HEAD")
+// single-branch clones on its own). In-process via go-git (#209) — see
+// configureFullRefspec.
+func configureSingleBranchFetch(repoPath string) error {
+	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
-		return fmt.Errorf("resolve default branch: %w", err)
+		return fmt.Errorf("open repo: %w", err)
 	}
-	def := strings.TrimSpace(string(out))
-	if def == "" {
+	def, err := headBranchShort(repo)
+	if err != nil || def == "" {
 		return fmt.Errorf("could not determine default branch to configure fetch")
 	}
-	spec := fmt.Sprintf("+refs/heads/%s:refs/heads/%s", def, def)
-	if _, err := runGit(ctx, "-C", repoPath, "config", "remote.origin.fetch", spec); err != nil {
+	spec := gogitcfg.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/heads/%s", def, def))
+	return setOriginFetchOn(repo, []gogitcfg.RefSpec{spec})
+}
+
+// headBranchShort returns the short name of the branch HEAD symbolically points
+// to (e.g. "main"), matching `git symbolic-ref --short HEAD`. It reads HEAD
+// without resolving the commit, so it works on a bare clone whose HEAD is a
+// symref to refs/heads/<default>.
+func headBranchShort(repo *gogit.Repository) (string, error) {
+	ref, err := repo.Reference(plumbing.HEAD, false)
+	if err != nil {
+		return "", err
+	}
+	if ref.Type() != plumbing.SymbolicReference {
+		return "", fmt.Errorf("HEAD is not a symbolic reference")
+	}
+	return ref.Target().Short(), nil
+}
+
+// setOriginFetch opens the local repo and replaces remote.origin.fetch with the
+// given refspecs, preserving the origin URL.
+func setOriginFetch(repoPath string, fetch []gogitcfg.RefSpec) error {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repo: %w", err)
+	}
+	return setOriginFetchOn(repo, fetch)
+}
+
+// setOriginFetchOn replaces remote.origin.fetch on an already-open repo,
+// preserving the existing origin URL (creating the remote entry if absent).
+func setOriginFetchOn(repo *gogit.Repository, fetch []gogitcfg.RefSpec) error {
+	cfg, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	if cfg.Remotes == nil {
+		cfg.Remotes = map[string]*gogitcfg.RemoteConfig{}
+	}
+	r, ok := cfg.Remotes["origin"]
+	if !ok {
+		r = &gogitcfg.RemoteConfig{Name: "origin"}
+		cfg.Remotes["origin"] = r
+	}
+	r.Fetch = fetch
+	if err := repo.SetConfig(cfg); err != nil {
 		return fmt.Errorf("configure fetch refspec: %w", err)
 	}
 	return nil
@@ -207,11 +252,24 @@ func configureSingleBranchFetch(ctx context.Context, repoPath string) error {
 // configured fetch refspec therefore means full. This also recognises older
 // registries that were cloned with `--mirror` (+refs/*:refs/*) as full.
 func IsFullClone(repoPath string) bool {
-	out, err := runGit(context.Background(), "-C", repoPath, "config", "--get-all", "remote.origin.fetch")
+	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(out), "*")
+	cfg, err := repo.Config()
+	if err != nil {
+		return false
+	}
+	r, ok := cfg.Remotes["origin"]
+	if !ok {
+		return false
+	}
+	for _, spec := range r.Fetch {
+		if strings.Contains(string(spec), "*") {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *GoGitClient) Clone(ctx context.Context, url, path string) error {
@@ -258,7 +316,7 @@ func (g *GoGitClient) DeepenToFull(ctx context.Context, repoPath string) error {
 		// an update rather than a silent no-op, but skip the refspec rewrite.
 		return g.Fetch(ctx, repoPath)
 	}
-	if err := configureFullRefspec(ctx, repoPath); err != nil {
+	if err := configureFullRefspec(repoPath); err != nil {
 		return err
 	}
 	// Fetch all heads + tags per the just-written refspec. `--unshallow` removes

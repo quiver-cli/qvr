@@ -167,6 +167,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
 
+	// Opportunistically warm registry caches for the next command (#211).
+	// Best-effort and OFF by default; it spawns a detached refresh and returns
+	// immediately, never blocking or failing this add. Deferred so it fires
+	// after the install work on every add mode (default / --all / --local).
+	defer registry.MaybePrefetch()
+
 	gc := git.NewGoGitClient()
 	wt := git.NewGoGitWorktree()
 	mgr := newRegistryManager(gc)

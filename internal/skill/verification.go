@@ -26,6 +26,16 @@ import (
 // it falls back to commit, so the result is never silently empty. Issues #171,
 // #173.
 func SkillCommit(repoPath, commit, path string) string {
+	return skillCommitFor(repoPath, commit, path)
+}
+
+// skillCommitFor is the implementation behind SkillCommit. It is split out so
+// callers that resolve the skill commit once (e.g. resolveProvenanceAndAuthor)
+// can thread the result into checkGitProvenanceAt / commitAuthorAt instead of
+// re-running this `git log` per provenance field — on the cold install path the
+// public CheckGitProvenance and CommitAuthor would each recompute the same
+// immutable value, spawning a redundant subprocess (#209/#203).
+func skillCommitFor(repoPath, commit, path string) string {
 	if repoPath == "" || commit == "" || IsRootLayoutPath(path) {
 		return commit
 	}
@@ -58,6 +68,14 @@ func SkillCommit(repoPath, commit, path string) string {
 // commit — NOT the branch tip, which would let an unsigned skill ride in under
 // an unrelated signed tip commit (the #173 tip-leak).
 func CheckGitProvenance(repoPath, ref, commit, path string) *model.ProvenanceRef {
+	return checkGitProvenanceAt(repoPath, ref, skillCommitFor(repoPath, commit, path))
+}
+
+// checkGitProvenanceAt is CheckGitProvenance with the skill's last-touching
+// commit already resolved (see skillCommitFor). skillCommit is the result of
+// SkillCommit for the install; passing "" is tolerated and falls back to ref,
+// exactly as the public path does.
+func checkGitProvenanceAt(repoPath, ref, skillCommit string) *model.ProvenanceRef {
 	ctx := context.Background()
 	// Prefer the requested ref as a signed annotated tag.
 	if status, signer, err := git.VerifyTagSignature(ctx, repoPath, ref); err == nil {
@@ -71,7 +89,7 @@ func CheckGitProvenance(repoPath, ref, commit, path string) *model.ProvenanceRef
 		}
 	}
 	// Fall back to the signature on the skill's own last-touching commit.
-	target := SkillCommit(repoPath, commit, path)
+	target := skillCommit
 	if target == "" {
 		target = ref
 	}
@@ -95,7 +113,12 @@ func CheckGitProvenance(repoPath, ref, commit, path string) *model.ProvenanceRef
 // commit stand in for a skill's real provenance, and conversely false-reject a
 // skill whose own content a pinned author wrote. Issue #171.
 func CommitAuthor(repoPath, commit, path string) string {
-	target := SkillCommit(repoPath, commit, path)
+	return commitAuthorAt(repoPath, skillCommitFor(repoPath, commit, path))
+}
+
+// commitAuthorAt is CommitAuthor with the skill's last-touching commit already
+// resolved (see skillCommitFor). target is the result of SkillCommit.
+func commitAuthorAt(repoPath, target string) string {
 	if repoPath == "" || target == "" {
 		return ""
 	}

@@ -37,9 +37,11 @@ var configValueValidators = map[string]func(string) (string, error){
 	"security.block_severity": validateEnum([]string{
 		"critical", "error", "warning", "info",
 	}),
-	"cache.index_ttl": validateDuration,
-	"output.format":   validateEnum([]string{"text", "json"}),
-	"output.color":    validateEnum([]string{"auto", "always", "never"}),
+	"cache.index_ttl":       validateDuration,
+	"output.format":         validateEnum([]string{"text", "json"}),
+	"output.color":          validateEnum([]string{"auto", "always", "never"}),
+	"prefetch.enabled":      validateBool,
+	"prefetch.min_interval": validateDuration,
 }
 
 func validateBool(v string) (string, error) {
@@ -126,6 +128,8 @@ var knownConfigKeys = []string{
 	"cache.index_ttl",
 	"ops.enabled",
 	"ops.db_path",
+	"prefetch.enabled",
+	"prefetch.min_interval",
 }
 
 // suggestSubKeys returns the known dotted keys nested under prefix
@@ -184,6 +188,13 @@ func configRead(cfg *config.Config, key string) string {
 		return "false"
 	case "ops.db_path":
 		return cfg.Ops.DBPath
+	case "prefetch.enabled":
+		if cfg.Prefetch.Enabled {
+			return "true"
+		}
+		return "false"
+	case "prefetch.min_interval":
+		return cfg.Prefetch.MinInterval
 	}
 	return ""
 }
@@ -210,6 +221,10 @@ func configWrite(cfg *config.Config, key, value string) error {
 		cfg.Output.Color = value
 	case "cache.index_ttl":
 		cfg.Cache.IndexTTL = value
+	case "prefetch.enabled":
+		cfg.Prefetch.Enabled = value == "true"
+	case "prefetch.min_interval":
+		cfg.Prefetch.MinInterval = value
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
