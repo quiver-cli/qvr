@@ -205,8 +205,13 @@ func (in *Installer) resolveProvenanceAndAuthor(repoPath, ref, commit, path stri
 			return prov, author
 		}
 	}
-	prov := CheckGitProvenance(repoPath, ref, commit, path)
-	author := CommitAuthor(repoPath, commit, path)
+	// Resolve the skill's last-touching commit once and thread it into both
+	// provenance and author derivation — the public CheckGitProvenance and
+	// CommitAuthor would otherwise each recompute it, spawning a redundant
+	// `git log` on this cold path (#209/#203).
+	skillCommit := SkillCommit(repoPath, commit, path)
+	prov := checkGitProvenanceAt(repoPath, ref, skillCommit)
+	author := commitAuthorAt(repoPath, skillCommit)
 	if !fresh {
 		writeCachedProvenance(ref, commit, path, prov, author)
 	}

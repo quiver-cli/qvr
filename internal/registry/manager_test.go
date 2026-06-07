@@ -481,6 +481,100 @@ func TestManager_Check_WithChanges(t *testing.T) {
 	}
 }
 
+// TestManager_Update_All_DeterministicOrder guards #212: the parallel fan-out
+// must still return registries in the deterministic, name-sorted order, run
+// after run.
+func TestManager_Update_All_DeterministicOrder(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	// Add in non-sorted order; registryNames sorts, so results must be sorted.
+	_, _ = mgr.Add(context.Background(), "charlie", setupTestSourceRepo(t))
+	_, _ = mgr.Add(context.Background(), "alpha", setupTestSourceRepo(t))
+	_, _ = mgr.Add(context.Background(), "bravo", setupTestSourceRepo(t))
+
+	want := []string{"alpha", "bravo", "charlie"}
+	for run := range 5 {
+		results, err := mgr.Update(context.Background(), "")
+		if err != nil {
+			t.Fatalf("Update all (run %d): %v", run, err)
+		}
+		if len(results) != len(want) {
+			t.Fatalf("run %d: expected %d results, got %d", run, len(want), len(results))
+		}
+		for i, w := range want {
+			if results[i].Name != w {
+				t.Fatalf("run %d: result[%d].Name = %q, want %q", run, i, results[i].Name, w)
+			}
+			if results[i].Error != "" {
+				t.Errorf("run %d: %q unexpected error: %s", run, w, results[i].Error)
+			}
+			if results[i].SkillCount != 2 {
+				t.Errorf("run %d: %q skill_count = %d, want 2", run, w, results[i].SkillCount)
+			}
+		}
+	}
+}
+
+// TestManager_Update_All_PartialFailure guards #212: one registry failing to
+// fetch must not affect the others, and ordering must be preserved with the
+// failure isolated to its own slot.
+func TestManager_Update_All_PartialFailure(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	_, _ = mgr.Add(context.Background(), "good1", setupTestSourceRepo(t))
+	broken, _ := mgr.Add(context.Background(), "broken", setupTestSourceRepo(t))
+	_, _ = mgr.Add(context.Background(), "good2", setupTestSourceRepo(t))
+
+	// Break the middle (by sort order) registry's bare clone so its fetch fails.
+	if err := os.RemoveAll(broken.Path); err != nil {
+		t.Fatalf("remove bare clone: %v", err)
+	}
+
+	results, err := mgr.Update(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Update all: %v", err)
+	}
+	want := []string{"broken", "good1", "good2"} // sorted
+	if len(results) != len(want) {
+		t.Fatalf("expected %d results, got %d", len(want), len(results))
+	}
+	for i, w := range want {
+		if results[i].Name != w {
+			t.Fatalf("result[%d].Name = %q, want %q", i, results[i].Name, w)
+		}
+	}
+	if results[0].Error == "" {
+		t.Error("broken registry should carry a fetch error")
+	}
+	if results[1].Error != "" || results[2].Error != "" {
+		t.Errorf("healthy registries should have no error, got %q / %q", results[1].Error, results[2].Error)
+	}
+}
+
+// TestManager_Check_All guards #212: a multi-registry check fans out and returns
+// every configured registry in name-sorted order.
+func TestManager_Check_All(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	_, _ = mgr.Add(context.Background(), "charlie", setupTestSourceRepo(t))
+	_, _ = mgr.Add(context.Background(), "alpha", setupTestSourceRepo(t))
+	_, _ = mgr.Add(context.Background(), "bravo", setupTestSourceRepo(t))
+
+	results, err := mgr.Check(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Check all: %v", err)
+	}
+	want := []string{"alpha", "bravo", "charlie"}
+	if len(results) != len(want) {
+		t.Fatalf("expected %d results, got %d", len(want), len(results))
+	}
+	for i, w := range want {
+		if results[i].Name != w {
+			t.Fatalf("result[%d].Name = %q, want %q", i, results[i].Name, w)
+		}
+		if results[i].HasUpstreamChanges {
+			t.Errorf("%q: expected no upstream changes", w)
+		}
+	}
+}
+
 func TestManager_Add_WritesCacheOnFirstClone(t *testing.T) {
 	mgr, _ := setupManagerTest(t)
 	srcDir := setupTestSourceRepo(t)

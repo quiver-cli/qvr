@@ -47,6 +47,18 @@ type Config struct {
 	Output          OutputConfig              `yaml:"output,omitempty" json:"output,omitempty"`
 	Cache           CacheConfig               `yaml:"cache,omitempty" json:"cache,omitempty"`
 	Ops             OpsConfig                 `yaml:"ops,omitempty" json:"ops,omitempty"`
+	Prefetch        PrefetchConfig            `yaml:"prefetch,omitempty" json:"prefetch,omitempty"`
+}
+
+// PrefetchConfig controls opportunistic background prefetch of registered
+// registries (#211). It is OFF by default: with Enabled false, qvr never spawns
+// a background refresh, so existing users see no behaviour change. When enabled,
+// MinInterval throttles how often a prefetch may run (a Go duration string like
+// "30m"; empty means the package default). Prefetch is always best-effort — it
+// can never block or fail a foreground command.
+type PrefetchConfig struct {
+	Enabled     bool   `yaml:"enabled" json:"enabled"`
+	MinInterval string `yaml:"min_interval,omitempty" json:"min_interval,omitempty"`
 }
 
 // TrustConfig stores optional registry-level author policy. It is separate

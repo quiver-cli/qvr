@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/astra-sh/qvr/internal/config"
@@ -340,6 +342,14 @@ func (m *Manager) List() ([]model.RegistryStatus, error) {
 }
 
 // Update fetches new refs for a registry (or all if name is empty).
+//
+// When more than one registry is targeted the fetch+index of each runs
+// concurrently (#212): registries are independent — each has its own bare clone
+// (RegistryPath) and its own index cache file — so the only correctness
+// requirement is that results stay in the deterministic, name-sorted order
+// `names` already carries. Results are therefore written by index, never
+// appended. A single-registry update runs inline (no goroutine) so the dominant
+// `qvr registry update <name>` path is byte-for-byte the old serial path.
 func (m *Manager) Update(ctx context.Context, name string) ([]model.RegistryStatus, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -352,49 +362,66 @@ func (m *Manager) Update(ctx context.Context, name string) ([]model.RegistryStat
 	}
 	names := registryNames(cfg, name)
 
-	var results []model.RegistryStatus
-	for _, n := range names {
-		regCfg, exists := cfg.Registries[n]
-		if !exists {
-			results = append(results, model.RegistryStatus{
-				Registry: model.Registry{Name: n},
-				Error:    fmt.Sprintf("registry %q not found", n),
-			})
-			continue
-		}
-
-		repoPath := RegistryPath(n)
-		status := model.RegistryStatus{
-			Registry: model.Registry{
-				Name: n,
-				URL:  regCfg.URL,
-				Path: repoPath,
-			},
-		}
-
-		if err := m.Git.Fetch(ctx, repoPath); err != nil {
-			status.Error = fmt.Sprintf("fetch failed: %v", err)
-			results = append(results, status)
-			continue
-		}
-
-		// A fetch may have moved HEAD, so drop the cache and rebuild via
-		// Index() — that re-populates the cache with the fresh commit hash.
-		_ = Invalidate(n)
-		if skills, skipped, err := m.Index(n, repoPath); err == nil {
-			status.SkillCount = len(skills)
-			status.SkippedCount = len(skipped)
-			status.Skipped = skipped
-		}
-
-		status.LastFetched = time.Now()
-		results = append(results, status)
+	results := make([]model.RegistryStatus, len(names))
+	if len(names) == 1 {
+		results[0] = m.updateOne(ctx, cfg, names[0])
+		return results, nil
 	}
-
+	runConcurrent(len(names), func(i int) {
+		results[i] = m.updateOne(ctx, cfg, names[i])
+	})
 	return results, nil
 }
 
+// updateOne fetches and re-indexes a single registry, returning its status. A
+// missing registry or failed fetch is reported as a populated status.Error
+// (never an early return) so the caller can place it at its slot.
+func (m *Manager) updateOne(ctx context.Context, cfg *config.Config, n string) model.RegistryStatus {
+	regCfg, exists := cfg.Registries[n]
+	if !exists {
+		return model.RegistryStatus{
+			Registry: model.Registry{Name: n},
+			Error:    fmt.Sprintf("registry %q not found", n),
+		}
+	}
+
+	repoPath := RegistryPath(n)
+	status := model.RegistryStatus{
+		Registry: model.Registry{
+			Name: n,
+			URL:  regCfg.URL,
+			Path: repoPath,
+		},
+	}
+
+	if err := m.Git.Fetch(ctx, repoPath); err != nil {
+		status.Error = fmt.Sprintf("fetch failed: %v", err)
+		return status
+	}
+
+	// A fetch may have moved HEAD, so drop the cache and rebuild via
+	// Index() — that re-populates the cache with the fresh commit hash. Each
+	// registry touches only its own cache file, so this is concurrency-safe
+	// across distinct registries (the cache writer is unsafe only for the same
+	// registry concurrently, which we never do).
+	_ = Invalidate(n)
+	if skills, skipped, err := m.Index(n, repoPath); err == nil {
+		status.SkillCount = len(skills)
+		status.SkippedCount = len(skipped)
+		status.Skipped = skipped
+	}
+
+	status.LastFetched = time.Now()
+	return status
+}
+
 // Check performs a dry-run check for upstream changes.
+//
+// Like Update (#212), a multi-registry check fans out concurrently — each
+// registry's ls-remote is independent. Unlike Update, a registry missing from
+// config is silently dropped (not reported as an error), so each worker returns
+// an include flag and only included slots are kept, in the original name-sorted
+// order.
 func (m *Manager) Check(ctx context.Context, name string) ([]model.RegistryStatus, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -407,49 +434,101 @@ func (m *Manager) Check(ctx context.Context, name string) ([]model.RegistryStatu
 	}
 	names := registryNames(cfg, name)
 
-	var results []model.RegistryStatus
-	for _, n := range names {
-		regCfg, exists := cfg.Registries[n]
-		if !exists {
-			continue
-		}
-
-		repoPath := RegistryPath(n)
-		status := model.RegistryStatus{
-			Registry: model.Registry{
-				Name: n,
-				URL:  regCfg.URL,
-				Path: repoPath,
-			},
-		}
-
-		localHead, err := m.Git.HeadCommit(repoPath)
-		if err != nil {
-			status.Error = fmt.Sprintf("read local HEAD: %v", err)
-			results = append(results, status)
-			continue
-		}
-
-		remoteRefs, err := m.Git.LsRemote(ctx, regCfg.URL)
-		if err != nil {
-			status.Error = fmt.Sprintf("ls-remote: %v", err)
-			results = append(results, status)
-			continue
-		}
-
-		defaultBranch, _ := m.Git.DefaultBranch(repoPath)
-		if defaultBranch == "" {
-			defaultBranch = defaultBranchFallback
-		}
-		remoteRef := "refs/heads/" + defaultBranch
-		if remoteHash, ok := remoteRefs.Refs[remoteRef]; ok {
-			status.HasUpstreamChanges = remoteHash != localHead
-		}
-
-		results = append(results, status)
+	type slot struct {
+		status  model.RegistryStatus
+		include bool
+	}
+	slots := make([]slot, len(names))
+	check := func(i int) {
+		st, ok := m.checkOne(ctx, cfg, names[i])
+		slots[i] = slot{status: st, include: ok}
+	}
+	if len(names) == 1 {
+		check(0)
+	} else {
+		runConcurrent(len(names), check)
 	}
 
+	results := make([]model.RegistryStatus, 0, len(slots))
+	for _, s := range slots {
+		if s.include {
+			results = append(results, s.status)
+		}
+	}
 	return results, nil
+}
+
+// checkOne dry-run checks a single registry for upstream changes. The bool is
+// false when the registry isn't configured (the caller drops it), preserving
+// Check's historical drop-on-missing behavior — distinct from Update's
+// record-an-error behavior.
+func (m *Manager) checkOne(ctx context.Context, cfg *config.Config, n string) (model.RegistryStatus, bool) {
+	regCfg, exists := cfg.Registries[n]
+	if !exists {
+		return model.RegistryStatus{}, false
+	}
+
+	repoPath := RegistryPath(n)
+	status := model.RegistryStatus{
+		Registry: model.Registry{
+			Name: n,
+			URL:  regCfg.URL,
+			Path: repoPath,
+		},
+	}
+
+	localHead, err := m.Git.HeadCommit(repoPath)
+	if err != nil {
+		status.Error = fmt.Sprintf("read local HEAD: %v", err)
+		return status, true
+	}
+
+	remoteRefs, err := m.Git.LsRemote(ctx, regCfg.URL)
+	if err != nil {
+		status.Error = fmt.Sprintf("ls-remote: %v", err)
+		return status, true
+	}
+
+	defaultBranch, _ := m.Git.DefaultBranch(repoPath)
+	if defaultBranch == "" {
+		defaultBranch = defaultBranchFallback
+	}
+	remoteRef := "refs/heads/" + defaultBranch
+	if remoteHash, ok := remoteRefs.Refs[remoteRef]; ok {
+		status.HasUpstreamChanges = remoteHash != localHead
+	}
+
+	return status, true
+}
+
+// runConcurrent invokes fn(0..n-1) across a bounded worker pool (#212),
+// mirroring the sem+WaitGroup pattern in internal/skill/install_batch.go. Each
+// fn call must write only its own slot i of any shared slice so no locking is
+// needed. The pool is bounded so a large registry set can't spawn unbounded
+// goroutines / fds.
+func runConcurrent(n int, fn func(i int)) {
+	limit := n
+	if g := runtime.GOMAXPROCS(0); g < limit {
+		limit = g
+	}
+	if limit > 8 {
+		limit = 8
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // SearchWithFilter is the filter-aware variant used by `qvr search --tag` and

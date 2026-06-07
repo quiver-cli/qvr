@@ -22,5 +22,11 @@ jobs:
       - name: Test
         run: go test ./... -v -count=1
 
+      # Separate -race pass guards the concurrency added in epic #203
+      # (parallel multi-registry fetch, opportunistic prefetch). Kept distinct
+      # from the plain test step so a race-only failure is unambiguous.
+      - name: Test (race)
+        run: go test ./... -race -count=1
+
       - name: Vet
         run: go vet ./...

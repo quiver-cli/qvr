@@ -113,6 +113,79 @@ func TestFetch_AlreadyUpToDate(t *testing.T) {
 	}
 }
 
+// addCommit writes a file into the non-bare repo at srcDir and commits it,
+// advancing the default branch — used to give a later Fetch something to pull.
+func addCommit(t *testing.T, srcDir, file, body string) {
+	t.Helper()
+	repo, err := gogit.PlainOpen(srcDir)
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, file), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", file, err)
+	}
+	if _, err := wt.Add(file); err != nil {
+		t.Fatalf("add %s: %v", file, err)
+	}
+	if _, err := wt.Commit("add "+file, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "t@t.com", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// TestBareClone_ConfigViaGoGit_FetchWorks guards #209: BareClone now writes the
+// remote.origin.fetch refspec in-process via go-git instead of spawning
+// `git config`. This verifies the config it writes is readable by a real
+// `git fetch` (the subprocess fetch path) for both full and single-branch
+// clones, and that IsFullClone reflects the mode — catching any config-format
+// incompatibility end-to-end.
+func TestBareClone_ConfigViaGoGit_FetchWorks(t *testing.T) {
+	client := git.NewGoGitClient()
+
+	t.Run("full", func(t *testing.T) {
+		srcDir := setupTestRepo(t, testSkills)
+		bareDir := filepath.Join(t.TempDir(), "full.git")
+		if err := client.BareClone(context.Background(), srcDir, bareDir, git.CloneOptions{AllRefs: true}); err != nil {
+			t.Fatalf("BareClone full: %v", err)
+		}
+		if !git.IsFullClone(bareDir) {
+			t.Error("IsFullClone(full) = false, want true")
+		}
+		before, _ := client.HeadCommit(bareDir)
+		addCommit(t, srcDir, "f.txt", "hello")
+		if err := client.Fetch(context.Background(), bareDir); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if after, _ := client.HeadCommit(bareDir); after == before {
+			t.Errorf("HeadCommit did not advance after fetch (%q) — full refspec not honored", after)
+		}
+	})
+
+	t.Run("single-branch", func(t *testing.T) {
+		srcDir := setupTestRepo(t, testSkills)
+		bareDir := filepath.Join(t.TempDir(), "single.git")
+		if err := client.BareClone(context.Background(), srcDir, bareDir, git.CloneOptions{AllRefs: false}); err != nil {
+			t.Fatalf("BareClone single: %v", err)
+		}
+		if git.IsFullClone(bareDir) {
+			t.Error("IsFullClone(single) = true, want false")
+		}
+		before, _ := client.HeadCommit(bareDir)
+		addCommit(t, srcDir, "s.txt", "world")
+		if err := client.Fetch(context.Background(), bareDir); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if after, _ := client.HeadCommit(bareDir); after == before {
+			t.Errorf("HeadCommit did not advance after fetch (%q) — single-branch refspec not honored", after)
+		}
+	})
+}
+
 func TestListBranches(t *testing.T) {
 	bareDir := setupTestBareRepo(t, testSkills)
 
