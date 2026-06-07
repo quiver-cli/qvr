@@ -583,7 +583,6 @@ func dirExists(path string) bool {
 // Leaves are detected as "the directory contains either a .git directory or is
 // already a git working tree" — matches what the installer creates.
 func collectCacheEntries() ([]CacheEntry, []string, error) {
-	root := registry.WorktreesRoot()
 	reach, err := registry.Reachable()
 	if err != nil {
 		// A reachability read failure means nothing is "reachable" — every
@@ -592,36 +591,19 @@ func collectCacheEntries() ([]CacheEntry, []string, error) {
 		return nil, nil, fmt.Errorf("compute reachability: %w", err)
 	}
 
+	// registry.WorktreeLeaves enumerates both legacy `.git` worktrees and
+	// worktree-free content dirs (#204) — the latter have no marker and so were
+	// invisible to prune, permanently leaking when orphaned by a vanished
+	// project (issue #221).
 	var entries []CacheEntry
-	if _, statErr := os.Stat(root); os.IsNotExist(statErr) {
-		return entries, reach.MissingProjects, nil
-	}
-
-	// Each leaf worktree is identified by the presence of a .git entry —
-	// either a directory (go-git PlainClone) or a file (git worktree-style
-	// pointer). Walk only as deep as the first .git hit per branch.
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // skip unreadable subtrees
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		gitMarker := filepath.Join(path, ".git")
-		if _, err := os.Stat(gitMarker); err != nil {
-			return nil
-		}
-		size, _ := dirSize(path)
-		_, reachable := reach.Worktrees[path]
+	for _, leaf := range registry.WorktreeLeaves() {
+		size, _ := dirSize(leaf)
+		_, reachable := reach.Worktrees[leaf]
 		entries = append(entries, CacheEntry{
-			Path:      path,
+			Path:      leaf,
 			Reachable: reachable,
 			SizeBytes: size,
 		})
-		return filepath.SkipDir // don't recurse into a worktree
-	})
-	if err != nil {
-		return entries, reach.MissingProjects, fmt.Errorf("walk worktrees root: %w", err)
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		// Orphans first so the most useful output is at the top of the table.

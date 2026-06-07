@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/output"
 	"github.com/astra-sh/qvr/internal/registry"
@@ -29,6 +30,21 @@ func fakeWorktree(t *testing.T, segments ...string) string {
 	path := filepath.Join(append([]string{registry.WorktreesRoot()}, segments...)...)
 	if err := os.MkdirAll(filepath.Join(path, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	return path
+}
+
+// fakeContentDir creates a worktree-FREE content dir (post-#204 shape: the
+// materialized skill tree with NO `.git` marker) under registry.WorktreesRoot().
+// This is the install shape that the `.git`-marker walk could not see (#221).
+func fakeContentDir(t *testing.T, segments ...string) string {
+	t.Helper()
+	path := filepath.Join(append([]string{registry.WorktreesRoot()}, segments...)...)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir content dir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte("payload"), 0o644); err != nil {
 		t.Fatalf("write payload: %v", err)
@@ -219,6 +235,74 @@ func TestRunCachePrune_NonInteractiveRefusesWithoutYes(t *testing.T) {
 	// destructive op ran.
 	if _, statErr := os.Stat(orphan); statErr != nil {
 		t.Errorf("orphan was deleted despite refusal: %v", statErr)
+	}
+}
+
+// TestRunCachePrune_VanishedProjectReclaimsWorktreeFreeContentDir is the #221
+// regression guard: a worktree-free content dir (#204) orphaned by a vanished
+// project must be reclaimed by `cache prune --yes` (and listed by --dry-run),
+// not leaked permanently. Before the fix, the `.git`-marker walk never saw a
+// content dir, so prune reported "Removed 0 worktree(s)" and the dir survived
+// every subsequent run.
+func TestRunCachePrune_VanishedProjectReclaimsWorktreeFreeContentDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+
+	// The worktree-free enumerator keys on configured registries, so the
+	// registry must be present in config (only the PROJECT vanishes, not the
+	// registry — matching the reported repro).
+	if err := config.Save(&config.Config{
+		Registries: map[string]config.RegistryConfig{
+			"acme": {URL: "git@example.test:acme.git"},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	// A worktree-free content dir (no .git) the vanished project uniquely
+	// referenced. The commit lines up with WorktreePath(acme, demo, abc1234).
+	content := fakeContentDir(t, "acme", "demo", "abc1234")
+
+	deadProj := filepath.Join(t.TempDir(), "dead")
+	deadLock := filepath.Join(deadProj, model.LockFileName)
+	if err := os.MkdirAll(deadProj, 0o755); err != nil {
+		t.Fatalf("mkdir dead project: %v", err)
+	}
+	dl := model.NewLockFile(deadLock)
+	dl.Put(&model.LockEntry{
+		Name:     "demo",
+		Registry: "acme",
+		Source:   "git@example.test:acme.git",
+		Ref:      "main",
+		Commit:   "abc1234abcdef",
+	})
+	if err := dl.Write(); err != nil {
+		t.Fatalf("write dead lock: %v", err)
+	}
+	registry.TouchProject(deadLock)
+	_ = os.RemoveAll(deadProj) // user rm -rf'd the project → worktree orphaned
+
+	resetPrinter(t)
+	cachePruneDryRun = false
+	cachePruneYes = true
+	t.Cleanup(func() { cachePruneYes = false })
+
+	if err := runCachePrune(nil, nil); err != nil {
+		t.Fatalf("runCachePrune: %v", err)
+	}
+
+	if _, err := os.Stat(content); !os.IsNotExist(err) {
+		t.Errorf("LEAK: worktree-free content dir was not reclaimed (stat err=%v)", err)
+	}
+	pf, _ := registry.ReadProjects()
+	if _, ok := pf.Projects[deadLock]; ok {
+		t.Errorf("vanished project should have been forgotten")
+	}
+
+	// Permanent-leak guard: a second prune finds nothing left and doesn't error.
+	resetPrinter(t)
+	if err := runCachePrune(nil, nil); err != nil {
+		t.Fatalf("second runCachePrune: %v", err)
 	}
 }
 
