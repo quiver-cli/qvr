@@ -95,6 +95,30 @@ func writeCachedIdentity(commit, subpath string, rootCoexists bool, subtreeHash,
 	}
 }
 
+// subtreeIdentity resolves the canonical (subtreeHash, treeOID) for an immutable
+// (commit, subpath, scope). When useCache is true it consults the global
+// ~/.quiver identity cache first and populates it on a miss — the read-miss-
+// compute-write dance shared by Install and the batch pre-pass so the two can't
+// drift (the warm-cache hit is the cost that dominated the hot install path).
+// When useCache is false (the --frozen drift gate) it always recomputes fresh
+// from the bare repo and writes nothing. Returns ("","") on a hashing failure;
+// the caller treats that as a missing seal, never a hard error.
+func subtreeIdentity(repoPath, commit, subpath string, rootCoexists, useCache bool) (subtreeHash, treeOID string) {
+	if useCache {
+		if sh, oid, ok := readCachedIdentity(commit, subpath, rootCoexists); ok {
+			return sh, oid
+		}
+	}
+	id, err := ComputeEntryIdentityAtCommit(repoPath, commit, subpath, rootCoexists)
+	if err != nil {
+		return "", ""
+	}
+	if useCache {
+		writeCachedIdentity(commit, subpath, rootCoexists, id.SubtreeHash, id.TreeSHA)
+	}
+	return id.SubtreeHash, id.TreeSHA
+}
+
 // cachedProvenance is the persisted per-(ref, commit, path) provenance + author
 // record. HasProvenance distinguishes a cached nil provenance (git couldn't read
 // the repo when first computed) from a cache miss.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/astra-sh/qvr/internal/canonical"
@@ -138,6 +139,17 @@ type Installer struct {
 	// Blob is the optional reflink/content-store seam for materialization
 	// (#205). nil means plain stream copy.
 	Blob BlobMaterializer
+
+	// resolveMu guards the command-scoped resolution memos below. An Installer
+	// is created fresh per command (see cmd/*.go), so these caches live exactly
+	// one invocation — during which a bare repo's HEAD/refs are stable, making
+	// (repoPath, ref) → SHA an invariant safe to memoize. The memos collapse the
+	// dominant `qvr add --all` cost: N skills from one registry at one ref all
+	// resolve to the SAME commit, but resolveInstall would otherwise re-open the
+	// bare repo (gogit.PlainOpen) and re-resolve it 2×N times (#whole-repo perf).
+	resolveMu sync.Mutex
+	refSHA    map[string]string       // key: repoPath\x00ref → resolved SHA
+	planMemo  map[string]*installPlan // key: planMemoKey(req) → resolved plan (non-frozen)
 }
 
 // NewInstaller wires default dependencies, including the reflink-backed blob
@@ -168,8 +180,42 @@ func ParseReference(ref string) (name, version string, err error) {
 // the worktree is created in a staging path, validated, and only renamed to
 // the final path on success. Symlinks and lock file writes happen only after
 // the worktree is in place.
+//
+// Install is the single-skill entry point: it reads the project lock, runs the
+// install against it, and writes the lock once. Batch callers (e.g. `qvr add
+// --all`) should instead read the lock once and call InstallInto per skill,
+// writing the shared lock a single time — that turns N full lock read+write
+// cycles into one, the dominant warm-cache cost on multi-skill installs.
 func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
-	plan, err := in.resolveInstall(&req)
+	lockPath := req.LockPath
+	if lockPath == "" {
+		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("read lock file: %w", err)
+	}
+	result, err := in.InstallInto(req, lock)
+	if err != nil {
+		return nil, err
+	}
+	if err := lock.Write(); err != nil {
+		return nil, fmt.Errorf("write lock file: %w", err)
+	}
+	return result, nil
+}
+
+// InstallInto runs the full install flow against an already-loaded, in-memory
+// lock instead of reading and writing the lockfile itself. The caller owns the
+// lock's lifecycle: it must hold the project file lock (model.WithLock), pass a
+// lock loaded via model.ReadLockFile, and call lock.Write() once after all
+// installs in the batch complete. Mutations land via lock.Put on the shared
+// in-memory map, so later skills in the same batch observe earlier ones (the
+// same-commit priorVerification preservation and alias handling rely on this).
+// On any error the lock is left unwritten; the caller decides whether to write
+// the partial batch or discard it.
+func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*InstallResult, error) {
+	plan, err := in.resolveInstallMemo(&req)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +247,11 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		// patterns: a root skill coexisting with siblings gets SKILL.md +
 		// recognized content dirs; a non-root skill its subtree; a lone root
 		// the whole repo.
+		//
+		// Clear any stale staging dir from a prior crash before writing. This
+		// lives here (not in resolveInstall) so resolveInstall stays a pure
+		// function safe to memoize across the pre-pass and the serial loop.
+		_ = os.RemoveAll(stagingPath)
 		mat := &Materializer{Blob: in.Blob}
 		sha, err := mat.MaterializeSubtree(loc.RepoPath, resolvedSHA, loc.Entry.Path, rootCoexists, stagingPath)
 		if err != nil {
@@ -315,7 +366,16 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	// requires `qvr edit`, which ejects a writable project-local copy. The
 	// shared worktree is keyed by SHA and shared across projects; freezing it
 	// also prevents one project's edit from silently mutating another's.
-	setSubtreeReadOnly(skillDir)
+	//
+	// Skip the recursive chmod walk when the subtree is already frozen — a
+	// content dir shared with (or reused from) a prior install is read-only, and
+	// re-walking it on every warm reuse is pure overhead on a multi-skill add. A
+	// single stat of the just-verified SKILL.md stands in for the whole tree;
+	// any partial-thaw edge case is caught by doctor/verify (freezing is
+	// hardening, not load-bearing — see immutable.go).
+	if !subtreeFrozen(skillDir) {
+		setSubtreeReadOnly(skillDir)
+	}
 
 	// The agent-facing symlink points at the skill content. A worktree-free
 	// content dir has no .git/, so a root-layout skill can be linked directly —
@@ -362,16 +422,9 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 		}
 	}
 
-	// Update lock file last — if it fails, everything else is still usable and
-	// a subsequent install will reconcile state.
-	lockPath := req.LockPath
-	if lockPath == "" {
-		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-	}
-	lock, err := model.ReadLockFile(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("read lock file: %w", err)
-	}
+	// Update the in-memory lock last — if a later step fails, everything else is
+	// still usable and a subsequent install will reconcile state. The caller
+	// persists the lock once after the batch (see InstallInto's contract).
 	targets := req.Targets
 	var priorVerification *model.VerificationRecord
 	if existing, err := lock.Get(localName); err == nil {
@@ -395,25 +448,16 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	// repo and populates the cache. --frozen always recomputes: its drift gate
 	// below must compare a freshly computed hash against the lock to catch an
 	// upstream force-push, so it must not trust a memo.
-	var subtreeHash, treeOID string
-	if !req.Frozen {
-		subtreeHash, treeOID, _ = readCachedIdentity(commit, loc.Entry.Path, rootCoexists)
-	}
-	if subtreeHash == "" {
-		// Hashing from the bare repo — not the materialized dir — works whether
-		// finalPath is a worktree-free content dir or a legacy worktree, and is
-		// byte-identical to the disk hash that `qvr lock verify` recomputes.
-		if id, hashErr := ComputeEntryIdentityAtCommit(loc.RepoPath, commit, loc.Entry.Path, rootCoexists); hashErr == nil {
-			subtreeHash = id.SubtreeHash
-			treeOID = id.TreeSHA
-			if !req.Frozen {
-				writeCachedIdentity(commit, loc.Entry.Path, rootCoexists, subtreeHash, treeOID)
-			}
-		}
-	}
-	// else: hashing failure shouldn't block the install — we still want the
-	// worktree and symlinks on disk so the user can use the skill. Leave
-	// SubtreeHash/TreeOID empty; doctor/verify will flag the missing seal.
+	// Hashing from the bare repo — not the materialized dir — works whether
+	// finalPath is a worktree-free content dir or a legacy worktree, and is
+	// byte-identical to the disk hash that `qvr lock verify` recomputes. The
+	// batch pre-pass warms this same cache concurrently, so on a multi-skill add
+	// this is usually a hit. --frozen recomputes fresh (useCache=false): its
+	// drift gate below must compare against the lock to catch an upstream
+	// force-push, so it must not trust a memo. A hashing failure leaves
+	// SubtreeHash/TreeOID empty — the install still lands; doctor/verify flags
+	// the missing seal.
+	subtreeHash, treeOID := subtreeIdentity(loc.RepoPath, commit, loc.Entry.Path, rootCoexists, !req.Frozen)
 
 	// Merge the freshly-computed provenance into the verification record,
 	// preserving any prior signal (e.g. a scan attestation) carried over from
@@ -461,9 +505,6 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 	}
 
 	lock.Put(entry)
-	if err := lock.Write(); err != nil {
-		return nil, fmt.Errorf("write lock file: %w", err)
-	}
 
 	result := &InstallResult{
 		Name:     localName,
@@ -634,6 +675,21 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 	if err != nil {
 		return fmt.Errorf("read lock file: %w", err)
 	}
+	if err := in.RemoveFrom(name, req, lock); err != nil {
+		return err
+	}
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("remove %s: write lock: %w", name, err)
+	}
+	return nil
+}
+
+// RemoveFrom is Remove against an already-loaded, in-memory lock. The caller
+// owns the lock's lifecycle (hold model.WithLock, write once). It performs the
+// same filesystem-first teardown and drops the in-memory lock entry without
+// persisting — used by the batch add path to roll back a scan-blocked install
+// without an extra lock read+write cycle.
+func (in *Installer) RemoveFrom(name string, req InstallRequest, lock *model.LockFile) error {
 	entry, err := lock.Get(name)
 	if err != nil {
 		return err
@@ -688,13 +744,10 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 		}
 	}
 
-	// Only now drop the lock entry. Symmetric with Install, which writes
-	// the lock last.
+	// Only now drop the lock entry. Symmetric with Install, which mutates
+	// the lock last. The caller persists it.
 	if err := lock.Remove(name); err != nil && !errors.Is(err, model.ErrLockSkillMissing) {
 		return fmt.Errorf("remove %s: drop lock entry: %w", name, err)
-	}
-	if err := lock.Write(); err != nil {
-		return fmt.Errorf("remove %s: write lock: %w", name, err)
 	}
 	return nil
 }
@@ -1045,6 +1098,91 @@ type installPlan struct {
 	ambiguityWarning string
 }
 
+// resolveRefCached resolves a ref to a full commit SHA against the bare repo,
+// memoized for the Installer's (command) lifetime. The first call for a given
+// (repoPath, ref) does the real gogit.PlainOpen + resolve; the rest — every
+// other skill in a `qvr add --all` that shares the registry and ref — return the
+// cached SHA without re-opening the repo. Only successes are cached; an error is
+// returned uncached so a transient failure can be retried. Mirrors the contract
+// of git.GitClient.ResolveRef (degraded callers fall back to the ref label).
+func (in *Installer) resolveRefCached(repoPath, ref string) (string, error) {
+	key := repoPath + "\x00" + ref
+	in.resolveMu.Lock()
+	if sha, ok := in.refSHA[key]; ok {
+		in.resolveMu.Unlock()
+		return sha, nil
+	}
+	in.resolveMu.Unlock()
+
+	sha, err := in.Git.ResolveRef(repoPath, ref)
+	if err != nil {
+		return "", err
+	}
+	in.resolveMu.Lock()
+	if in.refSHA == nil {
+		in.refSHA = make(map[string]string)
+	}
+	in.refSHA[key] = sha
+	in.resolveMu.Unlock()
+	return sha, nil
+}
+
+// planMemoKey is the resolution-determining fingerprint of a request: every
+// field resolveInstall reads to produce its installPlan. Frozen is excluded —
+// frozen requests bypass the memo entirely (they read the lock as authoritative
+// and mutate req). RequireSigned / trusted-author fields are NOT here because
+// they gate the install AFTER resolution and don't change the plan.
+func planMemoKey(req *InstallRequest) string {
+	return strings.Join([]string{
+		req.Skill, req.Registry, req.SkillPath, req.As,
+		req.LockPath, req.ProjectRoot, req.PinCommit,
+		boolFlag(req.Global), boolFlag(req.Force),
+	}, "\x00")
+}
+
+func boolFlag(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// resolveInstallMemo is resolveInstall with a command-scoped result memo. In
+// `qvr add --all` the same skill is resolved twice — once in the PrematerializeBatch
+// pre-pass and once in the serial InstallInto loop — and resolveInstall re-opens
+// the bare repo (gogit.PlainOpen for the lock-conflict check + ResolveRef) each
+// time. The memo lets the serial loop reuse the pre-pass's plan, halving the
+// resolution work. resolveInstall is a pure function of its inputs (the only
+// stale-staging side effect was moved to the materialize site), so a cached plan
+// is always a valid substitute. A plan that errored (e.g. a --force conflict in
+// the pre-pass) is never cached, so the serial loop re-resolves and surfaces the
+// real error. Frozen requests bypass the memo (resolution is lock-authoritative
+// and mutates req).
+func (in *Installer) resolveInstallMemo(req *InstallRequest) (*installPlan, error) {
+	if req.Frozen {
+		return in.resolveInstall(req)
+	}
+	key := planMemoKey(req)
+	in.resolveMu.Lock()
+	if p, ok := in.planMemo[key]; ok {
+		in.resolveMu.Unlock()
+		return p, nil
+	}
+	in.resolveMu.Unlock()
+
+	plan, err := in.resolveInstall(req)
+	if err != nil {
+		return nil, err
+	}
+	in.resolveMu.Lock()
+	if in.planMemo == nil {
+		in.planMemo = make(map[string]*installPlan)
+	}
+	in.planMemo[key] = plan
+	in.resolveMu.Unlock()
+	return plan, nil
+}
+
 // resolveInstall performs the resolution phase of an install: parse the
 // reference, apply --frozen/--as, locate the skill in a registry, resolve the
 // ref to a commit SHA, and compute the SHA-keyed content dir and scope. It
@@ -1202,7 +1340,7 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 	// label when resolution fails — the install still succeeds and the lock
 	// entry's Worktree field is still self-consistent; only the cross-project
 	// share-by-SHA optimization is lost.
-	resolvedSHA, sherr := in.Git.ResolveRef(loc.RepoPath, version)
+	resolvedSHA, sherr := in.resolveRefCached(loc.RepoPath, version)
 	if sherr != nil || resolvedSHA == "" {
 		resolvedSHA = version
 	}
@@ -1219,7 +1357,10 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 	// installed skill. Stage in a sibling dir and rename at the end.
 	finalPath := registry.WorktreePath(loc.RegistryName, name, registry.ShortSHA(resolvedSHA))
 	stagingPath := finalPath + ".staging"
-	_ = os.RemoveAll(stagingPath) // clear any stale staging from a prior crash
+	// NOTE: the stale-staging cleanup (os.RemoveAll) lives at the materialize
+	// site in InstallInto, not here, so resolveInstall stays side-effect-free and
+	// memoizable (resolveInstallMemo). resolveInstall must remain a pure function
+	// of its inputs for the pre-pass and the serial loop to share one result.
 
 	// Decide the content scope. Normally taken from the freshly-resolved index
 	// entry, but a reproducible restore (`qvr sync` via PinCommit) materializes

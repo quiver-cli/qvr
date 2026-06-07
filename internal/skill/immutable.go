@@ -47,6 +47,20 @@ func setSubtreeReadOnly(root string) {
 	chmodSubtree(root, 0o444, 0o555, 0o755)
 }
 
+// subtreeFrozen reports whether an installed skill subtree is already
+// write-protected, using the skill's own SKILL.md as a cheap proxy for the
+// whole tree (it's always present and is the file the caller just stat-verified).
+// A frozen install has SKILL.md at 0o444/0o555 — no owner-write bit. Used to
+// skip a redundant recursive re-freeze on warm reuse of a shared content dir.
+// Conservative: any stat failure returns false so the caller re-freezes.
+func subtreeFrozen(skillDir string) bool {
+	info, err := os.Stat(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		return false
+	}
+	return info.Mode().Perm()&0o200 == 0
+}
+
 // setSubtreeWritable restores write permissions on a subtree (files 0o644,
 // executables 0o755, dirs 0o755). Called when a previously frozen install
 // transitions to mutable — `qvr edit` (eject copy), `CreateEditBranch`, or a

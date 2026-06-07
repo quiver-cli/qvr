@@ -128,6 +128,107 @@ func TestPrematerializeBatch_BuildsAllContentDirs(t *testing.T) {
 	}
 }
 
+// TestInstallInto_BatchSharedLock exercises the batch add path: read the lock
+// ONCE, run every install against the shared in-memory lock, write ONCE. All
+// entries must land and verify cleanly — the O(N) lockfile contract that
+// replaced the old per-skill ReadLockFile+Write (the warm multi-skill cost).
+func TestInstallInto_BatchSharedLock(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{
+		"alpha": testSkill("alpha"),
+		"bravo": testSkill("bravo"),
+		"delta": testSkill("delta"),
+	})
+	h.addRegistry(t, "acme", remote)
+	lockPath := filepath.Join(h.project, model.LockFileName)
+
+	reqs := []skill.InstallRequest{
+		{Skill: "alpha", Targets: []string{"claude"}, ProjectRoot: h.project, LockPath: lockPath},
+		{Skill: "bravo", Targets: []string{"claude"}, ProjectRoot: h.project, LockPath: lockPath},
+		{Skill: "delta", Targets: []string{"claude"}, ProjectRoot: h.project, LockPath: lockPath},
+	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	for _, req := range reqs {
+		if _, err := h.installer.InstallInto(req, lock); err != nil {
+			t.Fatalf("InstallInto %s: %v", req.Skill, err)
+		}
+	}
+	if err := lock.Write(); err != nil {
+		t.Fatalf("single batch write: %v", err)
+	}
+
+	got, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("reread lock: %v", err)
+	}
+	for _, name := range []string{"alpha", "bravo", "delta"} {
+		entry, err := got.Get(name)
+		if err != nil {
+			t.Fatalf("missing %s after single-write batch: %v", name, err)
+		}
+		if res := skill.VerifySingleEntry(entry, h.project); res.Status != skill.VerifyStatusOK {
+			t.Errorf("%s verify = %q (%s)", name, res.Status, res.Message)
+		}
+	}
+}
+
+// TestRemoveFrom_InMemoryRollback covers the scan-block rollback in the batch
+// path: a skill installed into the shared lock is rolled back in-memory (no
+// extra lock read/write) before the single final write, leaving no lock entry
+// and no symlink — exactly what `qvr add` does when the scan gate blocks one
+// skill in a multi-skill batch.
+func TestRemoveFrom_InMemoryRollback(t *testing.T) {
+	h := newHarness(t)
+	remote := seedRemote(t, map[string]string{
+		"alpha": testSkill("alpha"),
+		"bravo": testSkill("bravo"),
+	})
+	h.addRegistry(t, "acme", remote)
+	lockPath := filepath.Join(h.project, model.LockFileName)
+
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	base := skill.InstallRequest{Targets: []string{"claude"}, ProjectRoot: h.project, LockPath: lockPath}
+	alpha := base
+	alpha.Skill = "alpha"
+	bravo := base
+	bravo.Skill = "bravo"
+	if _, err := h.installer.InstallInto(alpha, lock); err != nil {
+		t.Fatalf("install alpha: %v", err)
+	}
+	res, err := h.installer.InstallInto(bravo, lock)
+	if err != nil {
+		t.Fatalf("install bravo: %v", err)
+	}
+	// Simulate a scan block on bravo: roll it back in-memory before the write.
+	if err := h.installer.RemoveFrom(res.Name, base, lock); err != nil {
+		t.Fatalf("RemoveFrom bravo: %v", err)
+	}
+	if err := lock.Write(); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	got, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		t.Fatalf("reread lock: %v", err)
+	}
+	if _, err := got.Get("alpha"); err != nil {
+		t.Errorf("alpha should survive the batch: %v", err)
+	}
+	if _, err := got.Get("bravo"); err == nil {
+		t.Errorf("bravo should have been rolled out of the lock by RemoveFrom")
+	}
+	bravoLink := filepath.Join(h.project, ".claude", "skills", "bravo")
+	if _, err := os.Lstat(bravoLink); !os.IsNotExist(err) {
+		t.Errorf("bravo symlink should be torn down, got lstat err = %v", err)
+	}
+}
+
 // TestPrematerializeBatch_SharedContentDirNoCorruption stresses the staging
 // uniqueness: two requests for the SAME skill@SHA (here via two --as aliases)
 // resolve to one shared content dir. The parallel pre-pass must not let their

@@ -403,13 +403,29 @@ func applyScanToEntry(entry *model.LockEntry, gate *scanGateResult) {
 // concurrent qvr command could see the lock briefly without the scan
 // record.
 func recordScanResult(lockPath, name string, gate *scanGateResult) error {
-	scan := toScanRef(gate)
-	if scan == nil {
-		return nil
-	}
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		return fmt.Errorf("read lock for scan record: %w", err)
+	}
+	if err := recordScanResultInLock(lock, name, gate); err != nil {
+		return err
+	}
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("write lock for scan record: %w", err)
+	}
+	return nil
+}
+
+// recordScanResultInLock applies the gate's result to the named entry on an
+// already-loaded, in-memory lock without persisting it — the batch add path
+// records every skill's scan onto one shared lock and writes it once. Returns
+// nil (no-op) when the gate produced no recordable signal or when the prior
+// record already matches (the same idempotency / no-downgrade guards as the
+// read-write recordScanResult). The caller owns lock.Write().
+func recordScanResultInLock(lock *model.LockFile, name string, gate *scanGateResult) error {
+	scan := toScanRef(gate)
+	if scan == nil {
+		return nil
 	}
 	entry, err := lock.Get(name)
 	if err != nil {
@@ -436,8 +452,5 @@ func recordScanResult(lockPath, name string, gate *scanGateResult) error {
 	}
 	entry.Verification.Scan = scan
 	lock.Put(entry)
-	if err := lock.Write(); err != nil {
-		return fmt.Errorf("write lock for scan record: %w", err)
-	}
 	return nil
 }

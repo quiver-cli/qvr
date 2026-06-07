@@ -218,10 +218,19 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				Global:      addGlobal,
 				ProjectRoot: projectRoot,
 				LockPath:    lockPath,
+				Force:       addForce,
 				Frozen:      addFrozen,
 				Registry:    item.registry,
 				SkillPath:   item.skillPath,
 				As:          addAs,
+				// Mirror the serial loop's gating so the pre-pass resolves and
+				// warms identically — in particular RequireSigned drives the
+				// fresh-provenance decision (a require_signed install must NOT be
+				// served a cached signature), and Force matches the conflict-check
+				// behavior so a --force re-add resolves the same in both passes.
+				RequireSigned:            cfg.Security.RequireSigned,
+				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
+				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
 			})
 		}
 		installer.PrematerializeBatch(batch)
@@ -231,9 +240,19 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	var blocked []blockedSkillJSON
 	var firstErr error
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
+		// Read the project lock ONCE for the whole batch and thread it through
+		// every install/remove/scan-record below, writing it a single time after
+		// the loop. The serial path used to ReadLockFile + Write the full lock per
+		// skill (and again per scan record) — O(N²) lockfile churn that dominated
+		// the warm multi-skill install. The whole loop runs single-threaded inside
+		// this WithLock window, so the in-memory lock is the only writer.
+		lock, err := model.ReadLockFile(lockPath)
+		if err != nil {
+			return fmt.Errorf("read lock file: %w", err)
+		}
 		for _, item := range items {
 			ref := item.skillRef
-			result, err := installer.Install(skill.InstallRequest{
+			result, err := installer.InstallInto(skill.InstallRequest{
 				Skill:                    ref,
 				Targets:                  targets,
 				Global:                   addGlobal,
@@ -247,7 +266,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				RequireSigned:            cfg.Security.RequireSigned,
 				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
 				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
-			})
+			}, lock)
 			if err != nil {
 				// Skill not found is the headline error — point at `qvr registry add`
 				// so the user knows the next step. Everything else falls through with
@@ -280,11 +299,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				continue
 			}
 			if gate.Blocked {
-				removeErr := installer.Remove(result.Name, skill.InstallRequest{
+				removeErr := installer.RemoveFrom(result.Name, skill.InstallRequest{
 					ProjectRoot: projectRoot,
 					Global:      addGlobal,
 					LockPath:    lockPath,
-				})
+				}, lock)
 				if removeErr != nil {
 					printer.Error(fmt.Sprintf("add %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
 				}
@@ -299,7 +318,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			// downstream tools can inspect it without re-running the scan.
 			// A write failure here is non-fatal — the install itself
 			// succeeded and the user can re-record via `qvr scan`.
-			if recErr := recordScanResult(lockPath, result.Name, gate); recErr != nil {
+			if recErr := recordScanResultInLock(lock, result.Name, gate); recErr != nil {
 				printer.Warning(fmt.Sprintf("add %s: scan recorded only in memory (%v)", result.Name, recErr))
 			}
 			results = append(results, result)
@@ -318,6 +337,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 				}
 				printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
 			}
+		}
+		// Persist the whole batch's lock mutations once. Partial successes are
+		// kept (matching the prior per-skill-write behavior); blocked installs
+		// already removed their entry from the in-memory lock above, so they're
+		// simply absent from this write.
+		if err := lock.Write(); err != nil {
+			return fmt.Errorf("write lock file: %w", err)
 		}
 		return nil
 	})
