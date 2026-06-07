@@ -26,6 +26,8 @@ var (
 	addNoScan   bool
 	addRegistry string
 	addAs       string
+	addAll      bool
+	addLocal    string
 )
 
 var addCmd = &cobra.Command{
@@ -51,9 +53,33 @@ Or register a source explicitly first, then add by name:
 
   qvr registry add <url>
 
+Bulk and local modes skip naming a skill:
+
+  qvr add --all --registry acme          # install every skill the registry exposes
+  qvr add --local ./my-skill             # install an immutable copy of a local folder
+
 The lockfile is the only source of truth for what the agent loads. Anything
 under .claude/skills/ that isn't in qvr.lock is hidden on the next ` + "`qvr sync`" + `.`,
-	Args: cobra.MinimumNArgs(1),
+	// --all and --local install without naming a skill, so positional args are
+	// only required (and only accepted) in the default by-name mode. Cobra
+	// parses flags before validating args, so the flag vars are already set.
+	// Custom messages here beat cobra's generic `unknown command "<arg>"`
+	// (which reads as a typo'd subcommand, not "this mode takes no skill name").
+	Args: func(cmd *cobra.Command, args []string) error {
+		if addAll {
+			if len(args) > 0 {
+				return fmt.Errorf("--all installs every skill in the registry — don't also name a skill (got %q)", strings.Join(args, " "))
+			}
+			return nil
+		}
+		if addLocal != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("--local takes the folder path as its flag value — don't also name a skill (got %q)", strings.Join(args, " "))
+			}
+			return nil
+		}
+		return cobra.MinimumNArgs(1)(cmd, args)
+	},
 	RunE: runAdd,
 }
 
@@ -72,6 +98,10 @@ func init() {
 		"scope resolution to a single registry (defaults to all configured); use to disambiguate same-named skills")
 	addCmd.Flags().StringVar(&addAs, "as", "",
 		"install under a different local name (lock entry + symlink filename). Lets two versions of the same skill coexist in one project for A/B testing. Single skill only.")
+	addCmd.Flags().BoolVar(&addAll, "all", false,
+		"install every skill the registry exposes (requires --registry; do not name a skill)")
+	addCmd.Flags().StringVar(&addLocal, "local", "",
+		"install an immutable copy of a skill from a local folder (no registry; `qvr edit` to make it mutable)")
 	rootCmd.AddCommand(addCmd)
 }
 
@@ -81,6 +111,13 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if err := enforceScanPolicy(cfg, addNoScan); err != nil {
+		return err
+	}
+	// --all / --local are alternate install modes that skip naming a skill.
+	// Validate their mutual exclusions first so e.g. `add --all --as foo`
+	// reports "--as cannot be combined with --all" rather than the generic
+	// single-skill `--as` complaint below (which would say "got 0").
+	if err := validateAddModes(); err != nil {
 		return err
 	}
 	// --as renames a single lock entry; with multiple positional args it
@@ -107,7 +144,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		// `{"installed": [], "error": "..."}` elsewhere — two distinct
 		// shapes from the same command.
 		if printer.Format == output.FormatJSON {
-			payload := buildAddJSONEnvelope(nil, err)
+			payload := buildAddJSONEnvelope(nil, nil, err)
 			if jerr := printer.JSON(payload); jerr != nil {
 				return jerr
 			}
@@ -116,6 +153,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		printer.Error(fmt.Sprintf("add: %v", err))
 		return errTextHandled
 	}
+
 	targets := addTargets
 	if len(targets) == 0 {
 		targets = config.ParseDefaultTargets(cfg.DefaultTarget)
@@ -135,13 +173,29 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	installer := skill.NewInstaller(mgr, wt, gc)
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), addGlobal)
 
+	// --local installs an immutable copy of a local folder — a distinct path
+	// (copy + scan + lock) that never touches registry resolution.
+	if addLocal != "" {
+		return runAddLocal(cmd, cfg, installer, projectRoot, lockPath, targets)
+	}
+
 	// One-step install: an arg shaped like a clone URL with a skill path
 	// (e.g. github.com/org/repo/skill) auto-registers its registry here, before
 	// the lock window, then flows through as a plain name scoped to that source.
 	// Plain skill names pass straight through with the global --registry scope.
-	items, perr := resolveAddItems(cmd.Context(), mgr, args)
-	if perr != nil {
-		return perr
+	// --all enumerates every skill the named registry exposes instead.
+	var items []addItem
+	if addAll {
+		items, err = resolveAllItems(mgr, cfg)
+		if err != nil {
+			return err
+		}
+	} else {
+		var perr error
+		items, perr = resolveAddItems(cmd.Context(), mgr, args)
+		if perr != nil {
+			return perr
+		}
 	}
 
 	// #206: materialize all skills' content dirs concurrently before the lock
@@ -168,6 +222,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	var results []*skill.InstallResult
+	var blocked []blockedSkillJSON
 	var firstErr error
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		for _, item := range items {
@@ -228,6 +283,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 					printer.Error(fmt.Sprintf("add %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
 				}
 				blockErr := &blockedScanError{Subject: result.Name, Threshold: gate.Threshold, Result: gate.Result}
+				blocked = append(blocked, blockedSkillFromErr(blockErr))
 				if firstErr == nil {
 					firstErr = blockErr
 				}
@@ -263,6 +319,152 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return lockErr
 	}
 
+	return emitAddResults(results, blocked, firstErr, projectRoot, lockPath)
+}
+
+// validateAddModes enforces the mutual exclusions between the default by-name
+// install and the --all / --local modes. Positional-arg presence is already
+// handled by the command's Args validator.
+func validateAddModes() error {
+	if addAll && addLocal != "" {
+		return fmt.Errorf("--all and --local are mutually exclusive")
+	}
+	if addAll {
+		if addRegistry == "" {
+			return fmt.Errorf("--all requires --registry <name> to scope which registry to install from")
+		}
+		if addAs != "" {
+			return fmt.Errorf("--as cannot be combined with --all (it would alias every skill to one name)")
+		}
+	}
+	if addLocal != "" {
+		if addAs != "" {
+			return fmt.Errorf("--as cannot be combined with --local")
+		}
+		if addRegistry != "" {
+			return fmt.Errorf("--registry cannot be combined with --local (a local folder has no registry)")
+		}
+		if addFrozen {
+			return fmt.Errorf("--frozen cannot be combined with --local")
+		}
+	}
+	return nil
+}
+
+// resolveAllItems enumerates every skill the --registry registry exposes and
+// turns each into an install item scoped to that registry. The registry must
+// already be configured. Names are sorted so output and the prematerialize
+// batch are deterministic.
+func resolveAllItems(mgr *registry.Manager, cfg *config.Config) ([]addItem, error) {
+	if _, ok := cfg.Registries[addRegistry]; !ok {
+		return nil, fmt.Errorf("registry %q is not configured — add it with `qvr registry add <url>`", addRegistry)
+	}
+	skills, _, err := mgr.Index(addRegistry, registry.RegistryPath(addRegistry))
+	if err != nil {
+		return nil, fmt.Errorf("index registry %q: %w", addRegistry, err)
+	}
+	if len(skills) == 0 {
+		return nil, fmt.Errorf("registry %q exposes no installable skills", addRegistry)
+	}
+	names := make([]string, 0, len(skills))
+	for _, s := range skills {
+		names = append(names, s.Name)
+	}
+	sort.Strings(names)
+	items := make([]addItem, 0, len(names))
+	for _, n := range names {
+		items = append(items, addItem{skillRef: n, registry: addRegistry})
+	}
+	return items, nil
+}
+
+// runAddLocal installs an immutable copy of a skill from a local folder
+// (`qvr add --local <path>`). It mirrors the registry add's scan gate and
+// result envelope so output and JSON shape are identical, but materializes by
+// copying the folder rather than resolving a registry. `qvr edit` later ejects
+// it to a mutable working copy if needed.
+func runAddLocal(cmd *cobra.Command, cfg *config.Config, installer *skill.Installer, projectRoot, lockPath string, targets []string) error {
+	resolved, discovered, err := resolveSkillDir(addLocal)
+	if err != nil {
+		if len(discovered) > 1 {
+			printer.Error(err.Error())
+			for _, d := range discovered {
+				fmt.Fprintf(printer.Out, "  %s\n", d)
+			}
+			return fmt.Errorf("ambiguous skill path")
+		}
+		return fmt.Errorf("add --local: %w", err)
+	}
+	if resolved != addLocal {
+		printer.Info(fmt.Sprintf("discovered skill at %s", resolved))
+	}
+
+	var result *skill.InstallResult
+	var blocked []blockedSkillJSON
+	var firstErr error
+	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
+		r, ierr := installer.InstallLocal(resolved, skill.InstallRequest{
+			Targets:     targets,
+			Global:      addGlobal,
+			ProjectRoot: projectRoot,
+			LockPath:    lockPath,
+			Force:       addForce,
+		})
+		if ierr != nil {
+			printer.Error(fmt.Sprintf("add --local %s: %v", resolved, ierr))
+			firstErr = ierr
+			return nil
+		}
+		// Security gate — same as a registry add (the user opted into scanning
+		// local skills). A blocked install is rolled back inside the lock window.
+		gate, gerr := ScanAndGate(cmd.Context(), skillDirFor(r, lockPath), cfg, scanGateOptions{
+			Disabled: addNoScan,
+			Action:   "add",
+			Subject:  r.Name,
+			Quiet:    true,
+		})
+		if gerr != nil {
+			printer.Warning(fmt.Sprintf("add --local %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", r.Name, gerr, r.Name))
+			result = r
+			return nil
+		}
+		if gate.Blocked {
+			if removeErr := installer.Remove(r.Name, skill.InstallRequest{
+				ProjectRoot: projectRoot,
+				Global:      addGlobal,
+				LockPath:    lockPath,
+			}); removeErr != nil {
+				printer.Error(fmt.Sprintf("add --local %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", r.Name, removeErr, r.Name))
+			}
+			blockErr := &blockedScanError{Subject: r.Name, Threshold: gate.Threshold, Result: gate.Result}
+			blocked = append(blocked, blockedSkillFromErr(blockErr))
+			firstErr = blockErr
+			return nil
+		}
+		if recErr := recordScanResult(lockPath, r.Name, gate); recErr != nil {
+			printer.Warning(fmt.Sprintf("add --local %s: scan recorded only in memory (%v)", r.Name, recErr))
+		}
+		result = r
+		if printer.Format != output.FormatJSON {
+			printer.Success(fmt.Sprintf("Added %s@%s → %v", r.Name, r.Version, r.Targets))
+		}
+		return nil
+	})
+	if lockErr != nil {
+		return lockErr
+	}
+
+	var results []*skill.InstallResult
+	if result != nil {
+		results = append(results, result)
+	}
+	return emitAddResults(results, blocked, firstErr, projectRoot, lockPath)
+}
+
+// emitAddResults renders the shared tail for every add mode: record the project
+// for cache pruning, refresh AGENTS.md, then emit the JSON envelope or the
+// text success/hint output. firstErr drives the exit-1 sentinel contract.
+func emitAddResults(results []*skill.InstallResult, blocked []blockedSkillJSON, firstErr error, projectRoot, lockPath string) error {
 	// Record the project so `qvr cache prune` knows this lock is reachable.
 	registry.TouchProject(lockPath)
 
@@ -271,7 +473,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	if printer.Format == output.FormatJSON {
-		payload := buildAddJSONEnvelope(results, firstErr)
+		payload := buildAddJSONEnvelope(results, blocked, firstErr)
 		if jerr := printer.JSON(payload); jerr != nil {
 			return jerr
 		}
@@ -281,12 +483,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if firstErr != nil {
-		// Per-skill `✗ add <name>: <reason>` lines already surfaced
-		// every failure (see line ~105). Returning firstErr would make
-		// Cobra's Execute() print `Error: <first reason>` a second
-		// time, which CI logs and chats read as "the whole batch
-		// failed" even when successes ran (issue #66). Sentinel
-		// preserves the exit-1 contract without the duplicate.
+		// Per-skill `✗ add <name>: <reason>` lines already surfaced every
+		// failure. Returning firstErr would make Cobra's Execute() print
+		// `Error: <first reason>` a second time, which CI logs and chats read
+		// as "the whole batch failed" even when successes ran (issue #66). The
+		// sentinel preserves the exit-1 contract without the duplicate.
 		return errTextHandled
 	}
 	// Next-step hint, init.go-style. Only when at least one skill landed;
@@ -314,11 +515,34 @@ func runAdd(cmd *cobra.Command, args []string) error {
 // runs emit `{"error": "..."}` like the rest of the CLI.
 type addJSONEnvelope struct {
 	Installed []*skill.InstallResult `json:"installed,omitempty"`
-	Error     string                 `json:"error,omitempty"`
+	// Blocked enumerates every skill the scan gate rejected, not just the
+	// first. Issue #214: a batch (`add --all` / multi-skill add) that blocks
+	// several skills previously surfaced only firstErr in JSON, so an
+	// automated consumer couldn't tell which other skills were skipped — the
+	// rest only appeared on text stderr. The array makes the full set
+	// machine-readable.
+	Blocked []blockedSkillJSON `json:"blocked,omitempty"`
+	Error   string             `json:"error,omitempty"`
 }
 
-func buildAddJSONEnvelope(results []*skill.InstallResult, err error) addJSONEnvelope {
-	env := addJSONEnvelope{Installed: results}
+// blockedSkillJSON is the machine-readable record of one scan-blocked skill.
+type blockedSkillJSON struct {
+	Skill       string `json:"skill"`
+	Threshold   string `json:"threshold"`
+	MaxSeverity string `json:"maxSeverity,omitempty"`
+}
+
+// blockedSkillFromErr condenses a *blockedScanError into its JSON record.
+func blockedSkillFromErr(e *blockedScanError) blockedSkillJSON {
+	rec := blockedSkillJSON{Skill: e.Subject, Threshold: string(e.Threshold)}
+	if e.Result != nil {
+		rec.MaxSeverity = string(e.Result.Summary.MaxSeverity())
+	}
+	return rec
+}
+
+func buildAddJSONEnvelope(results []*skill.InstallResult, blocked []blockedSkillJSON, err error) addJSONEnvelope {
+	env := addJSONEnvelope{Installed: results, Blocked: blocked}
 	if err != nil {
 		env.Error = err.Error()
 	}

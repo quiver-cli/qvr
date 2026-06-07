@@ -40,6 +40,9 @@ import (
 
 // setSubtreeReadOnly write-protects the files in an installed skill subtree,
 // preserving the executable bit (0o555 for executables, 0o444 otherwise).
+// Directories stay writable (0o755) so the worktree remains removable and
+// checkout-able — see the package doc for why file-level locking is enough for
+// a shared worktree.
 func setSubtreeReadOnly(root string) {
 	chmodSubtree(root, 0o444, 0o555, 0o755)
 }

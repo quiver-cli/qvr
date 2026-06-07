@@ -125,6 +125,18 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			continue
 		}
 
+		if entry.IsLocal() {
+			// Local copies (`qvr add --local`) have no git upstream, so the
+			// generic registry-restore below can't rebuild them. Re-copy from
+			// the recorded source path when the frozen worktree is missing; if
+			// the source is gone, surface a clear error rather than silently
+			// dropping the skill.
+			if err := r.restoreLocal(entry, projectRoot, global, opts, res); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", entry.Name, err))
+			}
+			continue
+		}
+
 		worktreePath := EntryWorktreePath(entry)
 		needsRestore := worktreePath == ""
 		if !needsRestore {
@@ -190,6 +202,55 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 		}
 	}
 	return nil
+}
+
+// restoreLocal reconciles a `qvr add --local` entry. Its immutable copy lives
+// in a hash-keyed worktree under the LocalRegistry namespace, with no git
+// upstream to re-materialize from — so when the copy is missing we rebuild it
+// from the recorded Source path instead. A vanished Source is a hard error
+// (the skill is unrecoverable until re-added), mirroring how a missing edit
+// dir is surfaced rather than silently overwritten.
+func (r *Reconciler) restoreLocal(entry *model.LockEntry, projectRoot string, global bool, opts ReconcileOptions, res *ReconcileResult) error {
+	worktreePath := EntryWorktreePath(entry)
+	if worktreePath != "" {
+		if _, err := os.Stat(worktreePath); err == nil {
+			// Copy already present — just keep the symlinks wired up.
+			return r.fixSymlinks(entry, projectRoot, global, opts, res)
+		}
+	}
+	if opts.DryRun {
+		res.Installed = append(res.Installed, entry.Name+" (would re-copy from "+entry.Source+")")
+		return nil
+	}
+	if entry.Source == "" {
+		return fmt.Errorf("local copy missing and no source recorded — re-run `qvr add --local <path>`")
+	}
+	if _, err := os.Stat(entry.Source); err != nil {
+		return fmt.Errorf("local source %s missing — re-run `qvr add --local %s` once the folder exists", entry.Source, entry.Source)
+	}
+	if worktreePath == "" {
+		return fmt.Errorf("cannot derive worktree path for local copy — re-run `qvr add --local %s`", entry.Source)
+	}
+	staging := fmt.Sprintf("%s.staging.%d", worktreePath, os.Getpid())
+	_ = os.RemoveAll(staging)
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return fmt.Errorf("create worktrees dir: %w", err)
+	}
+	if err := copyDir(entry.Source, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("re-copy local skill from %s: %w", entry.Source, err)
+	}
+	if err := os.Rename(staging, worktreePath); err != nil {
+		if _, e := os.Stat(worktreePath); e == nil {
+			_ = os.RemoveAll(staging)
+		} else {
+			_ = os.RemoveAll(staging)
+			return fmt.Errorf("finalize local worktree: %w", err)
+		}
+	}
+	setSubtreeReadOnly(worktreePath)
+	res.Installed = append(res.Installed, entry.Name)
+	return r.fixSymlinks(entry, projectRoot, global, opts, res)
 }
 
 // fixSymlinks ensures every target's symlink points at EffectiveTarget(entry).

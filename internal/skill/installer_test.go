@@ -381,7 +381,7 @@ func TestRemove_ForceDeletesEditDir(t *testing.T) {
 	}
 }
 
-func TestLink(t *testing.T) {
+func TestInstallLocal(t *testing.T) {
 	h := newHarness(t)
 
 	// Create a local skill.
@@ -399,27 +399,48 @@ description: local dev skill
 		t.Fatalf("write: %v", err)
 	}
 
-	result, err := h.installer.Link(local, skill.InstallRequest{
+	result, err := h.installer.InstallLocal(local, skill.InstallRequest{
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
 	})
 	if err != nil {
-		t.Fatalf("Link: %v", err)
+		t.Fatalf("InstallLocal: %v", err)
 	}
 	if result.Name != "my-skill" {
 		t.Errorf("name = %s", result.Name)
 	}
+	absLocal, _ := filepath.Abs(local)
+
+	// The symlink points at the immutable copy in the worktree, NOT the live
+	// source folder — that's the copy-not-symlink contract.
 	linkPath := filepath.Join(h.project, ".claude/skills/my-skill")
 	target, err := os.Readlink(linkPath)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	absLocal, _ := filepath.Abs(local)
-	if target != absLocal {
-		t.Errorf("target = %s, want %s", target, absLocal)
+	if target == absLocal {
+		t.Errorf("symlink points at the live source %s; expected an immutable copy", absLocal)
+	}
+	if target != result.Worktree {
+		t.Errorf("symlink target = %s, want worktree copy %s", target, result.Worktree)
+	}
+	if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
+		t.Errorf("copy missing SKILL.md: %v", err)
 	}
 
-	// Lock file records "link" source.
+	// Editing the original folder must NOT change the installed copy.
+	if err := os.WriteFile(filepath.Join(local, "SKILL.md"), []byte(content+"\nmutated\n"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read copy: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("installed copy changed when source was edited — not an immutable snapshot")
+	}
+
+	// Lock entry: mode:local, source records provenance, ref "local".
 	lockPath := filepath.Join(h.project, model.LockFileName)
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
@@ -429,26 +450,27 @@ description: local dev skill
 	if err != nil {
 		t.Fatalf("my-skill missing from lock: %v", err)
 	}
-	// v5: link installs carry the absolute path in Source and Ref="local".
 	if entry.Source != absLocal {
 		t.Errorf("lock entry source = %q, want %s", entry.Source, absLocal)
 	}
 	if entry.Ref != "local" {
 		t.Errorf("lock entry ref = %q, want local", entry.Ref)
 	}
-	// #133 / AC-LIFE-9: a link install must serialise mode:"link" so the lock
-	// is self-describing; IsLink() also keys off Ref=="local", but the §4
-	// schema requires the explicit field.
-	if entry.Mode != model.ModeLink {
-		t.Errorf("lock entry mode = %q, want %q", entry.Mode, model.ModeLink)
+	if entry.Mode != model.ModeLocal {
+		t.Errorf("lock entry mode = %q, want %q", entry.Mode, model.ModeLocal)
+	}
+	if !entry.IsLocal() {
+		t.Error("entry.IsLocal() = false, want true")
+	}
+	if entry.IsLink() {
+		t.Error("entry.IsLink() = true; a local copy must not be treated as a link install")
 	}
 }
 
-// Regression for the v0.3.6 punch list: `qvr link` used to accept a directory
-// whose name didn't match the frontmatter `name`, producing a worktree that
-// `qvr validate` / `qvr doctor` immediately flagged as broken. Link should
-// apply the same name-matches-directory check the validator does.
-func TestLink_RejectsDirNameMismatch(t *testing.T) {
+// Regression for the v0.3.6 punch list: a local install must reject a directory
+// whose name doesn't match the frontmatter `name`, applying the same
+// name-matches-directory check the validator does.
+func TestInstallLocal_RejectsDirNameMismatch(t *testing.T) {
 	h := newHarness(t)
 
 	local := filepath.Join(t.TempDir(), "wrong-dir-name")
@@ -465,12 +487,12 @@ description: local dev skill
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := h.installer.Link(local, skill.InstallRequest{
+	_, err := h.installer.InstallLocal(local, skill.InstallRequest{
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
 	})
 	if err == nil {
-		t.Fatal("expected link to reject name/dir mismatch")
+		t.Fatal("expected install --local to reject name/dir mismatch")
 	}
 	if !strings.Contains(err.Error(), "must match directory name") {
 		t.Errorf("error = %q, want mention of directory-name mismatch", err.Error())

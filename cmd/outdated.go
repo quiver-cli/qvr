@@ -38,6 +38,7 @@ const (
 	outStateBehind      = "behind"
 	outStateUnreachable = "unreachable"
 	outStateLink        = "link"
+	outStateLocal       = "local"
 )
 
 // remoteResult bundles a successful ls-remote read with any error so we can
@@ -146,7 +147,10 @@ func runOutdated(cmd *cobra.Command, args []string) error {
 func fetchRemotes(ctx context.Context, gc git.GitClient, cfg *config.Config, entries []*model.LockEntry) map[string]remoteResult {
 	out := make(map[string]remoteResult)
 	for _, e := range entries {
-		if e.Source == "link" || e.Registry == "" {
+		if e.IsLink() || e.IsLocal() || e.Registry == "" {
+			// No upstream to ls-remote (legacy links, local copies, or
+			// registry-less entries). Skipping avoids a pointless lookup that
+			// would only cache an error.
 			continue
 		}
 		if _, ok := out[e.Registry]; ok {
@@ -171,6 +175,9 @@ func remoteURLFor(e *model.LockEntry, cfg *config.Config) (string, error) {
 	if e.IsLink() {
 		return "", fmt.Errorf("link install %q has no upstream URL", e.Name)
 	}
+	if e.IsLocal() {
+		return "", fmt.Errorf("local install %q has no upstream URL", e.Name)
+	}
 	if e.Source != "" {
 		return e.Source, nil
 	}
@@ -194,6 +201,12 @@ func computeOutdated(entry *model.LockEntry, remote remoteResult) outdatedRow {
 		Branch:    entry.Ref,
 		Local:     entry.Commit,
 		Signature: recordedSigStatus(entry),
+	}
+	if entry.IsLocal() {
+		// Immutable local copy — no registry upstream to diff against. Distinct
+		// from "link" and from "unreachable" (which reads as a network error).
+		row.State = outStateLocal
+		return row
 	}
 	if entry.IsLink() {
 		row.State = outStateLink

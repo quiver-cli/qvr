@@ -52,6 +52,7 @@ func TestBuildAddJSONEnvelope(t *testing.T) {
 	cases := []struct {
 		name    string
 		results []*skill.InstallResult
+		blocked []blockedSkillJSON
 		err     error
 		want    string
 	}{
@@ -73,11 +74,22 @@ func TestBuildAddJSONEnvelope(t *testing.T) {
 			err:     errors.New("one-failed"),
 			want:    `{"installed":[{"name":"tdd","registry":"","version":"main","worktree":"","targets":null,"commit":""}],"error":"one-failed"}`,
 		},
+		{
+			// Issue #214: every blocked skill is enumerated, not just firstErr.
+			name:    "multiple-blocked",
+			results: nil,
+			blocked: []blockedSkillJSON{
+				{Skill: "docx", Threshold: "high", MaxSeverity: "critical"},
+				{Skill: "pptx", Threshold: "high", MaxSeverity: "high"},
+			},
+			err:  errors.New("scan blocked docx (max severity critical ≥ threshold high)"),
+			want: `{"blocked":[{"skill":"docx","threshold":"high","maxSeverity":"critical"},{"skill":"pptx","threshold":"high","maxSeverity":"high"}],"error":"scan blocked docx (max severity critical ≥ threshold high)"}`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := buildAddJSONEnvelope(tc.results, tc.err)
+			env := buildAddJSONEnvelope(tc.results, tc.blocked, tc.err)
 			b, err := json.Marshal(env)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)

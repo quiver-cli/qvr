@@ -66,10 +66,18 @@ var (
 // Install mode constants. Empty string means "shared" (default add semantics)
 // for backward compatibility — older v5 locks predate this field.
 const (
-	ModeShared = ""     // symlink → ~/.quiver/worktrees/.../  (default for `qvr add`)
-	ModeEdit   = "edit" // canonical real dir at EditPath (set by `qvr edit`)
-	ModeLink   = "link" // absolute path in Source (set by `qvr link`)
+	ModeShared = ""      // symlink → ~/.quiver/worktrees/.../  (default for `qvr add`)
+	ModeEdit   = "edit"  // canonical real dir at EditPath (set by `qvr edit`)
+	ModeLink   = "link"  // absolute path in Source (legacy `qvr link`; read-only compat)
+	ModeLocal  = "local" // immutable copy of a local folder (set by `qvr add --local`)
 )
+
+// LocalRegistry is the reserved registry name stamped on `qvr add --local`
+// entries. It is not a configured registry — it only namespaces the worktree
+// copy under ~/.quiver/worktrees/_local/. The leading underscore can never
+// collide with a user-registered registry: ValidateRegistryName requires each
+// segment to start with [a-z0-9].
+const LocalRegistry = "_local"
 
 // LockEntry records a single installed skill's filesystem and git state.
 //
@@ -194,16 +202,32 @@ type LockEntry struct {
 	Verification *VerificationRecord `json:"verification,omitempty" toml:"verification,omitempty"`
 }
 
-// IsLink reports whether this entry is a local-link install. The link
-// installer sets Ref="local" as the canonical marker; no remote install
-// uses that ref name (registry refs are branches, tags, or commits). This
-// avoids false positives in tests that legitimately use local bare-repo
-// paths as registry URLs — Source alone isn't a reliable discriminator.
+// IsLink reports whether this entry is a legacy local-link install (a live
+// symlink straight at an external path, set by the now-removed `qvr link`).
+// The link installer set Ref="local" as the canonical marker; no remote
+// install uses that ref name (registry refs are branches, tags, or commits).
+//
+// The `Mode == ""` qualifier on the Ref="local" heuristic is load-bearing:
+// `qvr add --local` entries (ModeLocal) also carry Ref="local" but are
+// immutable copies, not live links — they must NOT be treated as link
+// installs. Explicit ModeLink entries still match for forward reads of any
+// pre-existing lock written by the old `qvr link`.
 func (e *LockEntry) IsLink() bool {
 	if e == nil {
 		return false
 	}
-	return e.Ref == "local" || e.Mode == ModeLink
+	return e.Mode == ModeLink || (e.Ref == "local" && e.Mode == ModeShared)
+}
+
+// IsLocal reports whether this entry is an immutable local copy installed via
+// `qvr add --local`. The materialized content lives in a hash-keyed worktree
+// under the reserved LocalRegistry namespace; there is no git upstream, so
+// registry-scoped operations (update, outdated, sync git ops) skip it.
+func (e *LockEntry) IsLocal() bool {
+	if e == nil {
+		return false
+	}
+	return e.Mode == ModeLocal
 }
 
 // IsEdit reports whether this entry has been ejected into the project

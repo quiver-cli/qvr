@@ -699,10 +699,14 @@ func (in *Installer) Remove(name string, req InstallRequest) error {
 	return nil
 }
 
-// Link creates symlinks from a local skill directory into agent dirs. No
-// worktree, no git, no lock-file bookkeeping unless the caller asked for it.
-// This powers `qvr link` for local skill development.
-func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult, error) {
+// InstallLocal installs a skill from a local directory as an immutable copy.
+// Unlike a registry install (materialized from git objects) it copies the
+// folder verbatim into a hash-keyed worktree under the reserved LocalRegistry
+// namespace, freezes it read-only, and symlinks agent dirs at the copy — so
+// the bytes an agent reads are a stable snapshot, not the user's live folder.
+// To get a mutable working copy, `qvr edit` ejects it like any other install.
+// This powers `qvr add --local <path>` for local skill development.
+func (in *Installer) InstallLocal(localPath string, req InstallRequest) (*InstallResult, error) {
 	for _, t := range req.Targets {
 		if _, ok := model.Targets[t]; !ok {
 			return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, t)
@@ -716,10 +720,9 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 	if err != nil {
 		return nil, err
 	}
-	// `qvr link` must respect the same spec rule `qvr validate` enforces: the
-	// frontmatter name has to match the directory it lives in. Letting a
-	// mismatch through creates a symlink that subsequent validate/doctor runs
-	// immediately flag — silent drift we'd rather catch at link time.
+	// Respect the same spec rule `qvr validate` enforces: the frontmatter name
+	// must match the directory it lives in. Catching a mismatch here beats
+	// shipping an install that doctor/verify immediately flags.
 	if result := Validate(loaded); !result.Valid {
 		var lines []string
 		for _, e := range result.Errors {
@@ -732,9 +735,26 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		name = loaded.Name
 	}
 
-	// Conflict check: refuse to silently replace an existing entry of the
-	// same name with a different on-disk target. Idempotent when the path
-	// matches; --force needed to switch paths.
+	// Content-address the copy by its subtree hash so the same folder maps to a
+	// stable worktree dir (idempotent re-adds) and an edited folder lands in a
+	// fresh one. A hashing failure is fatal here — the hash keys the worktree
+	// path, so we can't proceed without it.
+	hash, err := canonical.HashSubtreeFromDisk(abs)
+	if err != nil {
+		return nil, fmt.Errorf("hash local skill: %w", err)
+	}
+	// Key the worktree off the hex digest, not the full "sha256:<hex>" string:
+	// ShortSHA truncates to 7 chars, so the "sha256:" prefix would collapse
+	// every version to the same dir. The hex key keeps each distinct content
+	// (and each edit of the source folder) in its own content-addressed dir.
+	// It also feeds WorktreePathForEntry via Commit/InstallCommit, so the
+	// symlink, reconciler, and edit paths all resolve to the same place.
+	commitKey := strings.TrimPrefix(hash, "sha256:")
+	finalPath := registry.WorktreePath(model.LocalRegistry, name, registry.ShortSHA(commitKey))
+
+	// Conflict check: refuse to silently replace an existing entry of the same
+	// name pointing at a different source. Idempotent when the source matches;
+	// --force needed to re-point. Mirrors the remote-install conflict rule.
 	lockPath := req.LockPath
 	if lockPath == "" {
 		lockPath = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
@@ -744,20 +764,45 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 		return nil, fmt.Errorf("read lock file: %w", err)
 	}
 	if existing, err := lock.Get(name); err == nil && !req.Force {
-		// In v5, `source` carries the absolute path for link installs (and a
-		// git URL for remote installs). A link install collides with an
-		// existing entry only when the existing entry is *also* a link
-		// pointing at the same path; otherwise refuse so we don't silently
-		// shadow a remote-installed skill with a local symlink.
-		if !existing.IsLink() || existing.Source != abs {
+		if !existing.IsLocal() || existing.Source != abs {
 			sourceLabel := existing.Source
 			if sourceLabel == "" {
 				sourceLabel = "registry"
 			}
-			return nil, fmt.Errorf("skill %q already installed from %s; pass --force to relink",
+			return nil, fmt.Errorf("skill %q already installed from %s; pass --force to replace",
 				name, sourceLabel)
 		}
 	}
+
+	// Materialize the immutable copy if it isn't already on disk. Stage in a
+	// sibling dir and atomically rename so a crashed copy never leaves a
+	// half-written worktree behind. copyDir skips .git/ and preserves exec bits.
+	if _, statErr := os.Stat(finalPath); statErr != nil {
+		stagingPath := fmt.Sprintf("%s.staging.%d", finalPath, os.Getpid())
+		_ = os.RemoveAll(stagingPath)
+		if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+			return nil, fmt.Errorf("create worktrees dir: %w", err)
+		}
+		if err := copyDir(abs, stagingPath); err != nil {
+			_ = os.RemoveAll(stagingPath)
+			return nil, fmt.Errorf("copy local skill: %w", err)
+		}
+		if err := os.Rename(stagingPath, finalPath); err != nil {
+			// Lost the race to a concurrent install of the same content: the
+			// winning dir is byte-identical (same hash), so drop our staged copy.
+			if _, e := os.Stat(finalPath); e == nil {
+				_ = os.RemoveAll(stagingPath)
+			} else {
+				_ = os.RemoveAll(stagingPath)
+				return nil, fmt.Errorf("finalize local worktree: %w", err)
+			}
+		}
+	}
+	// Freeze: same immutability contract as a shared install (see immutable.go)
+	// — files read-only, directories writable so `rm -rf`/`qvr cache clean` and
+	// other ordinary teardown keep working. Tampering is caught by
+	// `qvr lock verify` and healed by `qvr sync` (re-copy from Source).
+	setSubtreeReadOnly(finalPath)
 
 	var created []string
 	for _, t := range req.Targets {
@@ -766,32 +811,35 @@ func (in *Installer) Link(localPath string, req InstallRequest) (*InstallResult,
 			rollbackLinks(created)
 			return nil, err
 		}
-		if err := CreateSymlink(linkPath, abs); err != nil {
+		if err := CreateSymlink(linkPath, finalPath); err != nil {
 			rollbackLinks(created)
 			return nil, fmt.Errorf("symlink %s: %w", t, err)
 		}
 		created = append(created, linkPath)
 	}
-	// Compute a subtree hash for the linked dir so drift detection still
-	// works against the live source. Best-effort: a hashing failure leaves
-	// the field empty and doctor/verify will flag it.
-	linkSubtreeHash, _ := canonical.HashSubtreeFromDisk(abs)
+
 	lock.Put(&model.LockEntry{
-		Name:        name,
-		Source:      abs,
-		Ref:         "local",
-		Mode:        model.ModeLink,
-		SubtreeHash: linkSubtreeHash,
-		Targets:     req.Targets,
-		InstalledAt: time.Now().UTC(),
+		Name:          name,
+		Registry:      model.LocalRegistry,
+		Source:        abs,
+		Ref:           "local",
+		Mode:          model.ModeLocal,
+		Commit:        commitKey,
+		InstallCommit: commitKey,
+		SubtreeHash:   hash,
+		Targets:       req.Targets,
+		InstalledAt:   time.Now().UTC(),
 	})
 	if err := lock.Write(); err != nil {
+		rollbackLinks(created)
 		return nil, fmt.Errorf("write lock file: %w", err)
 	}
 	return &InstallResult{
 		Name:     name,
-		Version:  "link",
-		Worktree: abs,
+		Registry: model.LocalRegistry,
+		Version:  "local",
+		Worktree: finalPath,
+		Commit:   commitKey,
 		Targets:  req.Targets,
 	}, nil
 }

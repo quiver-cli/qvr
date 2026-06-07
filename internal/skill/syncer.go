@@ -56,6 +56,13 @@ func (s *Syncer) Status(entry *model.LockEntry, projectRoot string) (*SyncStatus
 		st.Message = "link"
 		return st, nil
 	}
+	if entry.IsLocal() {
+		// Immutable local copies (`qvr add --local`) are frozen and have no
+		// git history — nothing to git-status. Report the mode rather than
+		// falling through to a git-open that has nothing to open.
+		st.Message = "local"
+		return st, nil
+	}
 	// mode:edit entries authoritatively live at <projectRoot>/<EditPath>
 	// (a real git repo). Shared entries live in the bare-clone worktree.
 	// Previously Status only looked at EntryWorktreePath, so file edits in
@@ -128,6 +135,9 @@ func (s *Syncer) Status(entry *model.LockEntry, projectRoot string) (*SyncStatus
 func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, error) {
 	if entry.IsLink() {
 		return "", errors.New("cannot pull a link install — it has no upstream")
+	}
+	if entry.IsLocal() {
+		return "", errors.New("cannot pull a local install — it has no upstream; edit the source folder and re-run `qvr add --local`")
 	}
 	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
 	if err != nil {

@@ -27,6 +27,21 @@ func TestComputeOutdated_UpToDate(t *testing.T) {
 	}
 }
 
+// TestComputeOutdated_Local confirms a `qvr add --local` entry reports the
+// distinct "local" state — not "unreachable" (which reads as a network error)
+// and not "link".
+func TestComputeOutdated_Local(t *testing.T) {
+	entry := &model.LockEntry{
+		Name: "demo", Registry: model.LocalRegistry, Ref: "local",
+		Mode: model.ModeLocal, Commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	}
+	// Even if the (pointless) remote lookup errored, the state stays "local".
+	got := computeOutdated(entry, remoteResult{err: errTextHandled})
+	if got.State != outStateLocal {
+		t.Errorf("state = %q, want %q", got.State, outStateLocal)
+	}
+}
+
 func TestComputeOutdated_Behind(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "demo", Registry: "acme", Ref: "main",
