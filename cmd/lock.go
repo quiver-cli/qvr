@@ -719,9 +719,9 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 				row.Status = "would-upgrade"
 				row.Message = "would compute subtree hash"
 			} else {
-				worktreePath := skill.EntryWorktreePath(entry)
-				id, err := skill.ComputeEntryIdentity(worktreePath, entry.Path, entry.RootCoexists)
-				if err != nil || id == nil || id.SubtreeHash == "" {
+				// Hash the on-disk skill dir (works for worktree-free content
+				// dirs and legacy worktrees alike) and seal it onto the entry.
+				if err := skill.RefreshSubtreeHash(entry); err != nil || entry.SubtreeHash == "" {
 					row.Status = "skipped"
 					if err != nil {
 						row.Message = err.Error()
@@ -729,7 +729,6 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 						row.Message = "could not compute subtree hash"
 					}
 				} else {
-					entry.SubtreeHash = id.SubtreeHash
 					row.Status = "upgraded"
 					changed = true
 				}

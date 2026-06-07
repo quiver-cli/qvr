@@ -12,6 +12,7 @@ import (
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/output"
 	"github.com/astra-sh/qvr/internal/registry"
+	"github.com/astra-sh/qvr/internal/skill"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -88,6 +89,12 @@ var cachePruneCmd = &cobra.Command{
 lock (recorded in projects.json) and the user-global lock, and remove any
 worktree directory that no lock entry still references. Also forgets project
 entries whose lock files have vanished.
+
+Then sweep the derived caches that back fast materialization — the
+content-addressed blob store (cache/blobs) and the global identity/provenance
+memos (cache/identity, cache/provenance) — dropping any record no installed
+skill references. These are reconstructible (rebuilt on the next install), so
+they're pruned without a separate prompt.
 
 Use --dry-run to see the targets without deleting anything.`,
 	RunE: runCachePrune,
@@ -167,6 +174,13 @@ type CachePruneOutput struct {
 	// prune merges them into the count via ForgottenProjs after the run.
 	MissingProjects []string `json:"missingProjects,omitempty"`
 	Errors          []string `json:"errors,omitempty"`
+	// Derived-cache sweep (reconstructible memos backing fast materialization):
+	// the content-store blobs and the global identity / provenance caches. Their
+	// reclaimed bytes are folded into FreedBytes / WouldFree; these counts are
+	// the per-cache detail.
+	IdentityRemoved   int `json:"identityRemoved,omitempty"`
+	ProvenanceRemoved int `json:"provenanceRemoved,omitempty"`
+	BlobsRemoved      int `json:"blobsRemoved,omitempty"`
 }
 
 // CacheCleanOutput is the JSON envelope for `qvr cache clean`. It mirrors
@@ -305,6 +319,22 @@ func runCachePrune(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Sweep the derived caches (content-store blobs + identity/provenance memos)
+	// of anything no installed skill references. These are reconstructible, so no
+	// confirmation is needed; their reclaimed bytes fold into the freed total.
+	if aux, auxErr := skill.PruneAuxCaches(cachePruneDryRun); auxErr != nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("prune derived caches: %v", auxErr))
+	} else {
+		out.IdentityRemoved = aux.IdentityRemoved
+		out.ProvenanceRemoved = aux.ProvenanceRemoved
+		out.BlobsRemoved = aux.BlobsRemoved
+		if cachePruneDryRun {
+			out.WouldFree += aux.FreedBytes
+		} else {
+			out.FreedBytes += aux.FreedBytes
+		}
+	}
+
 	if printer.Format == output.FormatJSON {
 		if jerr := printer.JSON(out); jerr != nil {
 			return jerr
@@ -327,14 +357,19 @@ func runCachePrune(cmd *cobra.Command, args []string) error {
 		activeBytes = out.WouldFree
 		verb = "Would remove"
 	}
-	if len(activeList) == 0 {
+	auxRecords := out.IdentityRemoved + out.ProvenanceRemoved + out.BlobsRemoved
+	if len(activeList) == 0 && auxRecords == 0 {
 		printer.Info("Nothing to prune.")
 	} else {
 		for _, p := range activeList {
 			printer.Info(fmt.Sprintf("%s %s", verb, shortenCachePath(p)))
 		}
-		printer.Success(fmt.Sprintf("%s %d worktree(s), freeing %s",
-			verb, len(activeList), humanBytes(activeBytes)))
+		if auxRecords > 0 {
+			printer.Info(fmt.Sprintf("%s %d blob(s), %d identity + %d provenance record(s)",
+				verb, out.BlobsRemoved, out.IdentityRemoved, out.ProvenanceRemoved))
+		}
+		printer.Success(fmt.Sprintf("%s %d worktree(s) + %d cache record(s), freeing %s",
+			verb, len(activeList), auxRecords, humanBytes(activeBytes)))
 	}
 	if !cachePruneDryRun {
 		for _, m := range out.ForgottenProjs {
@@ -388,6 +423,19 @@ func runCacheClean(cmd *cobra.Command, args []string) error {
 	if idx := registry.CacheDir(); dirExists(idx) {
 		size, _ := dirSize(idx)
 		targets = append(targets, cleanTarget{path: idx, label: "cache/index", bytes: size})
+	}
+	// The derived caches that back fast materialization are likewise pure
+	// reconstructible state (rebuilt on the next install): the content-store
+	// blobs and the global identity / provenance memos.
+	for _, c := range []struct{ root, label string }{
+		{registry.BlobStoreRoot(), "cache/blobs"},
+		{registry.IdentityCacheRoot(), "cache/identity"},
+		{registry.ProvenanceCacheRoot(), "cache/provenance"},
+	} {
+		if dirExists(c.root) {
+			size, _ := dirSize(c.root)
+			targets = append(targets, cleanTarget{path: c.root, label: c.label, bytes: size})
+		}
 	}
 	var registriesRoot string
 	if cacheCleanRegistries {

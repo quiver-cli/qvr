@@ -33,10 +33,11 @@ func readLinkedDirNames(t *testing.T, linkPath string) []string {
 }
 
 // assertRootSkillHidesGit installs root-app from remote and asserts the agent
-// view exposes the skill content but NOT .git, while the underlying worktree
-// keeps its real .git and the entry still verifies. This is the #154 fix:
-// a path:"." install used to symlink the worktree root (with its live .git/)
-// straight into .claude/skills/<name>.
+// view exposes the skill content but NOT .git, and the entry still verifies.
+// This is the #154 fix taken to its conclusion: since #204 a consume install is
+// materialized worktree-free (a plain content dir from a bare-objects tree
+// walk), so there is no .git to leak in the first place — the agent symlink
+// points straight at the clean content root.
 func assertRootSkillHidesGit(t *testing.T, h *installerTestHarness) {
 	t.Helper()
 	if _, err := h.installer.Install(skill.InstallRequest{
@@ -80,13 +81,14 @@ func assertRootSkillHidesGit(t *testing.T, h *installerTestHarness) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	// The real worktree must keep its .git so git ops (status/sync/verify) work.
+	// The materialized content dir is worktree-free: no .git anywhere under it,
+	// so nothing can leak through the agent link and there's no git state to
+	// keep consistent.
 	worktree := skill.EntryWorktreePath(entry)
-	if _, err := os.Stat(filepath.Join(worktree, ".git")); err != nil {
-		t.Errorf("worktree lost its .git (git ops would break): %v", err)
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); !os.IsNotExist(err) {
+		t.Errorf("consume install dir unexpectedly carries .git (want worktree-free): err=%v", err)
 	}
-	// And integrity must be unaffected — the view lives under .git, excluded
-	// from the subtree hash.
+	// And integrity must verify — the disk hash agrees with the recorded one.
 	if res := skill.VerifySingleEntry(entry, h.project); res.Status != skill.VerifyStatusOK {
 		t.Errorf("verify after install = %q (%s) — agent view must not perturb the hash", res.Status, res.Message)
 	}

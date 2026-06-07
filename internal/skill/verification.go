@@ -268,20 +268,28 @@ func EntryWorktreePath(entry *model.LockEntry) string {
 	return registry.WorktreePathForEntry(entry)
 }
 
-// RefreshSubtreeHash recomputes entry.SubtreeHash from the on-disk worktree.
-// Called after Pull / Switch / Upgrade so the lock stays aligned with the
-// git state. Link installs are skipped — they have no upstream subtree to
+// RefreshSubtreeHash recomputes entry.SubtreeHash from the on-disk skill dir.
+// Called after Pull / Switch / Upgrade so the lock stays aligned with what's
+// materialized. Link installs are skipped — they have no upstream subtree to
 // re-hash from this code path.
+//
+// It hashes the on-disk files (canonical.HashSubtreeFromDisk), not the git tree,
+// so it works for both worktree-free content dirs (#204, no .git) and legacy git
+// worktrees — and it's the same algorithm `qvr lock verify` recomputes with, so
+// the seal it writes can't disagree with a verify run over identical bytes.
 func RefreshSubtreeHash(entry *model.LockEntry) error {
 	if entry == nil || entry.IsLink() {
 		return nil
 	}
-	worktreePath := EntryWorktreePath(entry)
-	id, err := ComputeEntryIdentity(worktreePath, entry.Path, entry.RootCoexists)
-	if err != nil {
-		return err
+	skillDir := EntryWorktreePath(entry)
+	if entry.Path != "" {
+		skillDir = filepath.Join(skillDir, entry.Path)
 	}
-	entry.SubtreeHash = id.SubtreeHash
+	h, err := canonical.HashSubtreeFromDisk(skillDir)
+	if err != nil {
+		return fmt.Errorf("canonical disk hash: %w", err)
+	}
+	entry.SubtreeHash = h
 	return nil
 }
 

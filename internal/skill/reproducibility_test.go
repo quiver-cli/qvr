@@ -10,6 +10,7 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
+	"github.com/astra-sh/qvr/internal/canonical"
 	"github.com/astra-sh/qvr/internal/git"
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/registry"
@@ -89,12 +90,27 @@ func TestSync_RestoresLockedCommitNotMovedRef(t *testing.T) {
 	if e2.Commit != c1 {
 		t.Errorf("sync moved lock off the pinned commit: got %s, want %s (advanced tip was %s)", e2.Commit, c1, c2)
 	}
-	head, err := gc.HeadCommit(skill.EntryWorktreePath(e2))
+	// The restored dir is worktree-free (no git HEAD), so prove reproducibility
+	// by content: its on-disk subtree hash must equal the bare repo's hash at the
+	// PINNED commit c1, not the advanced tip c2.
+	bare := registry.RegistryPath("acme")
+	idC1, err := skill.ComputeEntryIdentityAtCommit(bare, c1, e2.Path, e2.RootCoexists)
 	if err != nil {
-		t.Fatalf("worktree HEAD: %v", err)
+		t.Fatalf("hash at c1: %v", err)
 	}
-	if head != c1 {
-		t.Errorf("restored worktree at %s, want pinned %s — uv reproducibility violated", head, c1)
+	idC2, err := skill.ComputeEntryIdentityAtCommit(bare, c2, e2.Path, e2.RootCoexists)
+	if err != nil {
+		t.Fatalf("hash at c2: %v", err)
+	}
+	if idC1.SubtreeHash == idC2.SubtreeHash {
+		t.Fatal("subtree hash identical across the advance — content check has no teeth")
+	}
+	diskHash, err := canonical.HashSubtreeFromDisk(filepath.Join(skill.EntryWorktreePath(e2), e2.Path))
+	if err != nil {
+		t.Fatalf("disk hash: %v", err)
+	}
+	if diskHash != idC1.SubtreeHash {
+		t.Errorf("restored content hash %s, want pinned-commit hash %s — uv reproducibility violated", diskHash, idC1.SubtreeHash)
 	}
 }
 

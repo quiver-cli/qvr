@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/astra-sh/qvr/internal/git"
-	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/registry"
 	"github.com/astra-sh/qvr/internal/skill"
 )
@@ -36,7 +35,7 @@ func TestStatus_Dirty(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
 	h.addRegistry(t, "acme", remote)
-	entry := installCodeReview(t, h, remote)
+	entry := installCodeReviewLegacyWorktree(t, h, remote, "main")
 
 	// Modify a file in the worktree (install is frozen; unlock first like edit).
 	makeWorktreeEditable(t, skill.EntryWorktreePath(entry))
@@ -75,7 +74,7 @@ func TestPull_FastForward(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
 	h.addRegistry(t, "acme", remote)
-	entry := installCodeReview(t, h, remote)
+	entry := installCodeReviewLegacyWorktree(t, h, remote, "main")
 
 	// Second worktree to push commits to origin — simulating another user.
 	// Place it at a v5-derivable path so the synthetic entry's
@@ -113,7 +112,7 @@ func TestPull_RefusesOnDirty(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
 	h.addRegistry(t, "acme", remote)
-	entry := installCodeReview(t, h, remote)
+	entry := installCodeReviewLegacyWorktree(t, h, remote, "main")
 
 	_ = os.WriteFile(filepath.Join(skill.EntryWorktreePath(entry), "junk.txt"), []byte("x"), 0o644)
 
@@ -128,7 +127,7 @@ func TestPull_Divergence(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"code-review": codeReviewSkill})
 	h.addRegistry(t, "acme", remote)
-	entry := installCodeReview(t, h, remote)
+	entry := installCodeReviewLegacyWorktree(t, h, remote, "main")
 
 	// Other user pushes upstream. Worktree placed at a v5-derivable path
 	// so the synthetic entry's EntryWorktreePath resolves to it.
@@ -160,25 +159,12 @@ func TestPull_PinnedToTag(t *testing.T) {
 	remote := seedRemoteWithTags(t, map[string]string{"code-review": codeReviewSkill}, "v0.1.1")
 	h.addRegistry(t, "acme", remote)
 
-	// Install pinned to the tag rather than main.
-	_, err := h.installer.Install(skill.InstallRequest{
-		Skill:       "code-review@v0.1.1",
-		Targets:     []string{"claude"},
-		ProjectRoot: h.project,
-	})
-	if err != nil {
-		t.Fatalf("install tag-pinned: %v", err)
-	}
-	lock, err := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
-	if err != nil {
-		t.Fatalf("read lock: %v", err)
-	}
-	entry, err := lock.Get("code-review")
-	if err != nil {
-		t.Fatalf("lock get: %v", err)
-	}
+	// Legacy worktree pinned to the tag rather than main: Syncer.Pull's
+	// fast-forward refusal is a git-worktree concern. (The worktree-free path
+	// refuses tag pulls at the command layer — see cmd/pull_test.go.)
+	entry := installCodeReviewLegacyWorktree(t, h, remote, "v0.1.1")
 
-	_, err = newSyncer().Pull(context.Background(), entry)
+	_, err := newSyncer().Pull(context.Background(), entry)
 	if !errors.Is(err, skill.ErrPinnedToTag) {
 		t.Fatalf("expected ErrPinnedToTag, got %v", err)
 	}

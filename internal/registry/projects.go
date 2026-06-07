@@ -159,6 +159,12 @@ type ReachabilityResult struct {
 	// Worktrees is the set of absolute worktree paths referenced by any
 	// reachable lock entry. Empty paths and link installs are skipped.
 	Worktrees map[string]struct{}
+	// Entries holds the reachable (non-link) lock entries themselves, so
+	// callers can derive other reachability facts — e.g. `qvr cache prune`
+	// computes the live identity/provenance cache keys from entry
+	// commit/path/ref. Entries may repeat the same skill across projects;
+	// callers that need uniqueness should dedup.
+	Entries []*model.LockEntry
 	// MissingProjects lists project lock paths that were recorded in
 	// projects.json but no longer exist on disk. Useful as a hint to
 	// ForgetProject during prune.
@@ -178,7 +184,7 @@ func Reachable() (*ReachabilityResult, error) {
 
 	// The global lock is always reachable, no projects.json entry required.
 	globalLock := filepath.Join(config.Dir(), model.LockFileName)
-	addLockWorktrees(globalLock, res.Worktrees)
+	addLockWorktrees(globalLock, res)
 
 	pf, err := ReadProjects()
 	if err != nil {
@@ -189,17 +195,17 @@ func Reachable() (*ReachabilityResult, error) {
 			res.MissingProjects = append(res.MissingProjects, rec.LockPath)
 			continue
 		}
-		addLockWorktrees(rec.LockPath, res.Worktrees)
+		addLockWorktrees(rec.LockPath, res)
 	}
 	sort.Strings(res.MissingProjects)
 	return res, nil
 }
 
-// addLockWorktrees opens lockPath, decodes the entries, and adds the derived
-// worktree path (via WorktreePath) for each non-link entry to set. Errors are
-// swallowed — best-effort; a malformed lock just contributes nothing rather
-// than blocking the whole reachability pass.
-func addLockWorktrees(lockPath string, set map[string]struct{}) {
+// addLockWorktrees opens lockPath, decodes the entries, and records each
+// non-link entry's derived worktree path (via WorktreePath) and the entry itself
+// into res. Errors are swallowed — best-effort; a malformed lock just
+// contributes nothing rather than blocking the whole reachability pass.
+func addLockWorktrees(lockPath string, res *ReachabilityResult) {
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		return
@@ -208,13 +214,14 @@ func addLockWorktrees(lockPath string, set map[string]struct{}) {
 		if e.IsLink() || e.Registry == "" {
 			continue
 		}
+		res.Entries = append(res.Entries, e)
 		// WorktreePathForEntry honors --as aliases (canonical name) and the
 		// install-commit pin — using e.Name/e.Commit directly here treated every
 		// aliased multi-version worktree as an orphan, so `qvr cache prune`
 		// deleted referenced installs (issue #158).
 		path := WorktreePathForEntry(e)
 		if path != "" {
-			set[path] = struct{}{}
+			res.Worktrees[path] = struct{}{}
 		}
 	}
 }

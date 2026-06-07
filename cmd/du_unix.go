@@ -21,6 +21,14 @@ import (
 // worktree), so it contributes 0; a file unique to this tree (nlink == 1 —
 // the checkout itself, and everything under a copy-clone fallback) contributes
 // its full size. The result is the honest "what you'd get back" number.
+//
+// Note on reflinks (#205): a worktree-free install's blobs are copy-on-write
+// CLONES of the content store, which have nlink == 1 (independent inodes that
+// merely share data extents). They are therefore counted at full size here —
+// an OVER-estimate of reclaimable bytes, which is the safe direction (prune
+// never claims to free MORE than it does). Exact shared-extent accounting would
+// need st_blocks-based measurement; that's a separate refinement, not required
+// for honest worst-case reporting.
 func reclaimableFileSize(info os.FileInfo) int64 {
 	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
 		return 0

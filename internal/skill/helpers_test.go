@@ -348,6 +348,41 @@ func newSyncer() *skill.Syncer {
 	return skill.NewSyncer(git.NewGoGitWorktree(), git.NewGoGitClient())
 }
 
+// installCodeReviewLegacyWorktree provisions a code-review install backed by a
+// real git WORKTREE (origin rewritten to the upstream), the pre-#204 layout.
+// The default consume install is now worktree-free (a plain content dir from a
+// bare-objects tree walk), but Syncer.Pull's git fast-forward and git-status
+// dirtiness only apply to legacy `.git`-bearing worktrees — so the unit tests
+// for those paths build one explicitly here. ref may be a branch or a tag.
+func installCodeReviewLegacyWorktree(t *testing.T, h *installerTestHarness, remote, ref string) *model.LockEntry {
+	t.Helper()
+	_ = h // registry already added by the caller; kept for signature symmetry
+	bare := registry.RegistryPath("acme")
+	gc := git.NewGoGitClient()
+	commit, err := gc.ResolveRef(bare, ref)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", ref, err)
+	}
+	wtPath := registry.WorktreePath("acme", "code-review", registry.ShortSHA(commit))
+	w := git.NewGoGitWorktree()
+	if err := w.Add(bare, wtPath, ref); err != nil {
+		t.Fatalf("legacy worktree add: %v", err)
+	}
+	if err := w.SetSparseCheckout(wtPath, []string{"skills/code-review"}); err != nil {
+		t.Fatalf("legacy sparse checkout: %v", err)
+	}
+	return &model.LockEntry{
+		Name:          "code-review",
+		Registry:      "acme",
+		Source:        remote,
+		Path:          "skills/code-review",
+		Ref:           ref,
+		Commit:        commit,
+		InstallCommit: commit,
+		Targets:       []string{"claude"},
+	}
+}
+
 // makeWorktreeEditable restores write permissions on a worktree subtree so a
 // test can simulate a user modifying an installed skill. Installs are frozen
 // read-only ("uv for agent skills": immutable at rest); in real use `qvr edit`

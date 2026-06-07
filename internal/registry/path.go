@@ -132,6 +132,47 @@ func WorktreesRoot() string {
 	return filepath.Join(config.Dir(), "worktrees")
 }
 
+// BlobStoreRoot returns the base directory of the content-addressed blob store
+// (#205). Materialization writes each unique blob here once, then reflinks
+// (copy-on-write) or copies it into every skill that contains it — so installing
+// the same content across many skills is O(metadata), not O(bytes).
+func BlobStoreRoot() string {
+	return filepath.Join(config.Dir(), "cache", "blobs")
+}
+
+// BlobStorePath returns the store path for a blob keyed by the hex sha256 of its
+// raw bytes. A two-char fan-out keeps any single directory from accumulating
+// every blob in the store. Inputs shorter than 2 chars are placed under a "_"
+// shard rather than panicking — defence-in-depth for a malformed key.
+func BlobStorePath(sha256hex string) string {
+	shard := "_"
+	if len(sha256hex) >= 2 {
+		shard = sha256hex[:2]
+	}
+	return filepath.Join(BlobStoreRoot(), shard, sha256hex)
+}
+
+// IdentityCacheRoot returns the base directory of the global per-(commit, path)
+// identity cache. The canonical subtree hash of an immutable git (commit,
+// subtree) is globally invariant — it cannot differ between projects — so it is
+// memoized here under ~/.quiver rather than in any project lockfile. This lets a
+// fresh project installing a skill at an already-materialized commit reuse the
+// recorded hash instead of re-walking and re-SHA-256ing every blob.
+func IdentityCacheRoot() string {
+	return filepath.Join(config.Dir(), "cache", "identity")
+}
+
+// ProvenanceCacheRoot returns the base directory of the global per-(ref, commit,
+// path) provenance + author cache. Computing them spawns several `git` processes
+// (tag/commit signature verification, a path-scoped log walk for the skill's
+// last-touching commit, and an author lookup) whose results are invariant for an
+// immutable commit — so they are memoized here. Security-gated installs
+// (require_signed, or a skill that declares signed_by) bypass this cache and
+// re-verify signatures fresh; see internal/skill.
+func ProvenanceCacheRoot() string {
+	return filepath.Join(config.Dir(), "cache", "provenance")
+}
+
 // WorktreePath returns the worktree path for a skill pinned at sha. The
 // caller passes the resolved short SHA (7 chars by convention) — the path
 // uses it directly as the cache key, so two projects pinning the same commit

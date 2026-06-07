@@ -144,6 +144,29 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return perr
 	}
 
+	// #206: materialize all skills' content dirs concurrently before the lock
+	// window. This is the expensive, independent part of an install; fanning it
+	// out across goroutines turns N serial materializations into one parallel
+	// pass. The serial Install loop below then reuses each pre-built dir. It's a
+	// pure optimization — Install still does the work for anything not pre-built.
+	if len(items) > 1 {
+		batch := make([]skill.InstallRequest, 0, len(items))
+		for _, item := range items {
+			batch = append(batch, skill.InstallRequest{
+				Skill:       item.skillRef,
+				Targets:     targets,
+				Global:      addGlobal,
+				ProjectRoot: projectRoot,
+				LockPath:    lockPath,
+				Frozen:      addFrozen,
+				Registry:    item.registry,
+				SkillPath:   item.skillPath,
+				As:          addAs,
+			})
+		}
+		installer.PrematerializeBatch(batch)
+	}
+
 	var results []*skill.InstallResult
 	var firstErr error
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {

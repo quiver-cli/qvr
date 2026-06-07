@@ -86,6 +86,86 @@ func runSwitch(cmd *cobra.Command, args []string) error {
 	return runRepoint(cmd, mode, skills[0], ref)
 }
 
+// tipPullViaInstall advances a worktree-free consume install to the tip of its
+// currently-pinned ref by re-materializing through Install (a new SHA-keyed
+// content dir plus a symlink repoint), exactly like switch/upgrade. A tag-pinned
+// entry is refused with skill.ErrPinnedToTag — moving off a tag is an explicit
+// switch/upgrade, never a pull — so the caller can preserve the historical
+// "skipped" semantics. Returns the new commit SHA on success. Install persists
+// the lock file itself.
+func tipPullViaInstall(cmd *cobra.Command, installer *skill.Installer, mgr *registry.Manager, gc git.GitClient, entry *model.LockEntry, projectRoot, lockPath string) (string, error) {
+	canonicalName := entry.Name
+	aliasFlag := ""
+	if entry.Canonical != "" {
+		canonicalName = entry.Canonical
+		aliasFlag = entry.Name
+	}
+	// Refuse a tag pin before any network: moving off a tag is an explicit
+	// switch/upgrade. The pinned tag already exists locally, so the cached bare
+	// clone is authoritative — no refresh needed to decide this.
+	if isTagPinnedRef(gc, entry) {
+		return "", fmt.Errorf("%w: %s", skill.ErrPinnedToTag, entry.Ref)
+	}
+
+	// Refresh the source registry so a freshly-pushed tip is visible to Install
+	// (best-effort; offline flows resolve against the cached bare clone).
+	maybeRefreshRegistryForSkill(cmd.Context(), mgr, canonicalName, "pull")
+
+	skillRef := canonicalName
+	if entry.Ref != "" {
+		skillRef = canonicalName + "@" + entry.Ref
+	}
+	if _, err := installer.Install(skill.InstallRequest{
+		Skill:       skillRef,
+		Targets:     entry.Targets,
+		Global:      repointGlobal,
+		ProjectRoot: projectRoot,
+		LockPath:    lockPath,
+		Force:       true,
+		As:          aliasFlag,
+	}); err != nil {
+		return "", err
+	}
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return "", fmt.Errorf("re-read lock: %w", err)
+	}
+	updated, err := lock.Get(entry.Name)
+	if err != nil {
+		return "", fmt.Errorf("entry vanished after pull: %w", err)
+	}
+	return updated.Commit, nil
+}
+
+// isTagPinnedRef reports whether entry.Ref names a tag (and not also a branch)
+// in the entry's source registry — the case where a pull is refused. Mirrors the
+// tag-vs-branch check in Syncer.Pull, but against the bare clone since a
+// worktree-free install has no local repo to inspect.
+func isTagPinnedRef(gc git.GitClient, entry *model.LockEntry) bool {
+	if entry.Ref == "" {
+		return false
+	}
+	repoPath := registry.RegistryPath(entry.Registry)
+	tags, _ := gc.ListTags(repoPath)
+	isTag := false
+	for _, t := range tags {
+		if t.Name == entry.Ref {
+			isTag = true
+			break
+		}
+	}
+	if !isTag {
+		return false
+	}
+	branches, _ := gc.ListBranches(repoPath)
+	for _, b := range branches {
+		if b.Name == entry.Ref {
+			return false
+		}
+	}
+	return true
+}
+
 // resolveRepoint maps (how-it-was-called, positional args, flags) onto a single
 // mode + targets. The flags win; absent any, the alias name supplies the
 // historical default (upgrade→latest, pull→tip, switch→explicit).
@@ -307,13 +387,49 @@ func runTip(cmd *cobra.Command, names []string) error {
 			return nil
 		}
 
-		syncer := skill.NewSyncer(git.NewGoGitWorktree(), git.NewGoGitClient())
+		gc := git.NewGoGitClient()
+		wt := git.NewGoGitWorktree()
+		mgr := newRegistryManager(gc)
+		installer := skill.NewInstaller(mgr, wt, gc)
+		syncer := skill.NewSyncer(wt, gc)
 		for _, name := range names {
+			// Re-read the lock each iteration. A worktree-free pull advances via
+			// Install, which writes the lock file directly, so a single in-memory
+			// copy would go stale and clobber prior updates.
+			lock, err = model.ReadLockFile(lockPath)
+			if err != nil {
+				loopErr = fmt.Errorf("read lock: %w", err)
+				break
+			}
 			entry, err := lock.Get(name)
 			if err != nil {
 				loopErr = fmt.Errorf("%s: %w", name, err)
 				break
 			}
+
+			// Worktree-free consume install (#204): immutable + SHA-keyed, so
+			// "pull to tip" is a re-materialize at the current tip of the pinned
+			// ref (new SHA dir + symlink repoint), identical to switch/upgrade —
+			// not a git fast-forward. A tag pin is refused, matching the legacy
+			// path. Install persists the lock itself.
+			if !skill.HasGitDir(skill.EntryWorktreePath(entry)) {
+				hash, perr := tipPullViaInstall(cmd, installer, mgr, gc, entry, projectRoot, lockPath)
+				if perr != nil {
+					if errors.Is(perr, skill.ErrPinnedToTag) {
+						printer.Warning(fmt.Sprintf("%s: %v", name, perr))
+						results = append(results, map[string]string{"name": name, "status": "skipped", "message": perr.Error()})
+						refused++
+						continue
+					}
+					loopErr = fmt.Errorf("pull %s: %w", name, perr)
+					break
+				}
+				printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
+				results = append(results, map[string]string{"name": name, "status": "updated", "commit": hash})
+				continue
+			}
+
+			// Legacy git worktree: fast-forward in place.
 			hash, err := syncer.Pull(cmd.Context(), entry)
 			if err != nil {
 				// A diverged or tag-pinned entry is a refusal: the requested
@@ -340,16 +456,18 @@ func runTip(cmd *cobra.Command, names []string) error {
 			entry.Commit = hash
 			_ = skill.RefreshSubtreeHash(entry)
 			lock.Put(entry)
+			if werr := lock.Write(); werr != nil {
+				loopErr = fmt.Errorf("write lock: %w", werr)
+				break
+			}
 			printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
 			results = append(results, map[string]string{"name": name, "status": "updated", "commit": hash})
 		}
-		if err := lock.Write(); err != nil {
-			if loopErr != nil {
-				return fmt.Errorf("write lock after %v: %w", loopErr, err)
-			}
-			return fmt.Errorf("write lock: %w", err)
+		// Re-read for the AGENTS.md refresh / JSON payload below; per-iteration
+		// writes (and Install) have already persisted every change.
+		if l, lerr := model.ReadLockFile(lockPath); lerr == nil {
+			latestLock = l
 		}
-		latestLock = lock
 		return nil
 	})
 	if lockErr != nil {

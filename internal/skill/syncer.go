@@ -79,6 +79,19 @@ func (s *Syncer) Status(entry *model.LockEntry, projectRoot string) (*SyncStatus
 				return st, nil
 			}
 		}
+		// Worktree-free consume install (#204): the content dir has no .git/,
+		// so there's nothing to git-status. It's immutable and frozen
+		// read-only, so it's never "dirty" in the git sense — report the locked
+		// ref/commit. Content tampering surfaces via `qvr lock verify`, not here.
+		if !entry.IsEdit() {
+			skillDir := EffectiveTarget(entry, projectRoot)
+			if skillDir != "" {
+				if _, statErr := os.Stat(filepath.Join(skillDir, "SKILL.md")); statErr == nil {
+					st.Message = "shared"
+					return st, nil
+				}
+			}
+		}
 		st.Broken = true
 		st.Message = fmt.Sprintf("worktree unreadable: %v", err)
 		return st, nil

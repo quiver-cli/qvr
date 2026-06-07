@@ -24,14 +24,19 @@ func IsRootLayoutPath(path string) bool {
 }
 
 // isConsumedRootLayout reports whether entry is a shared (registry-installed)
-// root-layout skill. Only these expose the worktree's live .git/ through the
-// agent symlink: a subdir skill points at a clean subtree, and edit/link
-// installs have no shared worktree to sanitize.
+// root-layout skill backed by a LEGACY git worktree that carries a live .git/
+// at its root. Only those need a sanitized agent view: a subdir skill points at
+// a clean subtree, edit/link installs have no shared worktree, and a
+// worktree-free content dir (the default since #204) has no .git/ to hide — its
+// root can be linked directly.
 func isConsumedRootLayout(entry *model.LockEntry) bool {
 	if entry == nil || entry.IsEdit() || entry.IsLink() {
 		return false
 	}
-	return IsRootLayoutPath(entry.Path)
+	if !IsRootLayoutPath(entry.Path) {
+		return false
+	}
+	return HasGitDir(EntryWorktreePath(entry))
 }
 
 // AgentLinkTarget returns the directory the agent-facing symlink

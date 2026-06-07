@@ -31,38 +31,33 @@ func TestEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	lock, err := model.ReadLockFile(filepath.Join(h.project, model.LockFileName))
-	if err != nil {
-		t.Fatalf("read lock: %v", err)
-	}
-	entry, err := lock.Get("code-review")
-	if err != nil {
-		t.Fatalf("lock get: %v", err)
-	}
-
-	// 2. Modify via symlink (simulates an agent editing the skill). The install
-	// is frozen read-only; unlock it first, mirroring what `qvr edit` does.
-	makeWorktreeEditable(t, skill.EntryWorktreePath(entry))
+	// 2. The agent reads the skill through the symlink. Consume installs are
+	// worktree-free and immutable since #204 (no in-place edits — those go
+	// through `qvr edit`), so this is a read-only sanity check that the agent
+	// link resolves to real content.
 	linkPath := filepath.Join(h.project, ".claude/skills/code-review", "SKILL.md")
-	original, err := os.ReadFile(linkPath)
-	if err != nil {
+	if _, err := os.ReadFile(linkPath); err != nil {
 		t.Fatalf("read via symlink: %v", err)
 	}
-	newContent := append(original, []byte("\n## Added section\n")...)
-	if err := os.WriteFile(linkPath, newContent, 0o644); err != nil {
-		t.Fatalf("modify via symlink: %v", err)
-	}
 
-	// 3. Commit + push the edit to origin. Production `qvr publish` pushes via
-	//    git.Push directly; the helper mirrors that to seed the upstream commit.
-	hash := commitAndPushWorktree(t, skill.EntryWorktreePath(entry), entry.Ref, "end-to-end edit")
+	// 3. Seed an upstream edit the way `qvr publish` would — from a real git
+	//    worktree pushing to origin — then verify it propagates downstream.
+	pub := filepath.Join(t.TempDir(), "publish")
+	pubWT := git.NewGoGitWorktree()
+	if err := pubWT.Add(remote, pub, "main"); err != nil {
+		t.Fatalf("add publish worktree: %v", err)
+	}
+	pubFile := filepath.Join(pub, "skills", "code-review", "SKILL.md")
+	pubOrig, err := os.ReadFile(pubFile)
+	if err != nil {
+		t.Fatalf("read publish file: %v", err)
+	}
+	if err := os.WriteFile(pubFile, append(pubOrig, []byte("\n## Added section\n")...), 0o644); err != nil {
+		t.Fatalf("edit publish file: %v", err)
+	}
+	hash := commitAndPushWorktree(t, pub, "main", "end-to-end edit")
 	if len(hash) != 40 {
 		t.Fatalf("push hash: %q", hash)
-	}
-	entry.Commit = hash
-	lock.Put(entry)
-	if err := lock.Write(); err != nil {
-		t.Fatalf("write lock: %v", err)
 	}
 
 	// 4. Pull from a fresh second worktree to verify the push landed.
