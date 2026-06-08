@@ -1,4 +1,6 @@
-# Quiver(qvr)
+<div align="center">
+
+# quiver(qvr)
 
 An extremely fast skills manager for coding agents, written in Go.
 
@@ -28,7 +30,7 @@ packages already have: a source, a lock, a gate, and an audit trail — with no
 server to run and no runtime in the read path.
 
 `qvr` is to agent skills what `uv` is to Python packages: a Git-native,
-zero-service CLI to install, version, scan, and govern [agent skills] across
+zero-service CLI to install, version, lint, scan, and govern [agent skills] across
 every coding agent — Claude Code, Cursor, Copilot, Codex, Windsurf, anything
 that reads skills from a directory.
 
