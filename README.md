@@ -55,14 +55,37 @@ bare clone of the source registry. The worktrees are immutable and
 symlink repoint, not a re-clone, and two projects pinned to the same SHA share
 **one copy on disk**.
 
-### 2. `qvr.lock` — provenance, portability, and team collaboration in one file
+### 2. `qvr.toml` + `qvr.lock` — intent and proof, kept in sync
 
-The lock is the heart of the trust layer, and it's the unit of
-**collaboration**: one file, checked into the repo, that every teammate and CI
-runner resolves to the byte-identical skill set. It doesn't just pin a SHA; it
-records the **verdict of every gate** the skill passed, so the lock _is_ the
-audit trail. Each entry carries the resolved commit, a subtree hash of the exact
-bytes, the scan report hash + decision, and the provenance of the commit author:
+A project's skill set lives in two committed files that move together:
+**`qvr.toml`** declares the _intent_ — the skills you want and the agents they
+install into — and **`qvr.lock`** records the _resolved proof_ — the exact bytes,
+pins, and gate verdicts behind that intent. One you write; one Quiver writes.
+
+**`qvr.toml` is the front door.** Human-authored and hand-editable, it carries
+the skills a project depends on (`[skills]`, a coordinate → ref map) and its
+default agent targets (`[project].default-targets`, set by `qvr target add`).
+It's the declarative source you edit and review in a PR, and it's where routing
+policy travels with the repo — clone, `qvr sync`, and skills land in the same
+agent dirs with no machine-local drift.
+
+```toml
+# qvr.toml — declarative intent (hand-editable, committed)
+[project]
+name            = 'my-project'
+version         = '0.1.0'
+default-targets = ['claude', 'codex']   # agents a bare `qvr add` installs into
+
+[skills]
+'anthropics/skills/frontend-design' = 'main'   # coordinate -> ref
+```
+
+**`qvr.lock` is the proof.** Machine-generated, it's the heart of the trust
+layer and the unit of **reproducibility**: every teammate and CI runner resolves
+it to the byte-identical, already-vetted skill set. It doesn't just pin a SHA —
+each entry records the resolved commit, a subtree hash of the exact bytes, the
+scan report hash + decision, and the commit author, so the lock _is_ the audit
+trail.
 
 ```toml
 # qvr.lock — one resolved, vetted entry (machine-generated)
@@ -77,45 +100,34 @@ commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>'       # provenance
 targets      = ['claude']
 ```
 
+**They stay in sync — both directions.** Every mutating command (`qvr add`,
+`switch`, `remove`, `target`, …) writes through to _both_ files at once, so they
+never drift in normal use. When they do diverge — a hand-edit, a merge — two
+explicit verbs reconcile them: **`qvr sync`** resolves toward the lock (the lock
+wins; it's the reproducible truth) and **`qvr lock --from-toml`** pushes your
+`qvr.toml` edits into the lock (intent wins). And the lock is **self-sufficient**:
+`qvr sync` rebuilds the whole set from `qvr.lock` alone, so CI never needs
+`qvr.toml` and a lost `qvr.toml` is regenerated from the lock — routing policy
+and all.
+
 > [!NOTE]
-> **Portability:** the lock travels with the repo. Clone it on any machine, run
+> **Portability:** the pair travels with the repo. Clone on any machine, run
 > `qvr sync`, and you get the byte-identical, already-vetted skill set — not
 > "whatever the registry serves today."
 >
-> **Provenance & governance:** the lock is a verifiable record.
-> `qvr lock verify
-> --strict` and `qvr sync --frozen` are CI gates that fail on
-> any drift between what's on disk and what the lock attests. Only skills in the
-> lock are visible to the agent — no ambient surprises.
+> **Provenance & governance:** the lock is a verifiable record. `qvr lock verify
+> --strict` and `qvr sync --frozen` are CI gates that fail on any drift between
+> what's on disk and what the lock attests. Only skills in the lock are visible
+> to the agent — no ambient surprises.
 
 Provenance surfaces through `qvr provenance`; invalid signatures always block,
 and `qvr trust pin` enforces per-registry commit-author policy. And because the
-lock pins **git refs** rather than opaque archives, version control becomes a
-first-class feature.
+lock pins **git refs** rather than opaque archives, version control is a
+first-class feature:
 
 ```bash
 qvr add code-review@v1.2.0
 qvr add code-review@v1.3.0-rc1 --as code-review-rc   # both coexist for A/B
-```
-
-**`qvr.toml` — the declarative front door.** Where the lock is the _resolved_
-state, `qvr.toml` is the human-authored _intent_: the skills a project wants
-(`[skills]`) and its default agent targets (`[project].default-targets`),
-hand-editable and committed alongside the lock. Every mutating command keeps the
-two in step; edit `qvr.toml` by hand and `qvr sync` reconciles (or
-`qvr lock --from-toml` to apply your edits to the lock). The lock stays
-self-sufficient — `qvr sync` reproduces from `qvr.lock` alone, so CI never needs
-`qvr.toml`.
-
-```toml
-# qvr.toml — declarative intent (hand-editable, committed)
-[project]
-name            = 'my-project'
-version         = '0.1.0'
-default-targets = ['claude', 'codex']   # which agents a bare `qvr add` installs into
-
-[skills]
-'anthropics/skills/frontend-design' = 'main'   # coordinate -> ref
 ```
 
 ### 3. Traceability — the foundation for optimizing and evaluating skills
