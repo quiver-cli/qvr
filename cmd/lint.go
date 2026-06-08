@@ -13,39 +13,40 @@ import (
 )
 
 var (
-	validateGlobal bool
+	lintGlobal bool
 )
 
-var validateCmd = &cobra.Command{
-	Use:   "validate [path-or-name]",
-	Short: "Validate a skill's SKILL.md and directory structure",
+var lintCmd = &cobra.Command{
+	Use:   "lint [path-or-name]",
+	Short: "Lint a skill's SKILL.md and directory structure",
 	Long: `Checks that SKILL.md frontmatter conforms to the agentskills.io
-specification.
+specification. Lint is advisory — it reports issues but does not block
+` + "`qvr add`" + `; the same report also rides along with ` + "`qvr scan`" + `.
 
 The argument can be either a filesystem path (` + "`.`" + `, ` + "`./demo`" + `,
 ` + "`/abs/path`" + `, etc.) or the name of an installed skill — when bare
 (no path separators), the name is resolved through the project's lock
-file (or the global lock when --global is set), so ` + "`qvr validate demo`" + `
+file (or the global lock when --global is set), so ` + "`qvr lint demo`" + `
 just works after ` + "`qvr add demo`" + `. This mirrors ` + "`qvr scan`" + `'s
 resolution behaviour (issue #64). When the path is a registry root
 (skills/<name>/SKILL.md layout), the skill directory is auto-discovered.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: runValidate,
+	RunE: runLint,
 }
 
 func init() {
-	validateCmd.Flags().BoolVar(&validateGlobal, "global", false,
+	lintCmd.Flags().BoolVar(&lintGlobal, "global", false,
 		"resolve a bare skill name through the user-global lock instead of the project lock")
-	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(lintCmd)
 }
 
-func runValidate(cmd *cobra.Command, args []string) error {
+func runLint(cmd *cobra.Command, args []string) error {
 	dir := "."
 	if len(args) > 0 {
 		dir = args[0]
 	}
 
-	resolved, discovered, err := resolveSkillArg(dir, validateGlobal)
+	resolved, discovered, err := resolveSkillArg(dir, lintGlobal)
 	if err != nil {
 		if printer.Format == output.FormatJSON {
 			_ = printer.JSON(map[string]any{
@@ -83,7 +84,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load skill: %w", err)
 	}
 
-	result := skill.Validate(s)
+	result := skill.Lint(s)
 
 	if printer.Format == output.FormatJSON {
 		if err := printer.JSON(result); err != nil {
@@ -96,15 +97,15 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	if result.Valid {
-		printer.Success(fmt.Sprintf("Skill %q is valid", s.Frontmatter.Name))
+		printer.Success(fmt.Sprintf("Skill %q passes lint", s.Frontmatter.Name))
 		return nil
 	}
 
-	printer.Error(fmt.Sprintf("Skill at %s has %d issue(s):", resolved, len(result.Errors)))
+	printer.Error(fmt.Sprintf("Skill at %s has %d lint issue(s):", resolved, len(result.Errors)))
 	for _, e := range result.Errors {
-		fmt.Printf("  [%s] %s: %s\n", e.Severity, e.Field, e.Message)
+		fmt.Fprintf(printer.Out, "  [%s] %s: %s\n", e.Severity, e.Field, e.Message)
 	}
-	return fmt.Errorf("validation failed with %d error(s)", len(result.Errors))
+	return fmt.Errorf("lint failed with %d issue(s)", len(result.Errors))
 }
 
 // resolveSkillDir handles the registry-layout case: when the given path doesn't

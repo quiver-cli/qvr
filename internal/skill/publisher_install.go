@@ -132,27 +132,27 @@ func (p *Publisher) PublishInstalled(ctx context.Context, req PublishInstalledRe
 		return nil, ErrPublishNoSource
 	}
 
-	// Validate the eject dir before any remote is touched — same gate as
+	// Lint the eject dir before any remote is touched — same gate as
 	// the path-mode publisher.
 	loaded, err := LoadFromPath(editAbs)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidSkillPath, err)
 	}
 	// Aliased installs have SKILL.md `name:` == canonical, but LoadFromPath
-	// reads the dir basename as the validator's expected name. The dir is
+	// reads the dir basename as the linter's expected name. The dir is
 	// the alias, so the name-must-match-dir check would always fail. The
 	// published artifact carries the canonical name (it's the registry-side
-	// identity, not the local alias), so swap the validator's expected
+	// identity, not the local alias), so swap the linter's expected
 	// name to the canonical for aliased entries. Issue #104.
 	if e.Canonical != "" {
 		loaded.Name = e.Canonical
 	}
-	if vr := Validate(loaded); !vr.Valid {
+	if lr := Lint(loaded); !lr.Valid {
 		var msgs []string
-		for _, ve := range vr.Errors {
+		for _, ve := range lr.Errors {
 			msgs = append(msgs, ve.Error())
 		}
-		return nil, fmt.Errorf("skill validation failed:\n  %s", strings.Join(msgs, "\n  "))
+		return nil, fmt.Errorf("skill lint failed:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
 	// Compute provenance value for both dry-run reporting and the

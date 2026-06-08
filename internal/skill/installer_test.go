@@ -243,11 +243,12 @@ func TestInstall_AtomicOnBadRef(t *testing.T) {
 	}
 }
 
-func TestInstall_InvalidSkillRejects(t *testing.T) {
+func TestInstall_LintIssueDoesNotBlock(t *testing.T) {
 	h := newHarness(t)
-	// Consecutive hyphens in the name violate the spec. Directory name
-	// matches frontmatter, so FindSkill succeeds — but the validator must
-	// refuse the install at checkout time.
+	// Consecutive hyphens in the name violate the spec, but lint is advisory:
+	// the install must still succeed (the issue is surfaced via `qvr lint` /
+	// `qvr scan`, not by refusing the install). The SKILL.md loads fine, so the
+	// only gate left is the load check, which passes.
 	remote := seedRemote(t, map[string]string{
 		"bad--skill": `---
 name: bad--skill
@@ -258,13 +259,19 @@ description: has consecutive hyphens
 	})
 	h.addRegistry(t, "acme", remote)
 
-	_, err := h.installer.Install(skill.InstallRequest{
+	res, err := h.installer.Install(skill.InstallRequest{
 		Skill:       "bad--skill",
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
 	})
-	if err == nil || !strings.Contains(err.Error(), "validation failed") {
-		t.Errorf("expected validation failure, got %v", err)
+	if err != nil {
+		t.Fatalf("lint issue should not block install, got %v", err)
+	}
+	if res == nil || res.Name != "bad--skill" {
+		t.Errorf("expected install of bad--skill, got %+v", res)
+	}
+	if _, err := os.Lstat(filepath.Join(h.project, ".claude/skills/bad--skill")); err != nil {
+		t.Errorf("expected symlink despite lint issue: %v", err)
 	}
 }
 
@@ -467,10 +474,11 @@ description: local dev skill
 	}
 }
 
-// Regression for the v0.3.6 punch list: a local install must reject a directory
-// whose name doesn't match the frontmatter `name`, applying the same
-// name-matches-directory check the validator does.
-func TestInstallLocal_RejectsDirNameMismatch(t *testing.T) {
+// A name/directory mismatch is a lint issue, and lint is advisory: a local
+// install proceeds anyway (the mismatch is surfaced via `qvr lint` / `qvr
+// scan`, not by refusing the install). The installed entry takes its name from
+// the frontmatter `name`, not the directory.
+func TestInstallLocal_DirNameMismatchDoesNotBlock(t *testing.T) {
 	h := newHarness(t)
 
 	local := filepath.Join(t.TempDir(), "wrong-dir-name")
@@ -487,15 +495,18 @@ description: local dev skill
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := h.installer.InstallLocal(local, skill.InstallRequest{
+	res, err := h.installer.InstallLocal(local, skill.InstallRequest{
 		Targets:     []string{"claude"},
 		ProjectRoot: h.project,
 	})
-	if err == nil {
-		t.Fatal("expected install --local to reject name/dir mismatch")
+	if err != nil {
+		t.Fatalf("name/dir mismatch should not block local install, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "must match directory name") {
-		t.Errorf("error = %q, want mention of directory-name mismatch", err.Error())
+	if res == nil || res.Name != "my-skill" {
+		t.Fatalf("expected install named after frontmatter (my-skill), got %+v", res)
+	}
+	if _, err := os.Lstat(filepath.Join(h.project, ".claude/skills/my-skill")); err != nil {
+		t.Errorf("expected symlink despite lint issue: %v", err)
 	}
 }
 

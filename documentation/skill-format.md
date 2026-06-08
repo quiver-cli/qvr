@@ -159,13 +159,13 @@ react-best-practices/
     └── build.sh          # Compile rules → AGENTS.md
 ```
 
-## Validation
+## Lint
 
 ```bash
 # Official validator
 skills-ref validate ./my-skill
 
-# qvr validator (also checks custom rules)
-qvr validate ./my-skill
-qvr validate --output json
+# qvr lint (also checks custom rules)
+qvr lint ./my-skill
+qvr lint --output json
 ```

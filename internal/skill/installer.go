@@ -284,7 +284,7 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 			return nil, fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
 				ErrSkillAbsentAtRef, name, loc.Entry.Path, version, registry.ShortSHA(resolvedSHA), name)
 		}
-		if err := validateStagedSkill(stagingPath, loc.Entry.Path, name); err != nil {
+		if err := lintStagedSkill(stagingPath, loc.Entry.Path); err != nil {
 			_ = os.RemoveAll(stagingPath)
 			return nil, err
 		}
@@ -773,16 +773,9 @@ func (in *Installer) InstallLocal(localPath string, req InstallRequest) (*Instal
 	if err != nil {
 		return nil, err
 	}
-	// Respect the same spec rule `qvr validate` enforces: the frontmatter name
-	// must match the directory it lives in. Catching a mismatch here beats
-	// shipping an install that doctor/verify immediately flags.
-	if result := Validate(loaded); !result.Valid {
-		var lines []string
-		for _, e := range result.Errors {
-			lines = append(lines, e.Error())
-		}
-		return nil, fmt.Errorf("skill validation failed:\n  %s", strings.Join(lines, "\n  "))
-	}
+	// Spec lint (agentskills.io conformance, e.g. name↔directory match) is
+	// advisory and does not block a local install — surface it via `qvr lint`
+	// or `qvr scan`. A skill that fails to load was already rejected above.
 	name := loaded.Frontmatter.Name
 	if name == "" {
 		name = loaded.Name
@@ -904,32 +897,16 @@ func (in *Installer) resolveCommit(worktreePath string) (string, error) {
 	return in.Git.HeadCommit(worktreePath)
 }
 
-// validateStagedSkill loads the skill at the expected path inside the staged
-// worktree and runs the standard validator. Refuses installs that would produce
-// a symlink to a non-conformant skill.
-//
-// expectedName is the skill's canonical name from the registry index. The
-// loader sets Skill.Name from the on-disk directory's basename, which for a
-// layout-B repo (SKILL.md at the root, skillRelPath == ".") is the staging
-// directory itself (e.g. `<reg>--<skill>--<ref>.staging`) — definitely not
-// what the user wrote in `name:`. Overriding to expectedName before validation
-// keeps the name↔dir match meaningful for layout A while letting layout B
-// pass without leaking internal `.staging` paths to the user (bug #50).
-func validateStagedSkill(stagingPath, skillRelPath, expectedName string) error {
+// lintStagedSkill loads the skill at the expected path inside the staged
+// worktree to confirm it parses before we link it in. Spec lint
+// (agentskills.io conformance) is advisory — it is surfaced via `qvr scan` and
+// `qvr lint`, never blocks the install here. Only a skill whose SKILL.md fails
+// to load (unparseable frontmatter) is rejected, since that can't be linked or
+// read at all.
+func lintStagedSkill(stagingPath, skillRelPath string) error {
 	skillDir := filepath.Join(stagingPath, skillRelPath)
-	loaded, err := LoadFromPath(skillDir)
-	if err != nil {
+	if _, err := LoadFromPath(skillDir); err != nil {
 		return fmt.Errorf("load staged skill: %w", err)
-	}
-	if expectedName != "" {
-		loaded.Name = expectedName
-	}
-	if result := Validate(loaded); !result.Valid {
-		var lines []string
-		for _, e := range result.Errors {
-			lines = append(lines, e.Error())
-		}
-		return fmt.Errorf("skill validation failed:\n  %s", strings.Join(lines, "\n  "))
 	}
 	return nil
 }

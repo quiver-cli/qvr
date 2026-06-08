@@ -1,6 +1,6 @@
 # Creating a Skill
 
-> **Status: stable.** Scaffolding, validation, and `qvr publish` all
+> **Status: stable.** Scaffolding, lint, and `qvr publish` all
 > ship today.
 
 ## Scaffold
@@ -105,11 +105,11 @@ Detailed documentation agents read on demand:
 
 Templates, data files, schemas.
 
-## Validate
+## Lint
 
 ```bash
-qvr validate ./my-skill
-qvr validate ./my-skill --output json
+qvr lint ./my-skill
+qvr lint ./my-skill --output json
 ```
 
 Checks: name format, description length, directory name match, frontmatter validity, file reference integrity.

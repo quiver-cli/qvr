@@ -145,7 +145,7 @@ old SHAs left by `qvr switch`, or worktrees from a project deleted out-of-band).
 ```
 cmd/ (Cobra commands)
   → internal/config/    (Viper config)
-  → internal/skill/     (business logic: loader, validator, linker,
+  → internal/skill/     (business logic: loader, linter, linker,
                          installer, syncer, publisher)
   → internal/registry/  (registry manager, indexer, registry-index TTL cache)
   → internal/output/    (formatting — text/JSON printer)

@@ -143,6 +143,7 @@ func ScanAndGate(ctx context.Context, skillDir string, cfg *config.Config, opts 
 	if err != nil {
 		return out, fmt.Errorf("scan %s: %w", opts.Subject, err)
 	}
+	res.Lint = lintReportFor(loaded)
 	out.Result = res
 	out.Skipped = false
 	out.Blocked = exceedsThreshold(res, threshold)
@@ -176,7 +177,7 @@ func blockSeverityOrDefault(cfg *config.Config) string {
 // triggers a banner, a table of findings, and (if blocked) a "refusing to
 // proceed" hint with the --no-scan escape hatch.
 func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshold security.Severity, blocked bool) {
-	if res == nil || len(res.Findings) == 0 {
+	if res == nil {
 		return
 	}
 	action := opts.Action
@@ -186,6 +187,16 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 	subject := opts.Subject
 	if subject == "" {
 		subject = res.Skill
+	}
+	// Lint is advisory and surfaced whether or not there are security findings,
+	// so a non-conformant-but-safe skill still warns. Suppressed in Quiet mode
+	// (batch `add --all`) to keep first-time installs uncluttered.
+	if res.Lint != nil && !res.Lint.Valid && !opts.Quiet {
+		fmt.Fprintf(printer.Err, "⚠ %s %s: lint found %d issue(s) (advisory — install proceeds; run `qvr lint %s`)\n",
+			action, subject, res.Lint.Count, subject)
+	}
+	if len(res.Findings) == 0 {
+		return
 	}
 	banner := fmt.Sprintf("⚠ %s %s: scan found %d finding(s) (max %s; block threshold %s)",
 		action, subject, res.Summary.Total(), res.Summary.MaxSeverity(), threshold)
@@ -348,6 +359,31 @@ func hashScanResult(result *security.ScanResult) string {
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// lintReportFor runs the advisory spec lint over a loaded skill and converts
+// it into the security-local shape that travels on ScanResult.Lint. Lint never
+// blocks — this only attaches the report so `qvr scan`, the install gate, and
+// the dashboard can surface "is this skill well-formed?" next to the security
+// findings. Returns nil for a nil skill so callers can attach unconditionally.
+func lintReportFor(s *model.Skill) *security.LintReport {
+	if s == nil {
+		return nil
+	}
+	lr := skill.Lint(s)
+	issues := make([]security.LintIssue, 0, len(lr.Errors))
+	for _, e := range lr.Errors {
+		issues = append(issues, security.LintIssue{
+			Field:    e.Field,
+			Message:  e.Message,
+			Severity: string(e.Severity),
+		})
+	}
+	return &security.LintReport{
+		Valid:  lr.Valid,
+		Count:  len(lr.Errors),
+		Issues: issues,
+	}
 }
 
 // severityCountsFromSummary maps the scanner's 4-rung severity ladder

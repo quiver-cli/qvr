@@ -36,48 +36,44 @@ that reads skills from a directory.
 
 ---
 
-## Why Quiver
+## Why Quiver?
 
-### 1 · The fastest agent skills manager
+### 1 · Built for agentic usage
 
-Built in **Go** on **native git** — no daemon, no service, no language runtime
-in the read path. Quiver splits work across three paths so the common case costs
-almost nothing:
+Developed in **Go** on **native git** — no daemon, no service, no language
+runtime in the read path. On a named-subset install from `anthropics/skills`,
+`qvr` lands a cold (first-time) install in **~1.3s** and a warm (cached) install
+in **~0.02s**:
 
-```
-  cold            warm             hot
-+-------+      +--------+      +-------+
-| fetch | ---> | status | ---> | read  |
-+-------+      +--------+      +-------+
- network        local git       follow link
- on update      no network      zero ops
-```
+<div align="center">
+  <img src="assets/benchmark.svg" alt="Named-subset install benchmark: qvr vs. skillshare, apm, asm — cold (first install) and warm (cached) wall-clock time" width="640" />
+</div>
 
-The hot path an agent hits on every skill load is a single symlink dereference —
-zero git operations, zero network. Worktrees are immutable and **SHA-keyed**, so
-switching versions is a symlink repoint, not a re-clone, and two projects on the
-same SHA share one copy on disk.
+Each skill is installed as a **git worktree** — a sparse checkout off a single
+bare clone of the source registry. The worktrees are immutable and
+**SHA-keyed**, so content is shared by construction: switching versions is a
+symlink repoint, not a re-clone, and two projects pinned to the same SHA share
+**one copy on disk**.
 
-### 2 · `qvr.lock` — governance and portability in one file
+### 2 · `qvr.lock` — provenance, portability, and team collaboration in one file
 
-The lock is the heart of the trust layer. It doesn't just pin a SHA; it records
-the **verdict of every gate** the skill passed, so the lock _is_ the audit
-trail. Each entry carries the resolved commit, a subtree hash of the exact
+The lock is the heart of the trust layer, and it's the unit of
+**collaboration**: one file, checked into the repo, that every teammate and CI
+runner resolves to the byte-identical skill set. It doesn't just pin a SHA; it
+records the **verdict of every gate** the skill passed, so the lock _is_ the
+audit trail. Each entry carries the resolved commit, a subtree hash of the exact
 bytes, the scan report hash + decision, and the provenance of the commit author:
 
 ```toml
-[skills.code-review]
-commit       = '4f2c…'                      # resolved SHA
-subtreeHash  = 'sha256:21dce9…'             # exact bytes installed
-
-[skills.code-review.verification.scan]
-reportSHA      = 'sha256:8e861d…'           # which scan report
-scannerVersion = '0.7.0'                    # which scanner produced it
-decision       = 'allowed'                  # the gate's verdict
-
-[skills.code-review.verification.provenance]
-provider        = 'git'
-signatureStatus = 'verified'                # git-native signature check
+[skills.frontend-design]
+registry     = 'anthropics/skills'
+source       = 'https://github.com/anthropics/skills.git'
+path         = 'skills/frontend-design'
+ref          = 'main'
+commit       = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'   # resolved SHA
+subtreeHash  = 'sha256:21dce9699042…'                       # exact bytes installed
+commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>'       # provenance
+targets      = ['claude']
 ```
 
 > [!NOTE]
@@ -85,24 +81,30 @@ signatureStatus = 'verified'                # git-native signature check
 > `qvr sync`, and you get the byte-identical, already-vetted skill set — not
 > "whatever the registry serves today."
 >
-> **Governance:** the lock is a verifiable record. `qvr lock verify --strict`
-> and `qvr sync --frozen` are CI gates that fail on any drift between what's on
-> disk and what the lock attests. Only skills in the lock are visible to the
-> agent — no ambient surprises.
+> **Provenance & governance:** the lock is a verifiable record.
+> `qvr lock verify
+> --strict` and `qvr sync --frozen` are CI gates that fail on
+> any drift between what's on disk and what the lock attests. Only skills in the
+> lock are visible to the agent — no ambient surprises.
 
 Provenance surfaces through `qvr provenance`; invalid signatures always block,
-and `qvr trust pin` enforces per-registry commit-author policy. Because a ref is
-a ref, you can install the same skill at two refs side by side and compare them
-in place:
+and `qvr trust pin` enforces per-registry commit-author policy. And because the
+lock pins **git refs** rather than opaque archives, version control becomes a
+first-class feature.
 
 ```bash
 qvr add code-review@v1.2.0
-qvr add code-review@v1.3.0-rc1 --as code-review-rc   # both coexist
+qvr add code-review@v1.3.0-rc1 --as code-review-rc   # both coexist for A/B
 ```
 
-### 3 · Traceability you can drill into
+### 4 · Traceability — the foundation for optimizing and evaluating skills
 
-Skills are software, so Quiver gives them the inspection surface software gets.
+You can't optimize what you can't measure. Traceability is the foundational
+block for **evaluating and improving** skills: once every run is attributable to
+the exact skill bytes that produced it, you can tell which version actually
+moved the needle and close the authoring loop on evidence rather than guesswork.
+
+Skills are software, so `qvr` gives them the inspection surface software gets.
 `qvr audit` captures each agent's native transcript **verbatim** (the lossless
 source of truth), then projects it into **OpenTelemetry** spans — Turn / Tool /
 Skill — using the GenAI semantic conventions. Spans serialize to standard
@@ -110,14 +112,16 @@ Skill — using the GenAI semantic conventions. Spans serialize to standard
 Honeycomb, an OTel Collector) unchanged. A `skill.*` attribute family tags which
 skill each span belongs to and whether that identity was _proven_ from the
 artifact the agent actually loaded — making skill attribution a first-class,
-queryable dimension of every trace.
+queryable dimension of every trace. Pair that proven attribution with the lock's
+per-ref pinning and an A/B test stops being anecdotal: each variant's spans
+trace back to a specific SHA.
 
 The embedded dashboard (`qvr ui`, baked into the binary) drills from a registry
 down to a single skill: its files, agent targets, scan results, version history,
 provenance, and recorded sessions.
 
 <div align="center">
-  <img src="assets/dashboard.png" alt="Quiver dashboard — frontend-design skill detail: files, targets, scan results, and version history" width="900" />
+  <img src="assets/dashboard.png" alt="qvr dashboard — frontend-design skill detail: files, targets, scan results, and version history" width="900" />
 </div>
 
 ---
@@ -218,7 +222,7 @@ Skills are software, so Quiver runs them through a software lifecycle — and it
 gate every consumer's install went through.
 
 ```
-source ─► registry add ─► scan ─► validate ─► add ─► edit ─► publish ─┐
+source ─► registry add ─► scan ─► lint ─► add ─► edit ─► publish ─┐
                           ▲                                           │
                           └──────────────── re-gate ◄─────────────────┘
               (authoring a new version re-enters the gate at scan)
@@ -257,7 +261,7 @@ repointed at the edit dir so they stay in sync.
 
 ```bash
 qvr init my-skill                          # scaffold a spec-valid skeleton
-qvr validate my-skill                      # check it against agentskills.io
+qvr lint my-skill                      # check it against agentskills.io
 qvr edit code-review                       # symlink -> real, editable dir
 qvr diff code-review                       # local changes vs. HEAD
 ```
@@ -265,14 +269,14 @@ qvr diff code-review                       # local changes vs. HEAD
 ### Publish upstream — `qvr publish`
 
 Push your edits back to the skill's origin. `qvr publish` re-runs the full
-validate + scan gate locally and never touches the remote until it passes —
-closing the loop.
+lint + scan gate locally and never touches the remote until it passes — closing
+the loop.
 
 ```bash
 qvr publish code-review -m "tighten checklist"      # push HEAD upstream
 qvr publish code-review --tag v1.3.0 -m "v1.3.0"    # cut a release, auto un-eject to the tag
 qvr publish code-review --fork <git-url> --migrate  # push to your fork and track it
-qvr publish code-review --dry-run                   # validate + scan, report target, no push
+qvr publish code-review --dry-run                   # lint + scan, report target, no push
 ```
 
 `qvr upgrade <skill>` follows the latest semver tag; `qvr switch <skill> <ref>`
@@ -360,8 +364,8 @@ Quiver builds on open standards rather than inventing its own formats.
 - **Skills follow [agentskills.io](https://agentskills.io/specification).** A
   skill is a directory with a `SKILL.md` whose YAML frontmatter carries `name` +
   `description` (plus optional `license`, `compatibility`, `allowed-tools`,
-  `metadata`). Quiver's parser (`pkg/skillspec`) and validator enforce the spec
-  — nothing Quiver-proprietary is required to author a skill.
+  `metadata`). Quiver's parser (`pkg/skillspec`) and linter enforce the spec —
+  nothing Quiver-proprietary is required to author a skill.
 - **Traces follow
   [OpenTelemetry](https://opentelemetry.io/docs/specs/semconv/gen-ai/).**
   Captures are stored verbatim and _projected_ into OTLP spans, stamped with a

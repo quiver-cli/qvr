@@ -26,11 +26,11 @@ const (
 )
 
 // advancedCommands are demoted out of the primary help list. Each is either an
-// authoring-time check (validate), a side effect of an everyday verb (docs runs
+// authoring-time check (lint), a side effect of an everyday verb (docs runs
 // inside sync), or a maintenance/introspection helper most users never invoke
 // directly. Behavior is unchanged — only their placement in `qvr --help` moves.
 var advancedCommands = map[string]bool{
-	"validate":   true, // runs implicitly inside init/add/publish/scan
+	"lint":       true, // advisory spec check; also rides along with `qvr scan`
 	"docs":       true, // runs as a side effect of `qvr sync`
 	"doctor":     true,
 	"provenance": true,
