@@ -93,8 +93,8 @@ qvr init my-first-skill
 # Edit SKILL.md with your instructions
 # ...
 
-# Validate it
-qvr validate my-first-skill
+# Lint it
+qvr lint my-first-skill
 
 # Publish to your registry
 cd my-first-skill

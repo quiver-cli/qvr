@@ -245,6 +245,31 @@ type ScanResult struct {
 	Components []Component `json:"components,omitempty"`
 	Findings   []Finding   `json:"findings"`
 	Summary    Summary     `json:"summary"`
+	// Lint is the agentskills.io spec-conformance report for the same skill.
+	// It is advisory — unlike Findings it never feeds the install gate — and
+	// is attached by callers (cmd) rather than the deterministic security
+	// pipeline, so the scanner itself stays free of the skill loader. Nil when
+	// no lint was attached (older callers, baseline scans). Additive and
+	// omitempty so the historical JSON shape is unchanged.
+	Lint *LintReport `json:"lint,omitempty"`
+}
+
+// LintReport is the spec-lint summary that rides alongside a scan result.
+// Count is len(Issues), surfaced separately so the UI can render a
+// `lint:(count)` badge without normalising a possibly-null array.
+type LintReport struct {
+	Valid  bool        `json:"valid"`
+	Count  int         `json:"count"`
+	Issues []LintIssue `json:"issues,omitempty"`
+}
+
+// LintIssue is one spec-conformance problem. It mirrors the skill package's
+// lint error in a security-local shape so ScanResult stays decoupled from the
+// skill loader (no import cycle, scanner stays pure).
+type LintIssue struct {
+	Field    string `json:"field"`
+	Message  string `json:"message"`
+	Severity string `json:"severity"`
 }
 
 // scanTimestampLayout matches the wire shape requested in the public

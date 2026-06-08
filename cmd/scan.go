@@ -148,6 +148,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("scan: %w", err)
 	}
+	result.Lint = lintReportFor(s)
 	if scanAgainst != "" {
 		ctx := cmd.Context()
 		if ctx == nil {
@@ -374,6 +375,7 @@ func effectiveScanFormat(global output.Format) string {
 func renderScanText(result *security.ScanResult, failOn security.Severity) {
 	if len(result.Findings) == 0 {
 		printer.Success(fmt.Sprintf("scan clean for %s (%d check(s) ran)", result.Skill, len(result.Checks)))
+		renderLintText(result)
 		return
 	}
 
@@ -389,6 +391,21 @@ func renderScanText(result *security.ScanResult, failOn security.Severity) {
 
 	fmt.Fprintf(printer.Out, "\nsummary: %d critical, %d error, %d warning, %d info — fail-on=%s\n",
 		result.Summary.Critical, result.Summary.Error, result.Summary.Warning, result.Summary.Info, failOn)
+	renderLintText(result)
+}
+
+// renderLintText prints the advisory spec-lint summary that rides alongside a
+// scan. Silent when no lint was attached or the skill passes — lint never
+// blocks, so a clean skill says nothing extra and a non-conformant one prints
+// a "lint: N issue(s)" line plus each issue, clearly marked advisory.
+func renderLintText(result *security.ScanResult) {
+	if result.Lint == nil || result.Lint.Valid {
+		return
+	}
+	fmt.Fprintf(printer.Out, "lint: %d issue(s) (advisory — does not block install)\n", result.Lint.Count)
+	for _, is := range result.Lint.Issues {
+		fmt.Fprintf(printer.Out, "  [%s] %s: %s\n", is.Severity, is.Field, is.Message)
+	}
 }
 
 func exceedsThreshold(result *security.ScanResult, threshold security.Severity) bool {

@@ -94,7 +94,7 @@ description: seed.
 	}
 }
 
-func TestPublish_Validates(t *testing.T) {
+func TestPublish_Lints(t *testing.T) {
 	h := newHarness(t)
 	remote := seedRemote(t, map[string]string{"seed": `---
 name: seed
@@ -104,7 +104,7 @@ description: x
 `})
 	h.addRegistry(t, "acme", remote)
 
-	// Skill with empty description → validator rejects.
+	// Skill with empty description → publish lint gate rejects.
 	bad := filepath.Join(t.TempDir(), "bad-skill")
 	if err := os.MkdirAll(bad, 0o755); err != nil {
 		t.Fatalf("mkdir bad: %v", err)
@@ -118,8 +118,8 @@ description: x
 		LocalPath: bad,
 		Registry:  "acme",
 	})
-	if err == nil || !strings.Contains(err.Error(), "validation failed") {
-		t.Errorf("expected validation failure, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "lint failed") {
+		t.Errorf("expected lint failure, got %v", err)
 	}
 }
 

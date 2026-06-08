@@ -460,7 +460,7 @@ func writeLocalSkill(t *testing.T, name, description string) string {
 }
 
 // assertHasError fails the test if result doesn't have a matching error.
-func assertHasError(t *testing.T, result *skill.ValidationResult, field, substr string) {
+func assertHasError(t *testing.T, result *skill.LintResult, field, substr string) {
 	t.Helper()
 	for _, e := range result.Errors {
 		if e.Field == field && strings.Contains(strings.ToLower(e.Message), strings.ToLower(substr)) {

@@ -1182,6 +1182,7 @@ func (s *uiServer) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("scan: %w", err))
 		return
 	}
+	result.Lint = lintReportFor(loaded)
 
 	// Apply the same threshold the install-time gate recorded into the lock
 	// (block_severity, default critical) so "live verdict" is the recorded

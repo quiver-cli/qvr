@@ -300,6 +300,14 @@ export interface ScanResult {
     warning: number;
     info: number;
   };
+  // Advisory agentskills.io spec-lint that rides alongside the scan. Absent on
+  // older payloads; `valid` skills omit issues. Never blocks an install — the
+  // UI surfaces it as a `lint:(count)` badge next to the security counts.
+  lint?: {
+    valid: boolean;
+    count: number;
+    issues?: { field: string; message: string; severity: string }[];
+  };
 }
 
 // Lock-scale severity counts (matches model.SeverityCounts / the recorded

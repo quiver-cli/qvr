@@ -116,20 +116,20 @@ diff -ruN \
 
 ## CI / CD integration
 
-### Validate skills in CI
+### Lint skills in CI
 
 ```yaml
-# .github/workflows/validate-skills.yml
-name: Validate Skills
+# .github/workflows/lint-skills.yml
+name: Lint Skills
 on: [pull_request]
 jobs:
-  validate:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: |
           go install github.com/astra-sh/qvr@latest
-          qvr validate skills/ --output json
+          qvr lint skills/ --output json
           qvr scan skills/ --format json
 ```
 
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           go install github.com/astra-sh/qvr@latest
-          qvr validate skills/
+          qvr lint skills/
           qvr scan skills/
 ```
 

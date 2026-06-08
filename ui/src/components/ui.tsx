@@ -42,9 +42,18 @@ export function toneFor(value?: string): Tone {
   }
 }
 
-export function Pill({ children, tone }: { children: ReactNode; tone?: Tone }) {
+export function Pill({
+  children,
+  tone,
+  title,
+}: {
+  children: ReactNode;
+  tone?: Tone;
+  title?: string;
+}) {
   return (
     <span
+      title={title}
       className={`inline-flex items-center rounded-[3px] px-2 py-0.5 text-[0.6875rem] font-semibold uppercase leading-5 ring-1 ring-inset ${
         toneClasses[tone ?? "gray"]
       }`}

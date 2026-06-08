@@ -9,7 +9,7 @@ import (
 	"github.com/astra-sh/qvr/internal/model"
 )
 
-// Severity represents the severity of a validation error.
+// Severity represents the severity of a lint issue.
 type Severity string
 
 const (
@@ -17,49 +17,54 @@ const (
 	SeverityWarning Severity = "warning"
 )
 
-// ValidationError represents a single validation issue.
-type ValidationError struct {
+// LintError represents a single lint issue.
+type LintError struct {
 	Field    string   `json:"field"`
 	Message  string   `json:"message"`
 	Severity Severity `json:"severity"`
 }
 
-func (v ValidationError) Error() string {
+func (v LintError) Error() string {
 	return fmt.Sprintf("[%s] %s: %s", v.Severity, v.Field, v.Message)
 }
 
-// ValidationResult holds all validation errors for a skill.
-type ValidationResult struct {
-	Valid  bool              `json:"valid"`
-	Path   string            `json:"path"`
-	Errors []ValidationError `json:"errors"`
+// LintResult holds all lint issues for a skill.
+type LintResult struct {
+	Valid  bool        `json:"valid"`
+	Path   string      `json:"path"`
+	Errors []LintError `json:"errors"`
 }
 
 var nameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
-// Validate checks a loaded skill against the agentskills.io specification.
-func Validate(s *model.Skill) *ValidationResult {
-	result := &ValidationResult{
+// Lint checks a loaded skill against the agentskills.io specification.
+//
+// Lint is advisory: callers surface its result (via `qvr lint`, `qvr scan`,
+// and the dashboard) but installs proceed regardless. The one exception is
+// `qvr publish`, which gates on Lint so non-conformant skills aren't pushed
+// into a shared registry.
+func Lint(s *model.Skill) *LintResult {
+	result := &LintResult{
 		Path:   s.Dir,
-		Errors: []ValidationError{},
+		Errors: []LintError{},
 	}
 
-	validateName(s, result)
-	validateDescription(s, result)
-	validateLicense(s, result)
-	validateCompatibility(s, result)
-	validateAllowedTools(s, result)
-	validateNameDirMatch(s, result)
+	lintName(s, result)
+	lintDescription(s, result)
+	lintLicense(s, result)
+	lintCompatibility(s, result)
+	lintAllowedTools(s, result)
+	lintNameDirMatch(s, result)
 
 	result.Valid = len(result.Errors) == 0
 	return result
 }
 
-func validateName(s *model.Skill, r *ValidationResult) {
+func lintName(s *model.Skill, r *LintResult) {
 	name := s.Frontmatter.Name
 
 	if name == "" {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "name",
 			Message:  "name is required",
 			Severity: SeverityError,
@@ -68,7 +73,7 @@ func validateName(s *model.Skill, r *ValidationResult) {
 	}
 
 	if utf8.RuneCountInString(name) > 64 {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "name",
 			Message:  fmt.Sprintf("name must be 1-64 characters, got %d", utf8.RuneCountInString(name)),
 			Severity: SeverityError,
@@ -76,7 +81,7 @@ func validateName(s *model.Skill, r *ValidationResult) {
 	}
 
 	if !nameRegex.MatchString(name) {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "name",
 			Message:  "name must contain only lowercase alphanumeric characters and hyphens, and must not start or end with a hyphen",
 			Severity: SeverityError,
@@ -84,7 +89,7 @@ func validateName(s *model.Skill, r *ValidationResult) {
 	}
 
 	if strings.Contains(name, "--") {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "name",
 			Message:  "name must not contain consecutive hyphens",
 			Severity: SeverityError,
@@ -92,11 +97,11 @@ func validateName(s *model.Skill, r *ValidationResult) {
 	}
 }
 
-func validateDescription(s *model.Skill, r *ValidationResult) {
+func lintDescription(s *model.Skill, r *LintResult) {
 	desc := s.Frontmatter.Description
 
 	if strings.TrimSpace(desc) == "" {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "description",
 			Message:  "description is required and must not be empty",
 			Severity: SeverityError,
@@ -105,7 +110,7 @@ func validateDescription(s *model.Skill, r *ValidationResult) {
 	}
 
 	if utf8.RuneCountInString(desc) > 1024 {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "description",
 			Message:  fmt.Sprintf("description must be 1-1024 characters, got %d", utf8.RuneCountInString(desc)),
 			Severity: SeverityError,
@@ -113,18 +118,18 @@ func validateDescription(s *model.Skill, r *ValidationResult) {
 	}
 }
 
-func validateLicense(s *model.Skill, r *ValidationResult) {
+func lintLicense(s *model.Skill, r *LintResult) {
 	// License is optional; if present, it must be a non-empty string (already typed as string).
-	// No additional validation per spec.
+	// No additional lint per spec.
 }
 
-func validateCompatibility(s *model.Skill, r *ValidationResult) {
+func lintCompatibility(s *model.Skill, r *LintResult) {
 	compat := s.Frontmatter.Compatibility
 	if compat == "" {
 		return
 	}
 	if utf8.RuneCountInString(compat) > 500 {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "compatibility",
 			Message:  fmt.Sprintf("compatibility must be 1-500 characters, got %d", utf8.RuneCountInString(compat)),
 			Severity: SeverityError,
@@ -132,17 +137,17 @@ func validateCompatibility(s *model.Skill, r *ValidationResult) {
 	}
 }
 
-func validateAllowedTools(s *model.Skill, r *ValidationResult) {
+func lintAllowedTools(s *model.Skill, r *LintResult) {
 	// allowed-tools is optional; if present, it's a space-delimited string.
-	// No further validation per spec (experimental field).
+	// No further lint per spec (experimental field).
 }
 
-func validateNameDirMatch(s *model.Skill, r *ValidationResult) {
+func lintNameDirMatch(s *model.Skill, r *LintResult) {
 	if s.Frontmatter.Name == "" || s.Name == "" {
 		return
 	}
 	if s.Frontmatter.Name != s.Name {
-		r.Errors = append(r.Errors, ValidationError{
+		r.Errors = append(r.Errors, LintError{
 			Field:    "name",
 			Message:  fmt.Sprintf("name %q must match directory name %q", s.Frontmatter.Name, s.Name),
 			Severity: SeverityError,

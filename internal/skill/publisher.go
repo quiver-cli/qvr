@@ -67,8 +67,12 @@ type Publisher struct {
 // NewPublisher constructs a Publisher.
 func NewPublisher(gc git.GitClient) *Publisher { return &Publisher{Git: gc} }
 
-// Publish validates the local skill, clones the target registry into a temp
+// Publish lints the local skill, clones the target registry into a temp
 // dir, copies the skill into skills/<name>/, commits, and pushes.
+//
+// Publish is the one place lint is enforced rather than advisory: a skill
+// pushed into a shared registry must conform to the agentskills.io spec, so a
+// lint failure aborts before any remote is touched.
 func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishResult, error) {
 	abs, err := filepath.Abs(req.LocalPath)
 	if err != nil {
@@ -78,12 +82,12 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidSkillPath, err)
 	}
-	if vr := Validate(skill); !vr.Valid {
+	if lr := Lint(skill); !lr.Valid {
 		var msgs []string
-		for _, e := range vr.Errors {
+		for _, e := range lr.Errors {
 			msgs = append(msgs, e.Error())
 		}
-		return nil, fmt.Errorf("skill validation failed:\n  %s", strings.Join(msgs, "\n  "))
+		return nil, fmt.Errorf("skill lint failed:\n  %s", strings.Join(msgs, "\n  "))
 	}
 
 	cfg, err := config.Load()

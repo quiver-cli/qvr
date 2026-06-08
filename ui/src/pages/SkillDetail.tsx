@@ -239,6 +239,11 @@ function ProjectScanPanel({
                 ["info", scan.summary.info, "gray"],
               ]}
             />
+            {scan.lint && !scan.lint.valid && (
+              <Pill tone="amber" title="agentskills.io spec lint — advisory, does not block install">
+                lint:{scan.lint.count}
+              </Pill>
+            )}
           </div>
           <FindingsList findings={scan.findings} />
         </div>
