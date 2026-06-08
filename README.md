@@ -222,7 +222,7 @@ Skills are software, so Quiver runs them through a software lifecycle — and it
 gate every consumer's install went through.
 
 ```
-source ─► registry add ─► scan ─► lint ─► add ─► edit ─► publish ─┐
+source ─► registry add ─► scan ─► lint ─► add ─► edit ─► publish ─────┐
                           ▲                                           │
                           └──────────────── re-gate ◄─────────────────┘
               (authoring a new version re-enters the gate at scan)
