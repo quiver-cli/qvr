@@ -202,6 +202,45 @@ func (m *Manager) AddWithOptions(ctx context.Context, name, url string, opts Add
 	return reg, nil
 }
 
+// cloneExists reports whether a materialized bare clone lives at repoPath. It
+// probes the HEAD file that `git clone --mirror` always writes, so a wiped or
+// absent directory reads as "missing". Cheap (one stat) — safe on the hot path.
+func cloneExists(repoPath string) bool {
+	_, err := os.Stat(filepath.Join(repoPath, "HEAD"))
+	return err == nil
+}
+
+// ensureCloned self-heals the reconstructible derived state under
+// ~/.quiver/registries/ (#224). The bare clones are rebuildable from
+// config.yaml + the URL, so a missing clone should be re-cloned rather than
+// wedging the registry (and every project that resolves skills against it).
+// It's a no-op — a single stat — when the clone is already present, so callers
+// on the resolve hot path pay almost nothing. Returns whether a re-clone
+// actually happened so callers can skip a redundant fetch on a fresh clone.
+func (m *Manager) ensureCloned(ctx context.Context, name, url string) (cloned bool, err error) {
+	repoPath := RegistryPath(name)
+	if cloneExists(repoPath) {
+		return false, nil
+	}
+	if url == "" {
+		return false, fmt.Errorf("registry %q has no configured URL to re-clone from", name)
+	}
+	// `git clone --mirror` doesn't create the parent (org) directory.
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		return false, fmt.Errorf("create registry parent dir: %w", err)
+	}
+	// Match the cold-start default: a shallow depth-1 clone of the default
+	// branch, exactly like a fresh machine cloning on first use. A registry
+	// that needs full history can be re-deepened with `qvr registry add --full`.
+	if err := m.Git.BareClone(ctx, url, repoPath, git.CloneOptions{Depth: DefaultCloneDepth}); err != nil {
+		return false, fmt.Errorf("re-clone missing registry %s: %w", name, err)
+	}
+	// The cached index (if any survived) predates the fresh clone — drop it so
+	// the next Index() rebuilds from the re-cloned content.
+	_ = Invalidate(name)
+	return true, nil
+}
+
 // Deepen converts an existing latest-only (shallow, single-branch) registry
 // clone into a full clone in place — all branches and tags, so any version
 // becomes installable — without a remove + re-add. This backs the `--full`
@@ -394,9 +433,20 @@ func (m *Manager) updateOne(ctx context.Context, cfg *config.Config, n string) m
 		},
 	}
 
-	if err := m.Git.Fetch(ctx, repoPath); err != nil {
-		status.Error = fmt.Sprintf("fetch failed: %v", err)
+	// Self-heal a missing bare clone (#224): if the directory was wiped while
+	// the config entry survived, re-clone from the URL instead of fetching a
+	// non-existent dir (which dies with "cannot change to '.../<name>.git'").
+	// A fresh clone is already at the tip, so skip the redundant fetch.
+	cloned, err := m.ensureCloned(ctx, n, regCfg.URL)
+	if err != nil {
+		status.Error = fmt.Sprintf("re-clone failed: %v", err)
 		return status
+	}
+	if !cloned {
+		if err := m.Git.Fetch(ctx, repoPath); err != nil {
+			status.Error = fmt.Sprintf("fetch failed: %v", err)
+			return status
+		}
 	}
 
 	// A fetch may have moved HEAD, so drop the cache and rebuild via
@@ -796,6 +846,15 @@ func (m *Manager) FindAllSkillLocations(skillName string) ([]*SkillLocation, err
 // default-branch fallback, and SkillLocation shape stay in one place.
 func (m *Manager) findSkillInRegistry(skillName, regName, regURL string) *SkillLocation {
 	repoPath := RegistryPath(regName)
+	// Self-heal a wiped bare clone before indexing (#224) so `qvr sync` /
+	// `qvr add` reconstruct missing derived state from config.yaml + the URL
+	// instead of failing every locked skill with "not found in any registry".
+	// No ctx flows into resolution, so use a background context — resolution
+	// isn't cancellable today. The stat short-circuits when the clone exists,
+	// keeping the resolve hot path allocation-free.
+	if _, err := m.ensureCloned(context.Background(), regName, regURL); err != nil {
+		return nil
+	}
 	entries, _, err := m.Index(regName, repoPath)
 	if err != nil {
 		return nil

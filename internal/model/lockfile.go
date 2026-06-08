@@ -242,10 +242,18 @@ func (e *LockEntry) IsEdit() bool {
 }
 
 // LockFile is the on-disk record of installed skills.
+//
+// The lockfile is qvr's pillar of portability, governance, and reproducibility:
+// committed to the repo, it is the resolved source of truth a fresh clone
+// replays to reconstruct a byte-identical skill set. It is self-sufficient —
+// `qvr sync` reproduces from the lock alone. Declarative project intent (the
+// skills a project wants, its default agent targets) lives in qvr.toml; the
+// lock records the resolved state those declarations pin to.
 type LockFile struct {
-	Version int                   `json:"version" toml:"version"`
-	Skills  map[string]*LockEntry `json:"skills" toml:"skills"`
-	path    string                // canonical write destination — not serialized
+	Version int `json:"version" toml:"version"`
+
+	Skills map[string]*LockEntry `json:"skills" toml:"skills"`
+	path   string                // canonical write destination — not serialized
 }
 
 // NewLockFile returns an empty lock file at the given path.

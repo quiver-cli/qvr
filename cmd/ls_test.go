@@ -9,7 +9,7 @@ import (
 func TestLocateSkillDir_FindsViaSymlink(t *testing.T) {
 	src := writeFullSkill(t, "demo")
 	project := t.TempDir()
-	linkSkillInto(t, project, ".cursor/rules", "demo", src)
+	linkSkillInto(t, project, ".agents/skills", "demo", src)
 
 	got, err := locateSkillDir("demo", project, []string{"claude", "cursor"})
 	if err != nil {

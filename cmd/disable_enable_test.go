@@ -17,7 +17,7 @@ func TestDisableSkill_RemovesSymlinks(t *testing.T) {
 	src := writeFullSkill(t, "demo")
 	project := t.TempDir()
 	linkSkillInto(t, project, ".claude/skills", "demo", src)
-	linkSkillInto(t, project, ".cursor/rules", "demo", src)
+	linkSkillInto(t, project, ".agents/skills", "demo", src)
 
 	entry := &model.LockEntry{
 		Name:    "demo",
@@ -32,7 +32,7 @@ func TestDisableSkill_RemovesSymlinks(t *testing.T) {
 	if len(removed) != 2 {
 		t.Errorf("want 2 removed symlinks, got %d", len(removed))
 	}
-	for _, rel := range []string{".claude/skills/demo", ".cursor/rules/demo"} {
+	for _, rel := range []string{".claude/skills/demo", ".agents/skills/demo"} {
 		if _, err := os.Lstat(filepath.Join(project, rel)); !os.IsNotExist(err) {
 			t.Errorf("symlink %s should be gone, got err=%v", rel, err)
 		}
@@ -79,7 +79,7 @@ func TestEnableSkill_RestoresSymlinks(t *testing.T) {
 	if len(created) != 2 {
 		t.Errorf("want 2 created symlinks, got %d", len(created))
 	}
-	for _, rel := range []string{".claude/skills/demo", ".cursor/rules/demo"} {
+	for _, rel := range []string{".claude/skills/demo", ".agents/skills/demo"} {
 		full := filepath.Join(project, rel)
 		if err := skill.VerifyTarget(full, src); err != nil {
 			t.Errorf("symlink %s should point at %s: %v", full, src, err)

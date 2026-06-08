@@ -76,7 +76,7 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 	}
 
 	canonicalTarget := pickCanonicalTarget(e.Targets)
-	t, ok := model.Targets[canonicalTarget]
+	t, ok := model.LookupTarget(canonicalTarget)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, canonicalTarget)
 	}
@@ -180,7 +180,7 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 		if target == canonicalTarget {
 			continue
 		}
-		st, ok := model.Targets[target]
+		st, ok := model.LookupTarget(target)
 		if !ok {
 			continue
 		}

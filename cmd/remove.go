@@ -44,6 +44,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), removeGlobal)
+	projPath := model.DefaultProjectPath(projectRoot)
 
 	var removed []string
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
@@ -83,12 +84,27 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		wt := git.NewGoGitWorktree()
 		installer := skill.NewInstaller(newRegistryManager(gc), wt, gc)
 
+		var coords []string
 		for _, name := range args {
+			// Capture the qvr.toml coordinate from the in-memory lock BEFORE the
+			// removal so we can drop the matching declarative entry afterwards.
+			entry, _ := lock.Get(name)
+			coord := model.SkillCoordinate(entry)
 			req := skill.InstallRequest{ProjectRoot: projectRoot, Global: removeGlobal, Force: removeForce}
 			if err := installer.Remove(name, req); err != nil {
 				return fmt.Errorf("remove %s: %w", name, err)
 			}
 			removed = append(removed, name)
+			if coord != "" {
+				coords = append(coords, coord)
+			}
+		}
+		// Write-through: stop declaring the removed skills in qvr.toml so a later
+		// `qvr sync` doesn't resurrect them. Global removals have no project file.
+		if !removeGlobal {
+			if perr := dropProjectFileSkills(projPath, coords); perr != nil {
+				printer.Warning(fmt.Sprintf("removed from qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+			}
 		}
 		return nil
 	})

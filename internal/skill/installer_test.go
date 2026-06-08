@@ -42,7 +42,7 @@ func TestInstall_BasicFlow(t *testing.T) {
 	}
 
 	// Symlinks exist for both targets.
-	for _, target := range []string{".claude/skills", ".cursor/rules"} {
+	for _, target := range []string{".claude/skills", ".agents/skills"} {
 		linkPath := filepath.Join(h.project, target, "code-review")
 		info, err := os.Lstat(linkPath)
 		if err != nil {

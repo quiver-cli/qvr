@@ -20,11 +20,13 @@ var configValueValidators = map[string]func(string) (string, error){
 	"default_target": func(v string) (string, error) {
 		parts := strings.Split(v, ",")
 		for i, p := range parts {
-			parts[i] = strings.TrimSpace(p)
-			if _, ok := model.Targets[parts[i]]; !ok {
+			canonical, ok := model.CanonicalTarget(strings.TrimSpace(p))
+			if !ok {
 				return "", fmt.Errorf("invalid agent target %q; valid: %s",
-					parts[i], strings.Join(model.TargetNames(), ", "))
+					strings.TrimSpace(p), strings.Join(model.TargetNames(), ", "))
 			}
+			// Normalise aliases to the canonical name so config stays stable.
+			parts[i] = canonical
 		}
 		return strings.Join(parts, ","), nil
 	},

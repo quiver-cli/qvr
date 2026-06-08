@@ -132,6 +132,28 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	checks = append(checks, unref...)
 
+	// qvr.toml ⟷ qvr.lock consistency (project scope only — qvr.toml is
+	// project-level). Informational unless --strict.
+	if !doctorGlobal {
+		var projectLock *model.LockFile
+		for _, s := range locks {
+			if !s.Lock.IsGlobal(config.Dir()) {
+				projectLock = s.Lock
+				break
+			}
+		}
+		if projectLock != nil {
+			drift := scanProjectFileDrift(projectLock, model.DefaultProjectPath(projectRoot))
+			if doctorStrict {
+				for i := range drift {
+					drift[i].OK = false
+				}
+				failed += len(drift)
+			}
+			checks = append(checks, drift...)
+		}
+	}
+
 	// When the project lock is empty but the user has skills installed in
 	// the global lock, "0/0 checks passed" reads like success and hides the
 	// fact that nothing was actually inspected. Surface a clear hint so CI
@@ -168,7 +190,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 		orphanCount, lockFailed := 0, 0
 		for _, c := range checks {
-			if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" {
+			if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" || c.Type == "project-file-drift" {
 				orphanCount++
 				continue
 			}
@@ -520,6 +542,60 @@ func scanUnreferencedRegistries(cfg *config.Config, locks []scopedLock, projectR
 	return checks
 }
 
+// scanProjectFileDrift compares qvr.toml (declarative intent) against the
+// project lock (resolved state) and reports divergence: skills declared in
+// qvr.toml the lock lacks, portable lock entries missing from qvr.toml, and ref
+// mismatches. Write-through on every mutating command keeps the two in step, so
+// drift means a hand-edit or a git merge — informational by default, promoted by
+// --strict. Skipped entirely when the project hasn't adopted qvr.toml.
+func scanProjectFileDrift(lock *model.LockFile, projPath string) []doctorCheck {
+	if _, err := os.Stat(projPath); os.IsNotExist(err) {
+		return nil // project hasn't adopted qvr.toml — nothing to reconcile
+	}
+	proj, err := model.ReadProjectFile(projPath)
+	if err != nil {
+		return []doctorCheck{{Type: "project-file-drift", Path: projPath, OK: true, Message: "qvr.toml unreadable: " + err.Error()}}
+	}
+
+	lockByCoord := make(map[string]*model.LockEntry)
+	var lockCoords []string
+	for _, e := range lock.Entries() {
+		if c := model.SkillCoordinate(e); c != "" {
+			lockByCoord[c] = e
+			lockCoords = append(lockCoords, c)
+		}
+	}
+	sort.Strings(lockCoords)
+
+	var checks []doctorCheck
+	for _, coord := range proj.SkillCoordinates() {
+		ref := proj.Skills[coord]
+		e, ok := lockByCoord[coord]
+		if !ok {
+			checks = append(checks, doctorCheck{
+				Type: "project-file-drift", Skill: coord, OK: true,
+				Message: fmt.Sprintf("declared in qvr.toml (@%s) but not in qvr.lock — run `qvr sync`", ref),
+			})
+			continue
+		}
+		if e.Ref != ref {
+			checks = append(checks, doctorCheck{
+				Type: "project-file-drift", Skill: coord, OK: true,
+				Message: fmt.Sprintf("qvr.toml @%s vs qvr.lock @%s — run `qvr lock --from-toml` (apply qvr.toml) or `qvr sync` (keep the lock)", ref, e.Ref),
+			})
+		}
+	}
+	for _, coord := range lockCoords {
+		if _, ok := proj.Skills[coord]; !ok {
+			checks = append(checks, doctorCheck{
+				Type: "project-file-drift", Skill: coord, OK: true,
+				Message: "in qvr.lock but not qvr.toml — run `qvr sync` to record it",
+			})
+		}
+	}
+	return checks
+}
+
 // scanWorktreeOrphans finds every git worktree under the worktrees root
 // (identified by a `.git` marker, which `git worktree add` always creates)
 // and emits an informational check for any not in the claimed set. We use
@@ -663,11 +739,25 @@ func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}, globa
 	// so it doesn't permanently red-exit CI for users with a mixed
 	// agent-dir setup.
 	managedPrefixes := skill.ManagedRoots(projectRoot)
-	for tname, t := range model.Targets {
+	// Targets can share a skills dir (the AGENTS.md `.agents/skills` convention,
+	// or `.claude/skills` shared by claude and xcode-claude). Walk each unique
+	// dir once so a stray symlink isn't reported under every target that maps to
+	// it.
+	scanned := make(map[string]struct{}, len(model.Targets))
+	// Iterate in canonical (sorted) name order so that when several targets
+	// share a skills dir (e.g. claude and xcode-claude both map .claude/skills),
+	// the orphan is consistently attributed to the alphabetically-first target
+	// rather than to whichever map iteration happened to land first.
+	for _, tname := range model.TargetNames() {
+		t := model.Targets[tname]
 		dir, derr := agentDirForScope(t, projectRoot, global)
 		if derr != nil || dir == "" {
 			continue
 		}
+		if _, dup := scanned[filepath.Clean(dir)]; dup {
+			continue
+		}
+		scanned[filepath.Clean(dir)] = struct{}{}
 		info, err := os.Stat(dir)
 		if err != nil || !info.IsDir() {
 			continue
@@ -724,7 +814,7 @@ func renderDoctorCheck(c doctorCheck) {
 		// Orphan / unreferenced rows are informational, not "passing" —
 		// they need a distinct glyph or users skim past them assuming
 		// everything's fine.
-		if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" {
+		if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" || c.Type == "project-file-drift" {
 			marker = "!"
 		}
 	}

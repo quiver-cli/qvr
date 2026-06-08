@@ -156,7 +156,8 @@ func TestEjectToTarget_MultiTargetSiblingSymlinks(t *testing.T) {
 	}
 
 	// codex should be a symlink pointing at the canonical (relative).
-	sibling := filepath.Join(projectRoot, ".codex", "skills", "demo")
+	// codex's project skills dir follows the shared AGENTS.md convention.
+	sibling := filepath.Join(projectRoot, ".agents", "skills", "demo")
 	siblingInfo, err := os.Lstat(sibling)
 	if err != nil {
 		t.Fatalf("lstat sibling: %v", err)

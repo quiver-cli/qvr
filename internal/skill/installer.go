@@ -761,7 +761,7 @@ func (in *Installer) RemoveFrom(name string, req InstallRequest, lock *model.Loc
 // This powers `qvr add --local <path>` for local skill development.
 func (in *Installer) InstallLocal(localPath string, req InstallRequest) (*InstallResult, error) {
 	for _, t := range req.Targets {
-		if _, ok := model.Targets[t]; !ok {
+		if _, ok := model.LookupTarget(t); !ok {
 			return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, t)
 		}
 	}
@@ -1180,7 +1180,7 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 		return nil, fmt.Errorf("at least one --target is required")
 	}
 	for _, t := range req.Targets {
-		if _, ok := model.Targets[t]; !ok {
+		if _, ok := model.LookupTarget(t); !ok {
 			return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, t)
 		}
 	}
