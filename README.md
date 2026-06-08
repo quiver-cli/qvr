@@ -38,7 +38,7 @@ that reads skills from a directory.
 
 ## Why Quiver?
 
-### 1 · Built for agentic usage
+### 1. Built for agentic usage
 
 Developed in **Go** on **native git** — no daemon, no service, no language
 runtime in the read path. On a named-subset install from `anthropics/skills`,
@@ -55,7 +55,7 @@ bare clone of the source registry. The worktrees are immutable and
 symlink repoint, not a re-clone, and two projects pinned to the same SHA share
 **one copy on disk**.
 
-### 2 · `qvr.lock` — provenance, portability, and team collaboration in one file
+### 2. `qvr.lock` — provenance, portability, and team collaboration in one file
 
 The lock is the heart of the trust layer, and it's the unit of
 **collaboration**: one file, checked into the repo, that every teammate and CI
@@ -97,7 +97,7 @@ qvr add code-review@v1.2.0
 qvr add code-review@v1.3.0-rc1 --as code-review-rc   # both coexist for A/B
 ```
 
-### 4 · Traceability — the foundation for optimizing and evaluating skills
+### 3. Traceability — the foundation for optimizing and evaluating skills
 
 You can't optimize what you can't measure. Traceability is the foundational
 block for **evaluating and improving** skills: once every run is attributable to
