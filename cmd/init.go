@@ -125,9 +125,9 @@ func runInitProjectScoped(name string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
-	t, ok := model.Targets[initTarget]
+	t, ok := model.LookupTarget(initTarget)
 	if !ok {
-		return fmt.Errorf("unknown target %q (try claude|cursor|copilot|codex|windsurf|project)", initTarget)
+		return fmt.Errorf("unknown target %q (run `qvr target list` to see all supported agents)", initTarget)
 	}
 
 	canonicalRel := filepath.Join(t.LocalDir, name)
@@ -187,6 +187,15 @@ func runInitProjectScoped(name string) error {
 	}
 	registry.TouchProject(lockPath)
 
+	// Scaffold qvr.toml (the declarative front door) so the project starts with
+	// a committable config carrying its default agent target. Skipped for the
+	// global lane (no project file) and never clobbers an existing file.
+	if !initGlobal {
+		if perr := scaffoldProjectFile(projectRoot); perr != nil {
+			printer.Warning(fmt.Sprintf("created the skill but failed to scaffold qvr.toml (%v)", perr))
+		}
+	}
+
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(map[string]any{
 			"name":      name,
@@ -201,6 +210,41 @@ func runInitProjectScoped(name string) error {
 	printer.Info(fmt.Sprintf("  Edit %s/SKILL.md, then:", canonicalRel))
 	printer.Info(fmt.Sprintf("    qvr publish %s --tag v0.1.0 --fork git@github.com:you/%s.git --migrate", name, name))
 	return nil
+}
+
+// scaffoldProjectFile writes a starter qvr.toml at the project root if one does
+// not already exist. It seeds [project] with the directory name, a 0.1.0
+// version, and the init target as the default, plus a comment banner that
+// documents the reserved (inert) [plugins]/[hooks]/[mcp] sections. Existing
+// files are never clobbered — adoption beyond first scaffold flows through
+// `qvr add` / `qvr target`.
+func scaffoldProjectFile(projectRoot string) error {
+	projPath := model.DefaultProjectPath(projectRoot)
+	if _, err := os.Stat(projPath); err == nil {
+		return nil // already exists — leave it alone
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	proj := model.NewProjectFile(projPath)
+	proj.Project.Name = filepath.Base(projectRoot)
+	proj.Project.Version = "0.1.0"
+	if canonicalName, ok := model.CanonicalTarget(initTarget); ok {
+		proj.Project.DefaultTargets = []string{canonicalName}
+	} else {
+		proj.Project.DefaultTargets = []string{initTarget}
+	}
+	body, err := model.MarshalProjectFile(proj)
+	if err != nil {
+		return err
+	}
+	const banner = "# qvr.toml — declarative project config (the front door).\n" +
+		"# qvr.lock remains the resolved, self-sufficient lockfile.\n" +
+		"# Skills you add with `qvr add` are recorded under [skills].\n" +
+		"# Reserved for future milestones (documented but inert):\n" +
+		"#   [plugins]   # plugins -> skills expansion\n" +
+		"#   [hooks]     # lifecycle hooks\n" +
+		"#   [mcp]       # MCP servers\n\n"
+	return os.WriteFile(projPath, append([]byte(banner), body...), 0o644)
 }
 
 // scaffoldSkillContent writes SKILL.md and any type-specific extras into dir.

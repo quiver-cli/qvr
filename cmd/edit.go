@@ -59,6 +59,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// the single copy every project shares. The global lock is read solely to
 	// give a precise "use publish then re-add globally" error below.
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), false)
+	projPath := model.DefaultProjectPath(projectRoot)
 
 	var (
 		result       *skill.EjectResult
@@ -92,6 +93,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		// Capture the qvr.toml coordinate while the entry is still shared-mode —
+		// EjectToTarget flips it to Mode=edit (coordinate becomes ""), and an
+		// ejected skill is lock-only, so we drop its declarative entry below.
+		coord := model.SkillCoordinate(entry)
+
 		r, err := skill.EjectToTarget(skill.EjectRequest{
 			Entry:       entry,
 			ProjectRoot: projectRoot,
@@ -106,6 +112,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		lock.Put(entry)
 		if err := lock.Write(); err != nil {
 			return fmt.Errorf("write lock: %w", err)
+		}
+		// Write-through: an ejected skill is reproduced from the lock (Mode=edit),
+		// so it leaves qvr.toml's registry-sourced [skills] table.
+		if coord != "" {
+			if perr := dropProjectFileSkills(projPath, []string{coord}); perr != nil {
+				printer.Warning(fmt.Sprintf("ejected in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+			}
 		}
 		result = r
 		updatedEntry = entry

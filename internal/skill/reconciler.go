@@ -351,11 +351,20 @@ func (r *Reconciler) strictRemoveOrphans(lock *model.LockFile, projectRoot strin
 
 	managedPrefixes := ManagedRoots(projectRoot)
 
+	// Many targets legitimately share the same skills directory (the AGENTS.md
+	// `.agents/skills` convention, or `.claude/skills` shared by claude and
+	// xcode-claude). Scan each unique directory once so an orphan symlink under
+	// a shared dir isn't reported (or removed) multiple times.
+	scanned := make(map[string]struct{}, len(model.Targets))
 	for _, targetName := range model.TargetNames() {
 		dir, ok := agentDir(targetName, projectRoot, global)
 		if !ok {
 			continue
 		}
+		if _, dup := scanned[normalize(dir)]; dup {
+			continue
+		}
+		scanned[normalize(dir)] = struct{}{}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if !os.IsNotExist(err) {

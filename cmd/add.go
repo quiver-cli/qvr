@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -154,17 +155,16 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return errTextHandled
 	}
 
-	targets := addTargets
-	if len(targets) == 0 {
-		targets = config.ParseDefaultTargets(cfg.DefaultTarget)
-		if len(targets) == 0 {
-			return fmt.Errorf("no --target specified and default_target is unset")
-		}
-	}
-
 	projectRoot, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("resolve cwd: %w", err)
+	}
+	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), addGlobal)
+	projPath := model.DefaultProjectPath(projectRoot)
+
+	targets, err := resolveAddTargets(cfg, projectRoot)
+	if err != nil {
+		return err
 	}
 
 	// Opportunistically warm registry caches for the next command (#211).
@@ -177,7 +177,6 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	wt := git.NewGoGitWorktree()
 	mgr := newRegistryManager(gc)
 	installer := skill.NewInstaller(mgr, wt, gc)
-	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), addGlobal)
 
 	// --local installs an immutable copy of a local folder — a distinct path
 	// (copy + scan + lock) that never touches registry resolution.
@@ -345,6 +344,15 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		if err := lock.Write(); err != nil {
 			return fmt.Errorf("write lock file: %w", err)
 		}
+		// Write-through to qvr.toml (declarative intent). The lock is the
+		// authoritative resolved state, so a qvr.toml failure warns rather than
+		// failing the add. Global installs have no project file. A single
+		// read+write outside the per-skill loop keeps the batch O(N).
+		if !addGlobal {
+			if perr := syncProjectFileFromLock(projPath, lock, results); perr != nil {
+				printer.Warning(fmt.Sprintf("recorded in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+			}
+		}
 		return nil
 	})
 	if lockErr != nil {
@@ -352,6 +360,197 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	return emitAddResults(results, blocked, firstErr, projectRoot, lockPath)
+}
+
+// setProjectFileSkillRef upserts a coordinate→ref into qvr.toml, writing only
+// when the ref changed. Used by `qvr switch <ref>` write-through. It will not
+// CREATE qvr.toml — adoption happens via add/sync (which synthesise the full
+// set); a switch only updates a file that already exists. Non-fatal on error.
+func setProjectFileSkillRef(projPath, coord, ref string) error {
+	if coord == "" {
+		return nil
+	}
+	if _, err := os.Stat(projPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	proj, err := model.ReadProjectFile(projPath)
+	if err != nil {
+		return err
+	}
+	if cur, ok := proj.Skills[coord]; ok && cur == ref {
+		return nil // already correct — quiet diff
+	}
+	proj.PutSkill(coord, ref)
+	return proj.Write()
+}
+
+// dropProjectFileSkills removes the given coordinates from qvr.toml, writing
+// only when something changed. Used by `qvr remove` / `qvr edit` write-through
+// so a removed (or ejected-to-edit) skill stops being declared — otherwise the
+// sync case-C pass would re-install it. A failure warns; the lock is
+// authoritative, so it is never fatal.
+func dropProjectFileSkills(projPath string, coords []string) error {
+	if len(coords) == 0 {
+		return nil
+	}
+	proj, err := model.ReadProjectFile(projPath)
+	if err != nil {
+		return err
+	}
+	prior, err := model.MarshalProjectFile(proj)
+	if err != nil {
+		return err
+	}
+	for _, c := range coords {
+		proj.RemoveSkill(c)
+	}
+	next, err := model.MarshalProjectFile(proj)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(prior, next) {
+		return nil
+	}
+	return proj.Write()
+}
+
+// unionLockTargets returns the sorted, deduplicated union of every installed
+// skill's agent targets. This is a faithful reconstruction of the project's
+// routing policy (`[project].default-targets`) when qvr.toml has been lost —
+// every skill records the targets it was installed into, so their union is the
+// set of agents the project routes to.
+func unionLockTargets(lock *model.LockFile) []string {
+	seen := map[string]struct{}{}
+	for _, e := range lock.Entries() {
+		for _, t := range e.Targets {
+			if t != "" {
+				seen[t] = struct{}{}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for t := range seen {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// seedSynthesizedProjectMeta fills the [project] block of a qvr.toml being
+// CREATED fresh from the lock (a lost or never-adopted qvr.toml). Routing policy
+// is the load-bearing part: default-targets is reconstructed from the union of
+// every installed skill's targets so a dropped qvr.toml doesn't silently
+// degrade `qvr add` routing to the machine-local default. name/version aren't
+// recorded in the lock, so they get init-style defaults rather than an empty,
+// misleading [project] block. Only ever called when synthesising a new file, so
+// it never overwrites a user's hand-set metadata.
+func seedSynthesizedProjectMeta(proj *model.ProjectFile, lock *model.LockFile, projPath string) {
+	if len(proj.Project.DefaultTargets) == 0 {
+		if union := unionLockTargets(lock); len(union) > 0 {
+			proj.Project.DefaultTargets = union
+		}
+	}
+	if proj.Project.Name == "" {
+		proj.Project.Name = filepath.Base(filepath.Dir(projPath))
+	}
+	if proj.Project.Version == "" {
+		proj.Project.Version = "0.1.0"
+	}
+}
+
+// syncProjectFileFromLock updates qvr.toml to reflect the lock after an install.
+// It sets the ref for every just-installed portable skill (authoritative), then
+// back-fills any other portable lock entry qvr.toml doesn't yet list — the
+// auto-synthesis that heals projects predating qvr.toml. Non-portable installs
+// (edit/link/local, ad-hoc URLs) have no coordinate and stay lock-only.
+//
+// Idempotent: writes only when the serialized bytes change, so a no-op re-add
+// leaves qvr.toml untouched (quiet diff). The lock stays self-sufficient — this
+// only ever projects already-resolved lock state, never the reverse.
+func syncProjectFileFromLock(projPath string, lock *model.LockFile, installed []*skill.InstallResult) error {
+	existed := true
+	if _, err := os.Stat(projPath); errors.Is(err, os.ErrNotExist) {
+		existed = false
+	}
+	proj, err := model.ReadProjectFile(projPath)
+	if err != nil {
+		return err
+	}
+	prior, err := model.MarshalProjectFile(proj)
+	if err != nil {
+		return err
+	}
+	// Authoritative ref for everything installed in this batch.
+	for _, r := range installed {
+		entry, gerr := lock.Get(r.Name)
+		if gerr != nil {
+			continue
+		}
+		if coord := model.SkillCoordinate(entry); coord != "" {
+			proj.PutSkill(coord, entry.Ref)
+		}
+	}
+	// Back-fill: synthesize entries for portable lock skills qvr.toml omits.
+	for _, entry := range lock.Entries() {
+		coord := model.SkillCoordinate(entry)
+		if coord == "" {
+			continue
+		}
+		if _, ok := proj.Skills[coord]; !ok {
+			proj.PutSkill(coord, entry.Ref)
+		}
+	}
+	// Reconstruct the [project] block when creating qvr.toml fresh, so routing
+	// policy (default-targets) survives a lost qvr.toml instead of degrading.
+	if !existed {
+		seedSynthesizedProjectMeta(proj, lock, projPath)
+	}
+	next, err := model.MarshalProjectFile(proj)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(prior, next) {
+		return nil // quiet diff — nothing to write
+	}
+	if err := proj.Write(); err != nil {
+		return err
+	}
+	if !existed {
+		printer.Info("Created qvr.toml — commit it so teammates get the declarative skill set (`git add qvr.toml`)")
+	}
+	return nil
+}
+
+// resolveAddTargets picks the agent targets a `qvr add` installs into, applying
+// the strict, mutually-exclusive precedence:
+//
+//  1. an explicit --target flag (overrides everything)
+//  2. the project's qvr.toml [project].default-targets (set by `qvr target add`)
+//  3. the machine-local config default_target
+//
+// Names are normalised to canonical target names (aliases resolved) so the
+// lockfile records a stable, portable identity. qvr.toml defaults are already
+// canonical (the target command normalises on write), but are re-validated
+// defensively in case the file was hand-edited. Global installs have no project
+// file, so they skip the qvr.toml tier straight to config.
+func resolveAddTargets(cfg *config.Config, projectRoot string) ([]string, error) {
+	if len(addTargets) > 0 {
+		return canonicalizeTargets(addTargets)
+	}
+	// Project routing policy travels in qvr.toml — read it before falling back
+	// to machine-local config so teammates reproduce the same routing.
+	if !addGlobal {
+		if proj, err := model.ReadProjectFile(model.DefaultProjectPath(projectRoot)); err == nil && len(proj.Project.DefaultTargets) > 0 {
+			return canonicalizeTargets(proj.Project.DefaultTargets)
+		}
+	}
+	if raw := config.ParseDefaultTargets(cfg.DefaultTarget); len(raw) > 0 {
+		return canonicalizeTargets(raw)
+	}
+	return nil, fmt.Errorf("no --target specified, no project default targets (set with `qvr target add`), and config default_target is unset")
 }
 
 // validateAddModes enforces the mutual exclusions between the default by-name

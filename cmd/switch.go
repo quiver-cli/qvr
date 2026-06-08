@@ -340,6 +340,17 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 	if alreadyOnTarget {
 		return nil
 	}
+	// Write-through: a re-point changes the skill's ref, so mirror it into
+	// qvr.toml's [skills] table. (--tip / pull only advances the commit and
+	// leaves the ref unchanged, so it never reaches this path.) Global entries
+	// have no project file.
+	if !repointGlobal && updated != nil {
+		if coord := model.SkillCoordinate(updated); coord != "" {
+			if perr := setProjectFileSkillRef(model.DefaultProjectPath(projectRoot), coord, updated.Ref); perr != nil {
+				printer.Warning(fmt.Sprintf("updated qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+			}
+		}
+	}
 	registry.TouchProject(lockPath)
 	// Keep AGENTS.md in sync with the new ref so descriptions and version
 	// markers don't drift until the next `qvr sync`. AGENTS.md is

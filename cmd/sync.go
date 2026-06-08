@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -92,6 +93,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), syncGlobal)
+	projPath := model.DefaultProjectPath(projectRoot)
 	cfg, cerr := config.Load()
 	if cerr != nil {
 		return fmt.Errorf("load config: %w", cerr)
@@ -124,6 +126,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// hard-fail the identical state (#154). It renders as a warning and is
 		// remediated by `qvr lock upgrade`, but never flips the exit code.
 		unverifiedReports []skill.VerifyEntryResult
+		// projWarnings/projWouldChange come from the qvr.toml → lock pre-pass:
+		// declarative intent applied before reconcile. wouldChange counts skills
+		// qvr.toml declares that the lock lacks — a stale lock that flips --check.
+		projWarnings    []string
+		projWouldChange int
 	)
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
 		lock, err := model.ReadLockFile(lockPath)
@@ -151,6 +158,18 @@ func runSync(cmd *cobra.Command, args []string) error {
 		wt := git.NewGoGitWorktree()
 		installer := skill.NewInstaller(newRegistryManager(gc), wt, gc)
 		reconciler := skill.NewReconciler(installer)
+
+		// qvr.toml → lock pre-pass: apply declarative intent BEFORE reconcile so
+		// case-C (a skill qvr.toml declares but the lock lacks) is resolved and
+		// installed into the lock, then materialised by the reconcile below. The
+		// lock stays authoritative: a ref that disagrees with qvr.toml leaves the
+		// lock as-is (warn). --frozen ignores qvr.toml entirely; --global has no
+		// project file. Writes (install + synthesis) are gated by `apply`.
+		if !syncGlobal && !syncFrozen {
+			apply := !syncDryRun && !syncLocked && !syncCheck
+			projWarnings, projWouldChange = applyProjectFileToLock(
+				projPath, lock, installer, cfg, projectRoot, lockPath, apply)
+		}
 
 		// --check is read-only: run the reconcile in dry-run so it reports what
 		// WOULD change (restores, symlinks, orphans) without mutating disk or
@@ -266,7 +285,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// reconcile ran in dry-run, so these are all "would" findings and nothing
 	// was mutated; we only translate them into a non-zero exit.
 	checkFailed := syncCheck && (len(result.Installed) > 0 || len(result.SymlinksFixed) > 0 ||
-		len(result.Removed) > 0 || len(driftReports) > 0 || len(result.Errors) > 0)
+		len(result.Removed) > 0 || len(driftReports) > 0 || len(result.Errors) > 0 ||
+		projWouldChange > 0)
 
 	if printer.Format == output.FormatJSON {
 		if err := printer.JSON(result); err != nil {
@@ -292,6 +312,12 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// qvr.toml reconciliation advisories (ref-conflict "lock wins", install
+	// failures for hand-added skills) print before the reconcile summary so the
+	// user sees intent-level notes first.
+	for _, w := range projWarnings {
+		printer.Warning(w)
+	}
 	for _, name := range result.Installed {
 		if sev, ok := atOrAboveThreshold[name]; ok {
 			// Tag restored skills that triggered findings ≥ block_severity
@@ -338,7 +364,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		renderDriftReport(u)
 	}
 
-	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(atOrAboveThreshold) == 0 && len(driftReports) == 0 && len(unverifiedReports) == 0 {
+	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(atOrAboveThreshold) == 0 && len(driftReports) == 0 && len(unverifiedReports) == 0 && len(projWarnings) == 0 && projWouldChange == 0 {
 		if syncCheck {
 			printer.Success("In sync with qvr.lock.")
 		} else {
@@ -379,6 +405,148 @@ func runSync(cmd *cobra.Command, args []string) error {
 		printOrphanHintIfBig()
 	}
 	return nil
+}
+
+// applyProjectFileToLock reconciles qvr.toml (declarative intent) against the
+// in-memory lock before the main sync reconcile. It returns advisories to
+// surface plus the count of skills qvr.toml declares that the lock lacks (these
+// flip `qvr sync --check`, since a real sync would change the lock).
+//
+//   - Case C (in qvr.toml, missing from lock): resolve + install into the lock
+//     (apply mode only). The reconcile that follows materialises it.
+//   - Case B (ref differs between qvr.toml and the lock): the LOCK WINS — warn.
+//     `qvr lock --from-toml` is the explicit verb to apply qvr.toml's ref.
+//   - Case D (portable lock entry absent from qvr.toml): synthesise the entry
+//     (apply mode), healing projects that predate qvr.toml.
+//
+// apply=false (dry-run/check/locked) reports only — no install, no file writes.
+// The lock stays self-sufficient: an absent/empty qvr.toml makes this a no-op.
+func applyProjectFileToLock(projPath string, lock *model.LockFile, installer *skill.Installer, cfg *config.Config, projectRoot, lockPath string, apply bool) (warnings []string, wouldChange int) {
+	existed := true
+	if _, err := os.Stat(projPath); errors.Is(err, os.ErrNotExist) {
+		existed = false
+	}
+	proj, err := model.ReadProjectFile(projPath)
+	if err != nil {
+		return []string{fmt.Sprintf("qvr.toml: %v (ignored; reconciling from qvr.lock only)", err)}, 0
+	}
+
+	// Index lock entries by their qvr.toml coordinate for O(1) lookup.
+	lockByCoord := make(map[string]*model.LockEntry)
+	for _, e := range lock.Entries() {
+		if c := model.SkillCoordinate(e); c != "" {
+			lockByCoord[c] = e
+		}
+	}
+
+	// Lazily resolve install targets — only needed if a case-C skill exists.
+	var installTargets []string
+	var targetsErr error
+	resolveTargets := func() ([]string, error) {
+		if installTargets == nil && targetsErr == nil {
+			installTargets, targetsErr = resolveProjectDefaultTargets(proj, cfg)
+		}
+		return installTargets, targetsErr
+	}
+
+	// Cases B & C: walk qvr.toml's declared skills.
+	for _, coord := range proj.SkillCoordinates() {
+		ref := proj.Skills[coord]
+		if entry, ok := lockByCoord[coord]; ok {
+			if entry.Ref != ref { // Case B — lock wins.
+				warnings = append(warnings, fmt.Sprintf(
+					"%s: qvr.toml requests %q but qvr.lock pins %q — keeping the lock; run `qvr lock --from-toml` to apply qvr.toml or `qvr add %s@%s` to update both",
+					coord, ref, entry.Ref, coord, ref))
+			}
+			continue
+		}
+		// Case C — declared but not locked.
+		if !apply {
+			wouldChange++
+			warnings = append(warnings, fmt.Sprintf("%s@%s is in qvr.toml but not qvr.lock — run `qvr sync` to install it", coord, ref))
+			continue
+		}
+		reg, name, ok := splitCoordinate(coord)
+		if !ok {
+			warnings = append(warnings, fmt.Sprintf("%s: malformed coordinate in qvr.toml (expected <registry>/<skill>); skipped", coord))
+			continue
+		}
+		targets, terr := resolveTargets()
+		if terr != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: cannot install from qvr.toml — %v", coord, terr))
+			continue
+		}
+		if _, ierr := installer.InstallInto(skill.InstallRequest{
+			Skill:                    name + "@" + ref,
+			Targets:                  targets,
+			ProjectRoot:              projectRoot,
+			LockPath:                 lockPath,
+			Registry:                 reg,
+			RequireSigned:            cfg.Security.RequireSigned,
+			TrustedAuthors:           trustedAuthorsForRegistry(cfg, reg),
+			TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
+		}, lock); ierr != nil {
+			warnings = append(warnings, fmt.Sprintf("%s@%s: failed to install from qvr.toml (%v) — register its source with `qvr registry add` or run `qvr add`", coord, ref, ierr))
+			continue
+		}
+		wouldChange++
+		printer.Success(fmt.Sprintf("Installed %s@%s (declared in qvr.toml)", coord, ref))
+	}
+
+	// Case D: synthesise qvr.toml entries for portable lock skills it omits.
+	// Apply mode only — read-only modes never write the file.
+	if apply {
+		changed := false
+		for _, e := range lock.Entries() {
+			coord := model.SkillCoordinate(e)
+			if coord == "" {
+				continue
+			}
+			if _, ok := proj.Skills[coord]; !ok {
+				proj.PutSkill(coord, e.Ref)
+				changed = true
+			}
+		}
+		// Reconstruct the [project] block when creating qvr.toml fresh so a lost
+		// qvr.toml doesn't silently degrade routing — default-targets is rebuilt
+		// from the union of every installed skill's targets.
+		if !existed {
+			seedSynthesizedProjectMeta(proj, lock, projPath)
+			changed = true
+		}
+		if changed {
+			if werr := proj.Write(); werr != nil {
+				warnings = append(warnings, fmt.Sprintf("failed to update qvr.toml (%v); qvr.lock is authoritative", werr))
+			} else if !existed {
+				printer.Info("Created qvr.toml from qvr.lock — commit it so teammates get the declarative config (`git add qvr.toml`)")
+			}
+		}
+	}
+	return warnings, wouldChange
+}
+
+// resolveProjectDefaultTargets picks install targets for a case-C sync install,
+// mirroring add's precedence below the --target flag: qvr.toml defaults, then
+// the machine-local config default_target.
+func resolveProjectDefaultTargets(proj *model.ProjectFile, cfg *config.Config) ([]string, error) {
+	if len(proj.Project.DefaultTargets) > 0 {
+		return canonicalizeTargets(proj.Project.DefaultTargets)
+	}
+	if raw := config.ParseDefaultTargets(cfg.DefaultTarget); len(raw) > 0 {
+		return canonicalizeTargets(raw)
+	}
+	return nil, fmt.Errorf("no [project].default-targets in qvr.toml and config default_target is unset — set one with `qvr target add <name>`")
+}
+
+// splitCoordinate splits a qvr.toml skill coordinate "<registry>/<skill>" into
+// its registry name (which itself contains a "/", e.g. "org/repo") and the
+// trailing skill segment. Returns ok=false for a malformed coordinate.
+func splitCoordinate(coord string) (registry, skill string, ok bool) {
+	i := strings.LastIndex(coord, "/")
+	if i <= 0 || i >= len(coord)-1 {
+		return "", "", false
+	}
+	return coord[:i], coord[i+1:], true
 }
 
 // boolCount returns how many of the given flags are true. Used to enforce

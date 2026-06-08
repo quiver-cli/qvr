@@ -91,6 +91,72 @@ func TestManager_Add(t *testing.T) {
 // guard that keeps tokens out of config.yaml. We use a local file path
 // dressed with fake userinfo — go's net/url parses it, the manager strips
 // it, and the underlying clone uses only the clean path.
+// TestManager_Update_RebuildsMissingClone covers issue #224: if the bare clone
+// under ~/.quiver/registries/ is wiped while its config.yaml entry survives,
+// `registry update` must re-clone from the URL instead of fetching a
+// non-existent directory and wedging the registry.
+func TestManager_Update_RebuildsMissingClone(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	srcDir := setupTestSourceRepo(t)
+
+	reg, err := mgr.Add(context.Background(), "test", srcDir)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Simulate the bare-clone cache being wiped while config.yaml survives.
+	if err := os.RemoveAll(reg.Path); err != nil {
+		t.Fatalf("wipe clone: %v", err)
+	}
+	if _, err := os.Stat(reg.Path); !os.IsNotExist(err) {
+		t.Fatalf("clone should be gone before update")
+	}
+
+	statuses, err := mgr.Update(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Update after wipe: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("want 1 status, got %d", len(statuses))
+	}
+	if statuses[0].Error != "" {
+		t.Fatalf("update reported error after wipe (should self-heal): %q", statuses[0].Error)
+	}
+	if _, err := os.Stat(reg.Path); err != nil {
+		t.Errorf("clone not re-created after update: %v", err)
+	}
+	if statuses[0].SkillCount != 2 {
+		t.Errorf("skill_count = %d, want 2 after re-clone", statuses[0].SkillCount)
+	}
+}
+
+// TestManager_FindSkill_RebuildsMissingClone covers the sync/add side of #224:
+// resolving a skill after the clone is wiped should re-clone and find it,
+// rather than failing "not found in any registry".
+func TestManager_FindSkill_RebuildsMissingClone(t *testing.T) {
+	mgr, _ := setupManagerTest(t)
+	srcDir := setupTestSourceRepo(t)
+
+	reg, err := mgr.Add(context.Background(), "test", srcDir)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.RemoveAll(reg.Path); err != nil {
+		t.Fatalf("wipe clone: %v", err)
+	}
+
+	loc, err := mgr.FindSkill("code-review")
+	if err != nil {
+		t.Fatalf("FindSkill after wipe (should self-heal): %v", err)
+	}
+	if loc == nil || loc.Entry.Name != "code-review" {
+		t.Fatalf("FindSkill returned %+v, want code-review", loc)
+	}
+	if _, err := os.Stat(reg.Path); err != nil {
+		t.Errorf("clone not re-created after FindSkill: %v", err)
+	}
+}
+
 func TestManager_Add_PlainPathPreserved(t *testing.T) {
 	// Set up a local bare "remote" that the manager can clone from over the
 	// file path. We can't dress a local path with HTTPS userinfo (git would
@@ -520,12 +586,19 @@ func TestManager_Update_All_DeterministicOrder(t *testing.T) {
 func TestManager_Update_All_PartialFailure(t *testing.T) {
 	mgr, _ := setupManagerTest(t)
 	_, _ = mgr.Add(context.Background(), "good1", setupTestSourceRepo(t))
-	broken, _ := mgr.Add(context.Background(), "broken", setupTestSourceRepo(t))
+	brokenSrc := setupTestSourceRepo(t)
+	broken, _ := mgr.Add(context.Background(), "broken", brokenSrc)
 	_, _ = mgr.Add(context.Background(), "good2", setupTestSourceRepo(t))
 
-	// Break the middle (by sort order) registry's bare clone so its fetch fails.
+	// Break the middle (by sort order) registry unrecoverably. Removing only the
+	// bare clone would now self-heal via re-clone (#224), so also remove its
+	// source so the re-clone fails and a genuine error surfaces — exercising the
+	// partial-failure path.
 	if err := os.RemoveAll(broken.Path); err != nil {
 		t.Fatalf("remove bare clone: %v", err)
+	}
+	if err := os.RemoveAll(brokenSrc); err != nil {
+		t.Fatalf("remove broken source: %v", err)
 	}
 
 	results, err := mgr.Update(context.Background(), "")

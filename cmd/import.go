@@ -280,6 +280,22 @@ func runImport(cmd *cobra.Command, args []string) error {
 				printer.Success(fmt.Sprintf("Imported %s@%s → %v", result.Name, result.Version, result.Targets))
 			}
 		}
+		// Write-through to qvr.toml for every imported skill — same projection as
+		// `qvr add`. Re-read the lock the installs just wrote; the lock is
+		// authoritative, so a qvr.toml failure warns rather than failing import.
+		if !importGlobal {
+			var installed []*skill.InstallResult
+			for _, lr := range lineResults {
+				if lr.Install != nil {
+					installed = append(installed, lr.Install)
+				}
+			}
+			if lock, lerr := model.ReadLockFile(lockPath); lerr == nil {
+				if perr := syncProjectFileFromLock(model.DefaultProjectPath(projectRoot), lock, installed); perr != nil {
+					printer.Warning(fmt.Sprintf("imported into qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+				}
+			}
+		}
 		return nil
 	})
 	if lockErr != nil {

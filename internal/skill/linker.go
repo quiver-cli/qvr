@@ -24,7 +24,7 @@ var (
 // target's global directory under the user's home; otherwise the local
 // (project-relative) directory rooted at projectRoot.
 func ResolveTargetPath(target, skillName, projectRoot string, global bool) (string, error) {
-	t, ok := model.Targets[target]
+	t, ok := model.LookupTarget(target)
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrUnknownTarget, target)
 	}

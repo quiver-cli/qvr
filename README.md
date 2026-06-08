@@ -65,6 +65,7 @@ audit trail. Each entry carries the resolved commit, a subtree hash of the exact
 bytes, the scan report hash + decision, and the provenance of the commit author:
 
 ```toml
+# qvr.lock — one resolved, vetted entry (machine-generated)
 [skills.frontend-design]
 registry     = 'anthropics/skills'
 source       = 'https://github.com/anthropics/skills.git'
@@ -95,6 +96,26 @@ first-class feature.
 ```bash
 qvr add code-review@v1.2.0
 qvr add code-review@v1.3.0-rc1 --as code-review-rc   # both coexist for A/B
+```
+
+**`qvr.toml` — the declarative front door.** Where the lock is the _resolved_
+state, `qvr.toml` is the human-authored _intent_: the skills a project wants
+(`[skills]`) and its default agent targets (`[project].default-targets`),
+hand-editable and committed alongside the lock. Every mutating command keeps the
+two in step; edit `qvr.toml` by hand and `qvr sync` reconciles (or
+`qvr lock --from-toml` to apply your edits to the lock). The lock stays
+self-sufficient — `qvr sync` reproduces from `qvr.lock` alone, so CI never needs
+`qvr.toml`.
+
+```toml
+# qvr.toml — declarative intent (hand-editable, committed)
+[project]
+name            = 'my-project'
+version         = '0.1.0'
+default-targets = ['claude', 'codex']   # which agents a bare `qvr add` installs into
+
+[skills]
+'anthropics/skills/frontend-design' = 'main'   # coordinate -> ref
 ```
 
 ### 3. Traceability — the foundation for optimizing and evaluating skills
@@ -203,10 +224,10 @@ qvr registry list
 qvr search deploy
 qvr version list code-review
 
-# add a skill into the current project (scans, then writes qvr.lock)
+# add a skill into the current project (scans, then writes qvr.toml + qvr.lock)
 qvr add code-review                 # latest semver tag, or default branch
 qvr add code-review@v1.2.0          # pin a tag, branch, or SHA
-qvr sync                            # reconcile the project against qvr.lock
+qvr sync                            # reconcile the project against qvr.toml + qvr.lock
 ```
 
 Anything under `.claude/skills/` that isn't in `qvr.lock` is hidden from the
@@ -338,22 +359,34 @@ into agent dirs.
  └── cache/index/<name>.json             TTL'd registry index cache
 
  <project>/
- ├── qvr.lock                            project lock — source of truth
+ ├── qvr.toml                            declarative intent (skills + default targets)
+ ├── qvr.lock                            resolved lock — source of truth
  ├── .claude/skills/<skill>   -> symlink into ~/.quiver/worktrees/
- ├── .cursor/rules/<skill>    -> symlink into ~/.quiver/worktrees/
- └── .github/copilot/skills/  -> symlink into ~/.quiver/worktrees/
+ ├── .agents/skills/<skill>   -> symlink into ~/.quiver/worktrees/
+ └── .github/skills/<skill>   -> symlink into ~/.quiver/worktrees/
 ```
 
 ### Agent targets
 
-| Target   | Local dir                 | Global dir                  |
-| -------- | ------------------------- | --------------------------- |
-| claude   | `.claude/skills/`         | `~/.claude/skills/`         |
-| cursor   | `.cursor/rules/`          | `~/.cursor/rules/`          |
-| copilot  | `.github/copilot/skills/` | `~/.github/copilot/skills/` |
-| codex    | `.codex/skills/`          | `~/.codex/skills/`          |
-| windsurf | `.windsurf/skills/`       | `~/.windsurf/skills/`       |
-| project  | `.agent/skills/`          | `~/.agent/skills/`          |
+Targets are a data-driven registry (~60 agents) compiled into the binary. Run
+`qvr target list` for the full set with directories and aliases. Paths are
+sourced from each tool's official docs; many newer CLIs share the AGENTS.md
+`.agents/skills` project location. Common core targets:
+
+| Target   | Local dir          | Global dir                    | Aliases          |
+| -------- | ------------------ | ----------------------------- | ---------------- |
+| claude   | `.claude/skills`   | `~/.claude/skills`            | `claude-code`    |
+| codex    | `.agents/skills`   | `~/.codex/skills`             |                  |
+| cursor   | `.agents/skills`   | `~/.cursor/skills`            |                  |
+| copilot  | `.github/skills`   | `~/.copilot/skills`           | `github-copilot` |
+| gemini   | `.agents/skills`   | `~/.gemini/skills`            | `antigravity`    |
+| windsurf | `.windsurf/skills` | `~/.codeium/windsurf/skills`  |                  |
+| project  | `.agents/skills`   | `~/.agents/skills`            | `agents`         |
+
+Pick which agents a project installs into with `qvr target add <name>...`; the
+choice is recorded in `qvr.toml` (`[project].default-targets`) so it travels
+with the repo. Selection order is `--target` flag > `qvr.toml` default-targets >
+config `default_target`.
 
 ---
 

@@ -420,6 +420,19 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		return lockErr
 	}
 
+	// Write-through: a successful publish auto-un-ejects the skill back to shared
+	// mode (with --fork --migrate, on the new fork's registry), so it re-gains a
+	// qvr.toml coordinate. Reconcile qvr.toml from the final lock — the back-fill
+	// records the (possibly migrated) coordinate at the published tag. Dry-run
+	// and --global publishes don't touch qvr.toml.
+	if !publishDryRun && !publishGlobal {
+		if lock, lerr := model.ReadLockFile(lockPath); lerr == nil {
+			if perr := syncProjectFileFromLock(model.DefaultProjectPath(projectRoot), lock, nil); perr != nil {
+				printer.Warning(fmt.Sprintf("published, but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+			}
+		}
+	}
+
 	registry.TouchProject(lockPath)
 
 	if printer.Format == output.FormatJSON {

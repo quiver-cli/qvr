@@ -51,9 +51,10 @@ var (
 	lockUpgradeDryRun bool
 	lockUpgradeGlobal bool
 
-	lockResolvePackage string
-	lockResolveDryRun  bool
-	lockResolveGlobal  bool
+	lockResolvePackage  string
+	lockResolveDryRun   bool
+	lockResolveGlobal   bool
+	lockResolveFromToml bool
 )
 
 var lockVerifyCmd = &cobra.Command{
@@ -112,6 +113,8 @@ func init() {
 		"report which entries would be re-pinned without writing the lock")
 	lockCmd.Flags().BoolVar(&lockResolveGlobal, "global", false,
 		"operate on the user-global lock file instead of the project lock")
+	lockCmd.Flags().BoolVar(&lockResolveFromToml, "from-toml", false,
+		"apply qvr.toml's [skills] refs into the lock (re-resolve each entry at the ref qvr.toml declares) — the toml-authoritative direction")
 
 	lockCmd.AddCommand(lockVerifyCmd, lockUpgradeCmd)
 	rootCmd.AddCommand(lockCmd)
@@ -230,6 +233,19 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 		return nil, fmt.Errorf("read lock: %w", err)
 	}
 
+	// --from-toml: source each entry's ref from qvr.toml so a hand-edited
+	// [skills] ref is applied INTO the lock (the toml-authoritative direction,
+	// the inverse of `qvr sync` where the lock wins). Bare `qvr lock` re-pins the
+	// entry's current ref instead.
+	var proj *model.ProjectFile
+	if lockResolveFromToml {
+		p, perr := model.ReadProjectFile(model.DefaultProjectPath(filepath.Dir(lockPath)))
+		if perr != nil {
+			return nil, fmt.Errorf("read qvr.toml: %w", perr)
+		}
+		proj = p
+	}
+
 	// Register missing registries from the lock so RegistryPath/Update can find
 	// their bare clones (self-healing, same as `qvr sync`). Dry-run never
 	// persists config.
@@ -272,6 +288,24 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 			row.Status = "skipped"
 			row.Message = "no registry upstream to re-resolve"
 		default:
+			// --from-toml: adopt qvr.toml's declared ref for this entry before
+			// resolving, so the lock moves to the hand-edited ref. A ref change is
+			// itself a lock mutation even if the resolved commit is unchanged.
+			// Defer the `changed` flag (and restore the ref on failure) until
+			// ResolveRef succeeds — otherwise a ref that doesn't resolve gets
+			// written into the lock, corrupting it (stale commit/hash under a
+			// dangling ref).
+			originalRef := entry.Ref
+			refAdopted := false
+			if proj != nil {
+				if coord := model.SkillCoordinate(entry); coord != "" {
+					if tomlRef, ok := proj.Skills[coord]; ok && tomlRef != entry.Ref {
+						entry.Ref = tomlRef
+						row.Ref = tomlRef
+						refAdopted = true
+					}
+				}
+			}
 			if !fetched[entry.Registry] {
 				if _, uerr := mgr.Update(ctx, entry.Registry); uerr != nil {
 					printer.Warning(fmt.Sprintf("lock: refresh %s failed (%v); resolving against cached clone", entry.Registry, uerr))
@@ -280,9 +314,17 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 			}
 			newCommit, rerr := gc.ResolveRef(registry.RegistryPath(entry.Registry), entry.Ref)
 			if rerr != nil {
+				// Restore the original ref so the failed resolve leaves the lock
+				// entry untouched rather than persisting an unresolvable ref.
+				entry.Ref = originalRef
+				row.Ref = originalRef
 				row.Status = "failed"
 				row.Message = rerr.Error()
 				break
+			}
+			// Resolve succeeded — an adopted toml ref is now a real mutation.
+			if refAdopted {
+				changed = true
 			}
 			row.OldCommit = registry.ShortSHA(entry.Commit)
 			row.NewCommit = registry.ShortSHA(newCommit)
