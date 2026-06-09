@@ -13,7 +13,7 @@ An extremely fast skills manager for coding agents, written in Go.
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License" /></a>
   <a href="https://github.com/astra-sh/qvr/actions/workflows/ci.yml"><img src="https://github.com/astra-sh/qvr/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="go.mod"><img src="https://img.shields.io/badge/Go-%E2%89%A5%201.25-00ADD8.svg?logo=go&logoColor=white" alt="Go" /></a>
-  <a href="https://goreportcard.com/badge/github.com/astra-sh/qvr"><img src="https://goreportcard.com/badge/github.com/astra-sh/qvr" alt="Go Report Card"></a>
+  <a href="https://goreportcard.com/report/github.com/astra-sh/qvr"><img src="https://goreportcard.com/badge/github.com/astra-sh/qvr" alt="Go Report Card"></a>
 </p>
 
 ---
