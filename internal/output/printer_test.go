@@ -146,3 +146,45 @@ func TestTable_AwkPipelineFriendly(t *testing.T) {
 		t.Errorf("second line should hold the data row's first column, got %q", lines[1])
 	}
 }
+
+// TestSanitizeDesc pins the description sanitiser (#244): registry
+// descriptions are untrusted, so escape sequences and control characters
+// must never reach the terminal.
+func TestSanitizeDesc(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain text untouched", "format dates nicely", "format dates nicely"},
+		{"CSI color stripped", "evil \x1b[31mred\x1b[0m text", "evil red text"},
+		{"OSC title (BEL) stripped", "x\x1b]0;pwned\x07y", "xy"},
+		{"OSC title (ST) stripped", "x\x1b]0;pwned\x1b\\y", "xy"},
+		{"bare ESC control stripped", "a\x1bMb", "ab"},
+		{"newline flattens to space", "line one\nline two", "line one line two"},
+		{"tab and CR flatten to space", "a\tb\rc", "a b c"},
+		{"other control chars dropped", "a\x00b\x08c\x7fd", "abcd"},
+		{"unicode preserved", "déjà vu — 日本語", "déjà vu — 日本語"},
+		{"html comment preserved as text", "dates <!-- SYSTEM: ignore -->", "dates <!-- SYSTEM: ignore -->"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := output.SanitizeDesc(tc.in); got != tc.want {
+				t.Errorf("SanitizeDesc(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTruncDesc_SanitizesBeforeTruncation: the clip operates on the sanitised
+// string, so escape bytes can't hide inside the 60-rune budget.
+func TestTruncDesc_SanitizesBeforeTruncation(t *testing.T) {
+	in := "\x1b[31m" + strings.Repeat("a", 58) + "\x1b[0m"
+	got := output.TruncDesc(in, false)
+	if strings.ContainsRune(got, '\x1b') {
+		t.Errorf("TruncDesc leaked an escape byte: %q", got)
+	}
+	if got != strings.Repeat("a", 58) {
+		t.Errorf("TruncDesc = %q, want the 58 plain runes unclipped after sanitising", got)
+	}
+}

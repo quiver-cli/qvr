@@ -136,4 +136,11 @@ type GitClient interface {
 	// Returned entries always have IsDir=false. An empty/blobless tree yields an
 	// empty slice (not an error).
 	ListBlobsRecursive(repoPath, ref, path string) ([]TreeEntry, error)
+
+	// ListSubmodulePaths returns the repo-root-relative paths of every gitlink
+	// (mode 160000 / submodule) tree entry reachable from the root tree at
+	// `ref`. Gitlinks are invisible to ListBlobsRecursive (they are commit
+	// pointers, not blobs), so callers that diagnose "committed a nested repo
+	// instead of its files" need this dedicated walk (#241).
+	ListSubmodulePaths(repoPath, ref string) ([]string, error)
 }

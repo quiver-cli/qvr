@@ -9,6 +9,7 @@ import (
 
 	"github.com/astra-sh/qvr/internal/canonical"
 	"github.com/astra-sh/qvr/internal/config"
+	"github.com/astra-sh/qvr/internal/git"
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/output"
 	"github.com/astra-sh/qvr/internal/registry"
@@ -87,6 +88,14 @@ func runCreateStandalone(name string) error {
 	dir, err := filepath.Abs(name)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
+	}
+	// Refuse the gitlink trap (#241): a standalone scaffold git-inits its own
+	// repo, and inside an existing work tree `git add` records that nested
+	// repo as a gitlink (an empty pointer commit) — the skill's files never
+	// reach the outer repo's history, and a registry built from it indexes
+	// nothing.
+	if root, inRepo := git.EnclosingWorkTree(filepath.Dir(dir)); inRepo {
+		return fmt.Errorf("refusing to create a standalone skill inside the git work tree at %s: the scaffold initializes its own nested repo, which `git add` records as a gitlink (an empty pointer commit) instead of the skill's files. Drop --standalone to scaffold into the project, or run this outside the repository", root)
 	}
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("directory %s already exists", name)

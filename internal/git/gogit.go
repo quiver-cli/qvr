@@ -848,6 +848,46 @@ func (g *GoGitClient) ListBlobsRecursive(repoPath, ref, path string) ([]TreeEntr
 	return entries, nil
 }
 
+// ListSubmodulePaths returns the repo-root-relative paths of every gitlink
+// (mode 160000 / submodule) tree entry at ref. These entries are commit
+// pointers, not blobs, so tree.Files() — and therefore ListBlobsRecursive —
+// never surfaces them; this walk exists so the registry indexer can diagnose
+// "a nested repo was committed instead of its files" (#241).
+func (g *GoGitClient) ListSubmodulePaths(repoPath, ref string) ([]string, error) {
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("open repo: %w", err)
+	}
+	hash, err := resolveRef(repo, ref)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve ref %q: %v", ErrRefNotFound, ref, err)
+	}
+	commit, err := repo.CommitObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("%w: get commit: %v", ErrTreeNotFound, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("%w: get root tree: %v", ErrTreeNotFound, err)
+	}
+	var paths []string
+	walker := object.NewTreeWalker(tree, true, nil)
+	defer walker.Close()
+	for {
+		name, entry, werr := walker.Next()
+		if werr == io.EOF {
+			break
+		}
+		if werr != nil {
+			return nil, fmt.Errorf("walk tree: %w", werr)
+		}
+		if entry.Mode == filemode.Submodule {
+			paths = append(paths, name)
+		}
+	}
+	return paths, nil
+}
+
 // resolveRef resolves a ref string (branch name, tag, "HEAD", or hash) to a commit hash.
 func resolveRef(repo *gogit.Repository, ref string) (plumbing.Hash, error) {
 	if ref == "HEAD" {

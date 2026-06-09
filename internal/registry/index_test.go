@@ -20,7 +20,8 @@ type mockGitClient struct {
 	tags          []git.RefInfo
 	defaultBranch string
 	headCommit    string
-	readBlobCalls int // ReadBlob invocations, to prove the fast path is targeted
+	readBlobCalls int      // ReadBlob invocations, to prove the fast path is targeted
+	submodules    []string // gitlink paths surfaced by ListSubmodulePaths (#241)
 }
 
 func newMockGitClient() *mockGitClient {
@@ -84,6 +85,10 @@ func (m *mockGitClient) ReadBlob(repoPath, ref, filePath string) ([]byte, error)
 		return nil, fmt.Errorf("%w: %s", git.ErrBlobNotFound, filePath)
 	}
 	return data, nil
+}
+
+func (m *mockGitClient) ListSubmodulePaths(repoPath, ref string) ([]string, error) {
+	return m.submodules, nil
 }
 
 func (m *mockGitClient) ListTree(repoPath, ref, path string) ([]git.TreeEntry, error) {
@@ -764,5 +769,147 @@ func TestValidateRegistryName(t *testing.T) {
 				t.Errorf("ValidateRegistryName(%q) err=%v, wantErr=%v", tt.name, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// skillMD builds a minimal valid SKILL.md body whose name matches dir base.
+func skillMD(name, desc string) []byte {
+	return []byte("---\nname: " + name + "\ndescription: " + desc + "\n---\n# " + name + "\n")
+}
+
+// TestBuildIndex_GitlinkSurfacedAsSkipped (#241): a gitlink where a skill
+// should be must show up in the skipped list with a reason, not vanish into
+// a bare "0 skills".
+func TestBuildIndex_GitlinkSurfacedAsSkipped(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:registry.yaml"] = []byte("name: team\n")
+	mock.submodules = []string{"skills/my-first-skill"}
+
+	indexer := registry.NewIndexer(mock)
+	skills, skipped, err := indexer.BuildIndex("/fake/path")
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("expected 0 skills, got %d", len(skills))
+	}
+	found := false
+	for _, s := range skipped {
+		if s.Path == "skills/my-first-skill" && strings.Contains(s.Reason, "gitlink") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("skipped = %+v, want a gitlink entry for skills/my-first-skill", skipped)
+	}
+}
+
+// TestBuildIndex_FixturePathsExcluded (#244): skill dirs under testdata/ or
+// fixtures/ (any depth) never reach the index, with or without registry.yaml,
+// and are surfaced as skips.
+func TestBuildIndex_FixturePathsExcluded(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:skills/real-skill/SKILL.md"] = skillMD("real-skill", "A real skill.")
+	mock.blobs["HEAD:testdata/malicious-skill-injection/SKILL.md"] = skillMD("malicious-skill-injection", "Fixture.")
+	mock.blobs["HEAD:pkg/fixtures/sample-skill/SKILL.md"] = skillMD("sample-skill", "Fixture.")
+
+	indexer := registry.NewIndexer(mock)
+	skills, skipped, err := indexer.BuildIndex("/fake/path")
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "real-skill" {
+		t.Fatalf("skills = %+v, want only real-skill", skills)
+	}
+	var reasons []string
+	for _, s := range skipped {
+		reasons = append(reasons, s.Path+": "+s.Reason)
+	}
+	joined := strings.Join(reasons, "\n")
+	if !strings.Contains(joined, "testdata/malicious-skill-injection") ||
+		!strings.Contains(joined, "pkg/fixtures/sample-skill") {
+		t.Errorf("skipped = %v, want both fixture dirs surfaced", joined)
+	}
+}
+
+// TestBuildIndex_RegistryYamlScopesToSkillsDir (#244): with a registry.yaml
+// present, discovery is confined to skills-dir; out-of-scope SKILL.md dirs
+// are skipped with a reason.
+func TestBuildIndex_RegistryYamlScopesToSkillsDir(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:registry.yaml"] = []byte("name: team\nskills-dir: skills\n")
+	mock.blobs["HEAD:skills/good-skill/SKILL.md"] = skillMD("good-skill", "In scope.")
+	mock.blobs["HEAD:tools/stray-skill/SKILL.md"] = skillMD("stray-skill", "Out of scope.")
+
+	indexer := registry.NewIndexer(mock)
+	skills, skipped, err := indexer.BuildIndex("/fake/path")
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "good-skill" {
+		t.Fatalf("skills = %+v, want only good-skill", skills)
+	}
+	found := false
+	for _, s := range skipped {
+		if s.Path == "tools/stray-skill" && strings.Contains(s.Reason, "outside skills-dir") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("skipped = %+v, want tools/stray-skill marked outside skills-dir", skipped)
+	}
+}
+
+// TestBuildIndex_RegistryYamlIgnoreGlobs (#244): ignore globs drop matching
+// skill dirs even inside skills-dir.
+func TestBuildIndex_RegistryYamlIgnoreGlobs(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:registry.yaml"] = []byte("name: team\nignore:\n  - 'skills/experimental-*'\n")
+	mock.blobs["HEAD:skills/good-skill/SKILL.md"] = skillMD("good-skill", "Kept.")
+	mock.blobs["HEAD:skills/experimental-skill/SKILL.md"] = skillMD("experimental-skill", "Ignored.")
+
+	indexer := registry.NewIndexer(mock)
+	skills, skipped, err := indexer.BuildIndex("/fake/path")
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "good-skill" {
+		t.Fatalf("skills = %+v, want only good-skill", skills)
+	}
+	found := false
+	for _, s := range skipped {
+		if s.Path == "skills/experimental-skill" && strings.Contains(s.Reason, "ignore pattern") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("skipped = %+v, want the ignore-pattern skip", skipped)
+	}
+}
+
+// TestBuildIndex_MalformedRegistryYamlFallsBackToWholeTree (#244): a broken
+// manifest must not silently mis-scope — discovery falls back to whole-tree
+// and the parse failure is surfaced as a skip.
+func TestBuildIndex_MalformedRegistryYamlFallsBackToWholeTree(t *testing.T) {
+	mock := newMockGitClient()
+	mock.blobs["HEAD:registry.yaml"] = []byte("\t::: not yaml {{{")
+	mock.blobs["HEAD:anywhere/some-skill/SKILL.md"] = skillMD("some-skill", "Discovered anyway.")
+
+	indexer := registry.NewIndexer(mock)
+	skills, skipped, err := indexer.BuildIndex("/fake/path")
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if len(skills) != 1 || skills[0].Name != "some-skill" {
+		t.Fatalf("skills = %+v, want whole-tree fallback to find some-skill", skills)
+	}
+	found := false
+	for _, s := range skipped {
+		if s.Path == "registry.yaml" && strings.Contains(s.Reason, "unparsable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("skipped = %+v, want the registry.yaml parse-failure skip", skipped)
 	}
 }
