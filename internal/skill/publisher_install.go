@@ -22,7 +22,7 @@ import (
 
 var (
 	ErrPublishNoEdit       = errors.New("skill must be ejected with `qvr edit` before publishing")
-	ErrPublishNoSource     = errors.New("skill entry has no Source URL — set --fork <url> to publish to a new remote")
+	ErrPublishNoSource     = errors.New("skill entry has no Source URL — publish it into a registry with `qvr publish <name> --registry <org>/<repo>`, or to a new remote with --fork <url>")
 	ErrPublishForkRequired = errors.New("--fork <url> requires an ejected skill — run `qvr edit` first")
 )
 

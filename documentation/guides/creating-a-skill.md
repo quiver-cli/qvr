@@ -129,12 +129,12 @@ Checks for: prompt injection, leaked secrets, hidden unicode, risky permissions.
 ## Publish
 
 ```bash
-# Publish to your default registry
-cd my-skill
-qvr publish
+# Publish a local skill folder into a registry (the full <org>/<repo> name)
+qvr publish ./my-skill --registry your-org/skills
 
-# Publish to a specific registry (use the full <org>/<repo> name)
-qvr publish --registry your-org/skills
+# A skill scaffolded with `qvr create` is tracked in qvr.lock — publish it
+# by name (the --registry flag routes it into the registry)
+qvr publish my-skill --registry your-org/skills
 ```
 
 ## Development Workflow
