@@ -189,6 +189,7 @@ func (m *Manager) AddWithOptions(ctx context.Context, name, url string, opts Add
 		Path:                repoPath,
 		SkillCount:          len(skills),
 		SkippedCount:        len(skipped),
+		Skipped:             skipped,
 		LastFetched:         time.Now(),
 		DefaultBranch:       defaultBranch,
 		CredentialsStripped: hadCreds,

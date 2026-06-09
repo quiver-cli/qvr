@@ -190,6 +190,14 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(reg)
 	}
+	renderRegistryAddText(cmd, reg, cfg, full)
+	return nil
+}
+
+// renderRegistryAddText prints the text-mode tail of `qvr registry add`: the
+// success line with skip counts, the 0-skills gitlink diagnostic (#241), the
+// trust summary, and the latest-only-clone hint.
+func renderRegistryAddText(cmd *cobra.Command, reg *model.Registry, cfg *config.Config, full bool) {
 	if reg.CredentialsStripped {
 		printer.Warning("URL contained embedded credentials; stored sanitised URL")
 		printer.Hint("configure a credential helper (e.g. `gh auth login` or osxkeychain) for auth")
@@ -199,6 +207,13 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 		msg += fmt.Sprintf(" (%d skipped)", reg.SkippedCount)
 	}
 	printer.Success(msg)
+	// A registry that indexed nothing but contains gitlinks almost certainly
+	// committed nested repos instead of skill files — name the trap instead
+	// of leaving a silent "0 skills" mystery (#241).
+	if reg.SkillCount == 0 && hasGitlinkSkip(reg.Skipped) {
+		printer.Warning("this repo contains gitlinks (nested repos committed as pointers) — the skill files themselves were never committed")
+		printer.Hint("remove the inner .git directory (e.g. `rm -rf skills/<name>/.git`), then `git add` and push again")
+	}
 	if reg.SkippedCount > 0 {
 		printer.Hint(fmt.Sprintf("run `qvr registry update %s --verbose` for skip reasons", reg.Name))
 	}
@@ -210,7 +225,17 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 		printer.Info("Fetched the default branch only (fast)")
 		printer.Hint(fmt.Sprintf("to install specific tags or older versions, re-add with `qvr registry add %s --full`", reg.URL))
 	}
-	return nil
+}
+
+// hasGitlinkSkip reports whether any indexer skip was a gitlink diagnostic
+// (#241), driving the 0-skills explanation in runRegistryAdd.
+func hasGitlinkSkip(skipped []model.SkippedSkill) bool {
+	for _, s := range skipped {
+		if strings.HasPrefix(s.Reason, "gitlink") {
+			return true
+		}
+	}
+	return false
 }
 
 // runRegistryDeepen handles the already-configured case of `qvr registry add`:

@@ -66,8 +66,9 @@ func NewIndexer(gitClient git.GitClient) *Indexer {
 
 // BuildIndex reads the bare repo at HEAD, discovers skills, and returns index
 // entries plus a list of candidate directories that could not be indexed (no
-// SKILL.md, parse error, etc). The skipped list is informational — BuildIndex
-// only returns an error for repo-level failures, not per-skill ones.
+// SKILL.md, parse error, fixture path, outside the registry.yaml scope, a
+// gitlink, etc). The skipped list is informational — BuildIndex only returns
+// an error for repo-level failures, not per-skill ones.
 func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSkill, error) {
 	blobs, err := idx.Git.ListBlobsRecursive(repoPath, "HEAD", "")
 	if err != nil {
@@ -76,23 +77,54 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 		return []SkillIndexEntry{}, nil, nil
 	}
 
+	var skipped []SkippedSkill
+
 	// 1. Every SKILL.md anywhere in the tree maps to its containing directory
 	//    ("." for a root SKILL.md). This is the "search all SKILL.md files" pass.
 	skillDirs := collectSkillDirs(blobs)
+
+	// 2. Fixture dirs (testdata/, fixtures/) never reach the consumer surface —
+	//    a repo's deliberately-malicious scanner fixtures must not be one
+	//    `qvr add` away from an agent dir (#244).
+	skillDirs, fixtureSkips := excludeFixturePaths(skillDirs)
+	skipped = append(skipped, fixtureSkips...)
+
+	// 3. registry.yaml scoping: when the repo carries a manifest, discovery is
+	//    confined to its skills-dir (+ ignore globs). A malformed manifest
+	//    falls back to whole-tree discovery but is surfaced as a skip rather
+	//    than silently mis-scoping (#244).
+	if rf, rfErr := loadRegistryFile(idx.Git, repoPath); rfErr != nil {
+		skipped = append(skipped, SkippedSkill{
+			Name:   registryFileName,
+			Path:   registryFileName,
+			Reason: fmt.Sprintf("unparsable — whole-tree discovery used: %v", rfErr),
+		})
+	} else if rf != nil {
+		var scopeSkips []SkippedSkill
+		skillDirs, scopeSkips = applyRegistryScope(rf, skillDirs)
+		skipped = append(skipped, scopeSkips...)
+	}
+
 	// Sort so any ancestor directory precedes its descendants — required for the
 	// single-pass prune below to be correct and deterministic.
 	sort.Strings(skillDirs)
 
-	// 2. Prune nested skills. A SKILL.md inside another skill's subtree is that
+	// 4. Prune nested skills. A SKILL.md inside another skill's subtree is that
 	//    skill's own asset (references/, scripts/, examples, …), not a separate
 	//    skill. The repo ROOT is the sole exception: it may itself be a skill yet
 	//    still parents sibling skills, so it never prunes its children.
 	kept := pruneNestedSkillDirs(skillDirs)
 
-	// 3. Parse, validate, and dedup the kept skill directories.
-	skills, skipped := idx.indexSkillDirs(repoPath, kept)
+	// 5. Parse, validate, and dedup the kept skill directories.
+	skills, parseSkips := idx.indexSkillDirs(repoPath, kept)
+	skipped = append(skipped, parseSkips...)
 
-	// 4. Flag a root skill that coexists with siblings so scan/install can scope
+	// 6. Surface gitlinks: a nested repo committed as a mode-160000 pointer has
+	//    no content in this repo, so a skill "committed" that way silently
+	//    vanishes from the index — name it instead of reporting a bare 0 (#241).
+	skipped = append(skipped, idx.collectGitlinkSkips(repoPath)...)
+
+	// 7. Flag a root skill that coexists with siblings so scan/install can scope
 	//    it to its own content rather than the entire repository.
 	if len(skills) > 1 {
 		for i := range skills {
@@ -105,6 +137,25 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 	idx.populateVersions(repoPath, skills)
 
 	return skills, skipped, nil
+}
+
+// collectGitlinkSkips lists gitlink (submodule-mode) tree entries at HEAD as
+// informational skips. Best-effort: an error walking the tree yields no skips
+// rather than failing the index (#241).
+func (idx *Indexer) collectGitlinkSkips(repoPath string) []SkippedSkill {
+	gitlinks, err := idx.Git.ListSubmodulePaths(repoPath, "HEAD")
+	if err != nil || len(gitlinks) == 0 {
+		return nil
+	}
+	skips := make([]SkippedSkill, 0, len(gitlinks))
+	for _, g := range gitlinks {
+		skips = append(skips, SkippedSkill{
+			Name:   path.Base(g),
+			Path:   g,
+			Reason: "gitlink — contents not committed to this repo (commit the files, not a nested repo pointer)",
+		})
+	}
+	return skips
 }
 
 // collectSkillDirs maps every SKILL.md blob anywhere in the tree to its

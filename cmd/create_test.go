@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -88,5 +89,59 @@ func TestRunCreate_ProjectScopedCreatesGitRepo(t *testing.T) {
 	}
 	if entry.Mode != model.ModeEdit {
 		t.Errorf("entry.Mode = %q, want edit", entry.Mode)
+	}
+}
+
+// TestRunCreate_StandaloneInsideWorkTree_Refuses is the #241 gitlink-trap
+// guard: a standalone scaffold inside an existing git work tree would be
+// recorded by `git add` as a gitlink (pointer, no files), so create must
+// refuse — for both a normal repo (.git directory) and a linked worktree
+// (.git file).
+func TestRunCreate_StandaloneInsideWorkTree_Refuses(t *testing.T) {
+	cases := []struct {
+		name    string
+		gitKind string // "dir" or "file"
+	}{
+		{"normal repo (.git dir)", "dir"},
+		{"linked worktree (.git file)", "file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("QUIVER_HOME", t.TempDir())
+			project := t.TempDir()
+			switch tc.gitKind {
+			case "dir":
+				if err := os.MkdirAll(filepath.Join(project, ".git"), 0o755); err != nil {
+					t.Fatalf("mkdir .git: %v", err)
+				}
+			case "file":
+				if err := os.WriteFile(filepath.Join(project, ".git"),
+					[]byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o644); err != nil {
+					t.Fatalf("write .git file: %v", err)
+				}
+			}
+			// Run from a subdirectory to prove the walk-up detection.
+			sub := filepath.Join(project, "skills")
+			if err := os.MkdirAll(sub, 0o755); err != nil {
+				t.Fatalf("mkdir sub: %v", err)
+			}
+			t.Chdir(sub)
+			withCapturingPrinter(t, output.FormatText)
+
+			t.Cleanup(func() { createStandalone = false; createType = "simple" })
+			createStandalone = true
+			createType = "simple"
+
+			err := runCreate(createCmd, []string{"demo"})
+			if err == nil {
+				t.Fatal("standalone create inside a work tree returned nil; want the gitlink refusal (#241)")
+			}
+			if !strings.Contains(err.Error(), "gitlink") {
+				t.Errorf("error = %v, want it to explain the gitlink trap", err)
+			}
+			if _, serr := os.Stat(filepath.Join(sub, "demo")); !os.IsNotExist(serr) {
+				t.Errorf("refused create left a scaffold behind (stat err: %v)", serr)
+			}
+		})
 	}
 }

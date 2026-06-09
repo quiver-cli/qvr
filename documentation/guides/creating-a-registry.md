@@ -16,13 +16,18 @@ description: My team's curated agent skills
 maintainers:
   - name: Your Name
     github: your-github-username
+skills-dir: skills        # where the indexer looks for skills (default: skills)
+ignore: []                # optional path globs the indexer must skip
 settings:
   require-scan: true
   default-branch: main
 EOF
 
-# 3. Create your first skill (free-standing dir inside skills/)
-mkdir -p skills && (cd skills && qvr create my-first-skill --standalone)
+# 3. Create your first skill: scaffold OUTSIDE the repo, then vendor the
+#    files in without the scaffold's .git
+(cd /tmp && qvr create my-first-skill --standalone)
+mkdir -p skills
+cp -R /tmp/my-first-skill skills/ && rm -rf skills/my-first-skill/.git
 
 # 4. Commit and push
 git add .
@@ -31,11 +36,17 @@ git remote add origin git@github.com:your-org/skills.git
 git push -u origin main
 ```
 
+> **Why scaffold outside?** `qvr create --standalone` initializes its own git
+> repo. Nesting that inside the registry's work tree makes `git add` record a
+> *gitlink* — a pointer commit with none of the skill's files — so the pushed
+> registry indexes 0 skills. qvr refuses in-worktree standalone creates for
+> this reason; the copy + `rm -rf .git` step keeps the files, not the pointer.
+
 ## Registry Structure
 
 ```
 my-team-skills/
-├── registry.yaml         # Required: registry metadata
+├── registry.yaml         # Recommended: metadata + indexer scoping (skills-dir, ignore)
 ├── skills/               # All skills live here
 │   ├── code-review/
 │   │   └── SKILL.md
@@ -48,15 +59,24 @@ my-team-skills/
 └── README.md             # Optional: documentation
 ```
 
+When `registry.yaml` is present, the indexer scopes discovery to `skills-dir`
+(default `skills/`, plus a root-level `SKILL.md`) and honors the `ignore`
+globs. Without it, the whole tree is walked. In both modes, skill directories
+under `testdata/` or `fixtures/` are always excluded — scanner fixtures and
+test data never reach `qvr search`/`qvr add`.
+
 ## Adding Skills to a Registry
 
 ### Option 1: Direct commit
 
 ```bash
-cd my-team-skills/skills
-qvr create new-skill --standalone
-# Edit new-skill/SKILL.md
-git add new-skill
+# Scaffold outside the registry repo, vendor the files in (see "Why
+# scaffold outside?" above), then commit
+(cd /tmp && qvr create new-skill --standalone)
+cp -R /tmp/new-skill my-team-skills/skills/ && rm -rf my-team-skills/skills/new-skill/.git
+cd my-team-skills
+# Edit skills/new-skill/SKILL.md
+git add skills/new-skill
 git commit -m "Add new-skill"
 git push
 ```
@@ -64,9 +84,8 @@ git push
 ### Option 2: Via qvr publish
 
 ```bash
-# From a standalone skill directory (use the full <org>/<repo> registry name)
-cd my-standalone-skill
-qvr publish --registry your-org/skills
+# From a local skill directory (use the full <org>/<repo> registry name)
+qvr publish ./my-standalone-skill --registry your-org/skills
 # This copies the skill into the registry, commits, and pushes
 ```
 

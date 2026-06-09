@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 	"unicode/utf8"
@@ -96,11 +97,37 @@ func (p *Printer) JSON(data any) error {
 	return enc.Encode(data)
 }
 
-// TruncDesc renders a description for a text-mode table cell. In `full` mode
-// it passes the string through unchanged; otherwise it clips to 60 chars with
-// an ellipsis. Centralised here so search, list, and registry list all agree
-// on the shape of truncation.
+// ansiEscapeRe matches ANSI CSI sequences (colors, cursor movement), OSC
+// sequences (terminal title, hyperlinks; BEL- or ST-terminated), and any
+// remaining bare ESC-prefixed control. Skill descriptions are attacker-
+// controlled registry content, so anything that could drive the terminal is
+// stripped before rendering.
+var ansiEscapeRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]`)
+
+// SanitizeDesc neutralises a description for terminal output: ANSI/OSC escape
+// sequences are stripped, newlines/tabs flatten to single spaces, and all
+// other control characters are dropped. Registry descriptions are untrusted
+// input — a hostile skill's description must not be able to clear the screen,
+// retitle the terminal, or smuggle multi-line output into a table row.
+func SanitizeDesc(s string) string {
+	s = ansiEscapeRe.ReplaceAllString(s, "")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t' || r == '\r':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// TruncDesc renders a description for a text-mode table cell. The string is
+// sanitised first (see SanitizeDesc); in `full` mode it then passes through
+// unclipped, otherwise it clips to 60 chars with an ellipsis. Centralised here
+// so search, list, and registry list all agree on the shape of truncation.
 func TruncDesc(s string, full bool) string {
+	s = SanitizeDesc(s)
 	if full || utf8.RuneCountInString(s) <= 60 {
 		return s
 	}

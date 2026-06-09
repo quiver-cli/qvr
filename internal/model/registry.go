@@ -17,6 +17,12 @@ type Registry struct {
 	// can surface a warning so the user knows their token isn't being
 	// stored — and should live in a credential helper instead.
 	CredentialsStripped bool `json:"credentials_stripped,omitempty"`
+
+	// Skipped carries the per-skill skip detail behind SkippedCount when the
+	// add path needs to render reasons (e.g. the 0-skills-but-gitlinks
+	// diagnostic, #241). Update paths surface the same detail via
+	// RegistryStatus.
+	Skipped []SkippedSkill `json:"skipped,omitempty"`
 }
 
 // SkippedSkill records a candidate skill directory that the indexer could not
