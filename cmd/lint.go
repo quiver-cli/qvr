@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/astra-sh/qvr/internal/output"
+	"github.com/astra-sh/qvr/internal/security"
 	"github.com/astra-sh/qvr/internal/skill"
 	"github.com/spf13/cobra"
 )
@@ -101,11 +102,12 @@ func runLint(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printer.Error(fmt.Sprintf("Skill at %s has %d lint issue(s):", resolved, len(result.Errors)))
+	printer.Error(fmt.Sprintf("skill at %s has %s:", resolved, output.Plural(len(result.Errors), "lint issue")))
+	style := printer.StyleOut()
 	for _, e := range result.Errors {
-		fmt.Fprintf(printer.Out, "  [%s] %s: %s\n", e.Severity, e.Field, e.Message)
+		fmt.Fprintf(printer.Out, "  %s %s: %s\n", severityTag(style, security.Severity(e.Severity)), e.Field, e.Message)
 	}
-	return fmt.Errorf("lint failed with %d issue(s)", len(result.Errors))
+	return fmt.Errorf("lint failed with %s", output.Plural(len(result.Errors), "issue"))
 }
 
 // resolveSkillDir handles the registry-layout case: when the given path doesn't

@@ -113,8 +113,8 @@ func runCreateStandalone(name string) error {
 		})
 	}
 	printer.Success(fmt.Sprintf("Created %s skill at %s (standalone)", createType, name))
-	printer.Info(fmt.Sprintf("  Next: `qvr publish ./%s --registry <name> --tag v0.1.0` (multi-skill registry)", name))
-	printer.Info(fmt.Sprintf("        or `qvr publish ./%s --tag v0.1.0 --fork <git-url> --migrate` (single-skill repo)", name))
+	printer.Hint(fmt.Sprintf("publish with `qvr publish ./%s --registry <name> --tag v0.1.0` (multi-skill registry)", name))
+	printer.Hint(fmt.Sprintf("or `qvr publish ./%s --tag v0.1.0 --fork <git-url> --migrate` (single-skill repo)", name))
 	return nil
 }
 
@@ -209,8 +209,7 @@ func runCreateProjectScoped(name string) error {
 		})
 	}
 	printer.Success(fmt.Sprintf("Created %s skill at %s", createType, canonicalRel))
-	printer.Info(fmt.Sprintf("  Edit %s/SKILL.md, then:", canonicalRel))
-	printer.Info(fmt.Sprintf("    qvr publish %s --tag v0.1.0 --fork git@github.com:you/%s.git --migrate", name, name))
+	printer.Hint(fmt.Sprintf("edit %s/SKILL.md, then run `qvr publish %s --tag v0.1.0 --fork git@github.com:you/%s.git --migrate`", canonicalRel, name, name))
 	return nil
 }
 

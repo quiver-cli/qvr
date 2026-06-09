@@ -98,8 +98,8 @@ func TestUpgrade_AlreadyUpToDate(t *testing.T) {
 	if err := runUpgrade(upgradeCmd, nil); err != nil {
 		t.Fatalf("runUpgrade: %v", err)
 	}
-	if !strings.Contains(out.String(), "already up to date") {
-		t.Errorf("want 'already up to date', got %q", out.String())
+	if !strings.Contains(out.String(), "Already up to date") {
+		t.Errorf("want 'Already up to date', got %q", out.String())
 	}
 }
 
@@ -114,7 +114,7 @@ func TestUpgrade_CheckReportsAvailable(t *testing.T) {
 		t.Fatalf("runUpgrade: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "update available") || !strings.Contains(s, "v0.11.2") {
+	if !strings.Contains(s, "Update available") || !strings.Contains(s, "v0.11.2") {
 		t.Errorf("want update-available message mentioning v0.11.2, got %q", s)
 	}
 }
@@ -188,7 +188,7 @@ func TestUpgrade_PerformsSwapWithYes(t *testing.T) {
 	if string(got) != "FRESH-BINARY" {
 		t.Errorf("target = %q, want FRESH-BINARY after swap", got)
 	}
-	if !strings.Contains(out.String(), "upgraded") {
-		t.Errorf("want 'upgraded' confirmation, got %q", out.String())
+	if !strings.Contains(out.String(), "Upgraded") {
+		t.Errorf("want 'Upgraded' confirmation, got %q", out.String())
 	}
 }

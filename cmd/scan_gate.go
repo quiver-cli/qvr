@@ -42,13 +42,13 @@ type scanGateOptions struct {
 	Action string
 	// Subject is the skill name for the banner — e.g. "code-review".
 	Subject string
-	// WarnOnly tells the renderer to use the ⚠ "found N finding(s)" banner
-	// even when findings meet the block threshold. Callers that do not act on
-	// scanGateResult.Blocked (sync, which is restorative — the lock already
-	// committed to these refs) set this so the surfaced wording matches what
-	// the command will actually do. Without this, sync's critical findings
-	// were rendered as `✗ scan blocked` even though the skill was restored
-	// and linked anyway (bug #59).
+	// WarnOnly tells the renderer to use the `warning: … found N findings`
+	// banner even when findings meet the block threshold. Callers that do not
+	// act on scanGateResult.Blocked (sync, which is restorative — the lock
+	// already committed to these refs) set this so the surfaced wording
+	// matches what the command will actually do. Without this, sync's critical
+	// findings were rendered as `error: … scan blocked` even though the skill
+	// was restored and linked anyway (bug #59).
 	WarnOnly bool
 	// Quiet suppresses the per-finding detail lines when the gate's
 	// decision is "allowed", showing only the one-line banner. Used by
@@ -188,21 +188,27 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 	if subject == "" {
 		subject = res.Skill
 	}
+	style := printer.StyleErr()
 	// Lint is advisory and surfaced whether or not there are security findings,
 	// so a non-conformant-but-safe skill still warns. Suppressed in Quiet mode
 	// (batch `add --all`) to keep first-time installs uncluttered.
 	if res.Lint != nil && !res.Lint.Valid && !opts.Quiet {
-		fmt.Fprintf(printer.Err, "⚠ %s %s: lint found %d issue(s) (advisory — install proceeds; run `qvr lint %s`)\n",
-			action, subject, res.Lint.Count, subject)
+		fmt.Fprintf(printer.Err, "%s %s %s: lint found %s %s\n",
+			style.BoldYellow("warning:"), action, subject,
+			output.Plural(res.Lint.Count, "issue"),
+			style.Dim(fmt.Sprintf("(advisory — install proceeds; run `qvr lint %s`)", subject)))
 	}
 	if len(res.Findings) == 0 {
 		return
 	}
-	banner := fmt.Sprintf("⚠ %s %s: scan found %d finding(s) (max %s; block threshold %s)",
-		action, subject, res.Summary.Total(), res.Summary.MaxSeverity(), threshold)
+	banner := fmt.Sprintf("%s %s %s: scan found %s %s",
+		style.BoldYellow("warning:"), action, subject,
+		output.Plural(res.Summary.Total(), "finding"),
+		style.Dim(fmt.Sprintf("(max %s; block threshold %s)", res.Summary.MaxSeverity(), threshold)))
 	if blocked {
-		banner = fmt.Sprintf("✗ %s %s: scan blocked (max %s ≥ threshold %s)",
-			action, subject, res.Summary.MaxSeverity(), threshold)
+		banner = fmt.Sprintf("%s %s %s: scan blocked %s",
+			style.BoldRed("error:"), action, subject,
+			style.Dim(fmt.Sprintf("(max %s ≥ threshold %s)", res.Summary.MaxSeverity(), threshold)))
 	}
 	fmt.Fprintln(printer.Err, banner)
 	// Quiet+allowed → summary line only. `qvr add` sets this so a
@@ -210,11 +216,11 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 	// lines and scare users off. `qvr scan` keeps Quiet=false so the
 	// full report still appears when the user explicitly asked for it.
 	if opts.Quiet && !blocked {
-		if opts.QuietHint != "" {
-			fmt.Fprintf(printer.Err, "  %s\n", opts.QuietHint)
-		} else {
-			fmt.Fprintf(printer.Err, "  Run `qvr scan %s` to see the full report.\n", subject)
+		hint := opts.QuietHint
+		if hint == "" {
+			hint = fmt.Sprintf("run `qvr scan %s` to see the full report", subject)
 		}
+		fmt.Fprintf(printer.Err, "%s %s\n", style.BoldCyan("hint:"), hint)
 		return
 	}
 	// Render only findings at or above the threshold when blocking; otherwise
@@ -225,26 +231,42 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 	}
 	renderScanFindingLines(display)
 	if blocked {
-		fmt.Fprintln(printer.Err, "  Pass --no-scan to override, or `qvr config set security.block_severity <higher>` to relax the gate.")
+		fmt.Fprintf(printer.Err, "%s pass --no-scan to override, or `qvr config set security.block_severity <higher>` to relax the gate\n",
+			style.BoldCyan("hint:"))
+	}
+}
+
+// severityTag renders a finding's severity as a colour-coded `[SEVERITY]`
+// tag: critical/error red, warning yellow, everything else dim.
+func severityTag(style output.Styler, sev security.Severity) string {
+	tag := "[" + strings.ToUpper(string(sev)) + "]"
+	switch sev {
+	case security.SeverityCritical, security.SeverityError:
+		return style.Red(tag)
+	case security.SeverityWarning:
+		return style.Yellow(tag)
+	default:
+		return style.Dim(tag)
 	}
 }
 
 // renderScanFindingLines prints one stderr block per finding: severity/check/
 // message, optional file:line location, and remediation hint.
 func renderScanFindingLines(findings []security.Finding) {
+	style := printer.StyleErr()
 	for _, f := range findings {
 		loc := f.File
 		if f.Line > 0 {
 			loc = loc + ":" + strconv.Itoa(f.Line)
 		}
-		fmt.Fprintf(printer.Err, "  [%s] %s — %s",
-			strings.ToUpper(string(f.Severity)), f.Check, f.Message)
+		fmt.Fprintf(printer.Err, "  %s %s — %s",
+			severityTag(style, f.Severity), f.Check, f.Message)
 		if loc != "" {
-			fmt.Fprintf(printer.Err, " (%s)", loc)
+			fmt.Fprintf(printer.Err, " %s", style.Dim("("+loc+")"))
 		}
 		fmt.Fprintln(printer.Err)
 		if f.Remediation != "" {
-			fmt.Fprintf(printer.Err, "    → %s\n", f.Remediation)
+			fmt.Fprintf(printer.Err, "    %s\n", style.Dim("→ "+f.Remediation))
 		}
 	}
 }
@@ -282,10 +304,6 @@ func gateAvailable(cfg *config.Config, disabled bool) bool {
 	}
 	return cfg.Security.ScanOnInstall
 }
-
-// ensure the output import is retained even if all renderers use printer.Err
-// directly.
-var _ output.Format = output.FormatText
 
 // toScanRef condenses a scanGateResult into the compact form persisted on a
 // lock entry's verification block.

@@ -390,7 +390,7 @@ func addInstallItem(cmd *cobra.Command, cfg *config.Config, installer *skill.Ins
 		for _, w := range result.Warnings {
 			printer.Warning(w)
 		}
-		printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
+		printer.Success(fmt.Sprintf("Added %s@%s → %s", result.Name, result.Version, strings.Join(result.Targets, ", ")))
 	}
 }
 
@@ -627,7 +627,7 @@ func syncProjectFileFromLock(projPath string, lock *model.LockFile, installed []
 		return err
 	}
 	if !existed {
-		printer.Info("Created qvr.toml — commit it so teammates get the declarative skill set (`git add qvr.toml`)")
+		printer.Hint("created qvr.toml — commit it so teammates get the declarative skill set (`git add qvr.toml`)")
 	}
 	return nil
 }
@@ -728,14 +728,14 @@ func runAddLocal(cmd *cobra.Command, cfg *config.Config, installer *skill.Instal
 		if len(discovered) > 1 {
 			printer.Error(err.Error())
 			for _, d := range discovered {
-				fmt.Fprintf(printer.Out, "  %s\n", d)
+				printer.Detail(d)
 			}
 			return fmt.Errorf("ambiguous skill path")
 		}
 		return fmt.Errorf("add --local: %w", err)
 	}
 	if resolved != addLocal {
-		printer.Info(fmt.Sprintf("discovered skill at %s", resolved))
+		printer.Info(fmt.Sprintf("Discovered skill at %s", resolved))
 	}
 
 	var result *skill.InstallResult
@@ -785,7 +785,7 @@ func runAddLocal(cmd *cobra.Command, cfg *config.Config, installer *skill.Instal
 		}
 		result = r
 		if printer.Format != output.FormatJSON {
-			printer.Success(fmt.Sprintf("Added %s@%s → %v", r.Name, r.Version, r.Targets))
+			printer.Success(fmt.Sprintf("Added %s@%s → %s", r.Name, r.Version, strings.Join(r.Targets, ", ")))
 		}
 		return nil
 	})
@@ -835,9 +835,9 @@ func emitAddResults(results []*skill.InstallResult, blocked []blockedSkillJSON, 
 	// whole point of qvr.lock; global installs get the inspection hint.
 	if len(results) > 0 {
 		if addGlobal {
-			printer.Info("Hint: `qvr list --global` shows what's installed in the ambient lane")
+			printer.Hint("`qvr list --global` shows what's installed in the ambient lane")
 		} else {
-			printer.Info("Hint: commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
+			printer.Hint("commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
 		}
 	}
 	return nil
@@ -1004,7 +1004,7 @@ func ensureRegistryFor(ctx context.Context, mgr *registry.Manager, cloneURL stri
 		if reg.SkillCount < 0 {
 			printer.Info(fmt.Sprintf("Registered %s as %q", reg.URL, reg.Name))
 		} else {
-			printer.Info(fmt.Sprintf("Registered %s as %q (%d skills)", reg.URL, reg.Name, reg.SkillCount))
+			printer.Info(fmt.Sprintf("Registered %s as %q (%s)", reg.URL, reg.Name, output.Plural(reg.SkillCount, "skill")))
 		}
 	}
 	return name, nil
@@ -1029,8 +1029,8 @@ func soleSkillName(mgr *registry.Manager, regName, spec string) (string, error) 
 			names[i] = s.Name
 		}
 		sort.Strings(names)
-		return "", fmt.Errorf("%s exposes %d skills (%s); name one, e.g. `qvr add %s/%s`",
-			regName, len(skills), strings.Join(names, ", "), strings.TrimRight(spec, "/"), names[0])
+		return "", fmt.Errorf("%s exposes %s (%s); name one, e.g. `qvr add %s/%s`",
+			regName, output.Plural(len(skills), "skill"), strings.Join(names, ", "), strings.TrimRight(spec, "/"), names[0])
 	}
 }
 

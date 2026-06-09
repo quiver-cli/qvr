@@ -223,8 +223,8 @@ func emitScanResult(result *security.ScanResult, failOn security.Severity) error
 	case "markdown":
 		fmt.Fprint(printer.Out, security.ToMarkdown(result))
 		if exceedsThreshold(result, failOn) {
-			return fmt.Errorf("scan found %d finding(s) at or above %s",
-				countAbove(result.Summary, failOn), failOn)
+			return fmt.Errorf("scan found %s at or above %s",
+				output.Plural(countAbove(result.Summary, failOn), "finding"), failOn)
 		}
 		return nil
 	case "json":
@@ -239,8 +239,8 @@ func emitScanResult(result *security.ScanResult, failOn security.Severity) error
 
 	renderScanText(result, failOn)
 	if exceedsThreshold(result, failOn) {
-		return fmt.Errorf("scan found %d finding(s) at or above %s",
-			countAbove(result.Summary, failOn), failOn)
+		return fmt.Errorf("scan found %s at or above %s",
+			output.Plural(countAbove(result.Summary, failOn), "finding"), failOn)
 	}
 	return nil
 }
@@ -415,7 +415,7 @@ func effectiveScanFormat(global output.Format) string {
 // the unfiltered set so the footer reflects the truth.
 func renderScanText(result *security.ScanResult, failOn security.Severity) {
 	if len(result.Findings) == 0 {
-		printer.Success(fmt.Sprintf("scan clean for %s (%d check(s) ran)", result.Skill, len(result.Checks)))
+		printer.Success(fmt.Sprintf("Scan clean for %s (%s ran)", result.Skill, output.Plural(len(result.Checks), "check")))
 		renderLintText(result)
 		return
 	}
@@ -430,22 +430,24 @@ func renderScanText(result *security.ScanResult, failOn security.Severity) {
 	}
 	printer.Table([]string{"SEVERITY", "CHECK", "LOCATION", "MESSAGE"}, rows)
 
-	fmt.Fprintf(printer.Out, "\nsummary: %d critical, %d error, %d warning, %d info — fail-on=%s\n",
-		result.Summary.Critical, result.Summary.Error, result.Summary.Warning, result.Summary.Info, failOn)
+	fmt.Fprintf(printer.Out, "\nsummary: %d critical, %d error, %d warning, %d info %s\n",
+		result.Summary.Critical, result.Summary.Error, result.Summary.Warning, result.Summary.Info,
+		printer.StyleOut().Dim(fmt.Sprintf("— fail-on=%s", failOn)))
 	renderLintText(result)
 }
 
 // renderLintText prints the advisory spec-lint summary that rides alongside a
 // scan. Silent when no lint was attached or the skill passes — lint never
 // blocks, so a clean skill says nothing extra and a non-conformant one prints
-// a "lint: N issue(s)" line plus each issue, clearly marked advisory.
+// a "lint: N issues" line plus each issue, clearly marked advisory.
 func renderLintText(result *security.ScanResult) {
 	if result.Lint == nil || result.Lint.Valid {
 		return
 	}
-	fmt.Fprintf(printer.Out, "lint: %d issue(s) (advisory — does not block install)\n", result.Lint.Count)
+	fmt.Fprintf(printer.Out, "lint: %s (advisory — does not block install)\n", output.Plural(result.Lint.Count, "issue"))
+	style := printer.StyleOut()
 	for _, is := range result.Lint.Issues {
-		fmt.Fprintf(printer.Out, "  [%s] %s: %s\n", is.Severity, is.Field, is.Message)
+		fmt.Fprintf(printer.Out, "  %s %s: %s\n", severityTag(style, security.Severity(is.Severity)), is.Field, is.Message)
 	}
 }
 

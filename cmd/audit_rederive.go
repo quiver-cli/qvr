@@ -7,6 +7,7 @@ import (
 	"github.com/astra-sh/qvr/internal/ops/derive"
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -56,7 +57,7 @@ func runAuditRederive(cmd *cobra.Command, args []string) error {
 		if outputFormat == "json" {
 			return printer.JSON(rederiveSummary{})
 		}
-		printer.Info("no traces recorded yet")
+		printer.Info("No traces recorded yet")
 		return nil
 	}
 
@@ -91,9 +92,10 @@ func runAuditRederive(cmd *cobra.Command, args []string) error {
 	if outputFormat == "json" {
 		return printer.JSON(sum)
 	}
-	printer.Success(fmt.Sprintf("re-derived %d session(s), %d span(s)", sum.Sessions, sum.Spans))
+	printer.Success(fmt.Sprintf("Re-derived %s, %s",
+		output.Plural(sum.Sessions, "session"), output.Plural(sum.Spans, "span")))
 	if sum.SkippedNoDB > 0 {
-		printer.Info(fmt.Sprintf("%d session(s) skipped — no deriver for their agent", sum.SkippedNoDB))
+		printer.Info(fmt.Sprintf("%s skipped — no deriver for their agent", output.Plural(sum.SkippedNoDB, "session")))
 	}
 	return nil
 }

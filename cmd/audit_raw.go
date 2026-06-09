@@ -93,7 +93,7 @@ func runAuditRaw(cmd *cobra.Command, args []string) error {
 		if outputFormat == "json" {
 			return printer.JSON([]any{})
 		}
-		printer.Info("no traces recorded yet")
+		printer.Info("No traces recorded yet")
 		return nil
 	}
 	s, err := openAuditStore(cmd.Context(), cfg, true)
@@ -130,7 +130,7 @@ func runAuditRaw(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(w, string(r.Raw))
 	}
 	if len(rows) == 0 {
-		printer.Info("no traces match")
+		printer.Info("No traces match")
 	}
 	return nil
 }
@@ -154,7 +154,7 @@ func runAuditSpans(cmd *cobra.Command, args []string) error {
 		if outputFormat == "json" {
 			return printer.JSON([]derive.Span{})
 		}
-		printer.Info("no traces recorded yet")
+		printer.Info("No traces recorded yet")
 		return nil
 	}
 	s, err := openAuditStore(cmd.Context(), cfg, true)
@@ -185,9 +185,9 @@ func runAuditSpans(cmd *cobra.Command, args []string) error {
 		// (deriveGrouped already warned per session with the real cause) — say
 		// so, rather than the false "no transcript captured" when rows exist.
 		if len(rows) > 0 {
-			printer.Info("no spans derived for this scope (captured transcript rows did not yield spans)")
+			printer.Info("No spans derived for this scope — captured transcript rows did not yield spans")
 		} else {
-			printer.Info("no spans derived (no transcript captured for this scope)")
+			printer.Info("No spans derived — no transcript captured for this scope")
 		}
 		return nil
 	}

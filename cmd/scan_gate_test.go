@@ -170,8 +170,9 @@ func TestScanAndGate_SurfacesFindingsToStderr(t *testing.T) {
 // TestScanAndGate_WarnOnlyUsesWarningTemplateForCriticalFindings pins the
 // fix for bug #59: sync's gate sets WarnOnly=true because sync never blocks
 // (the lock already committed to these refs), so even critical findings
-// should render with the ⚠ warning template — not the ✗ "scan blocked"
-// template that misled users into thinking the restore was aborted.
+// should render with the `warning: … scan found` template — not the
+// `error: … scan blocked` template that misled users into thinking the
+// restore was aborted.
 //
 // The gate still reports Blocked=true so callers can decide what to do; only
 // the rendered wording changes.
@@ -200,11 +201,11 @@ func TestScanAndGate_WarnOnlyUsesWarningTemplateForCriticalFindings(t *testing.T
 		t.Errorf("WarnOnly should NOT use the blocked template, got:\n%s", out)
 	}
 	if !strings.Contains(out, "scan found") {
-		t.Errorf("WarnOnly should use the ⚠ warning template, got:\n%s", out)
+		t.Errorf("WarnOnly should use the warning template, got:\n%s", out)
 	}
 	// The remediation hint about --no-scan / block_severity is for the
 	// blocking path — sync shouldn't print it because it doesn't block.
-	if strings.Contains(out, "Pass --no-scan to override") {
+	if strings.Contains(out, "pass --no-scan to override") {
 		t.Errorf("WarnOnly should suppress the blocking remediation hint, got:\n%s", out)
 	}
 }

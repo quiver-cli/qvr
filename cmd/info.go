@@ -285,7 +285,8 @@ func renderInfoVersionRows(w io.Writer, info *skillInfo) {
 		fmt.Fprintf(w, "Commit:      %s\n", info.Commit)
 	}
 	if info.CommitDrift != "" {
-		fmt.Fprintf(w, "  ✗ worktree HEAD is %s (lockfile commit field is out of date — see #73)\n", info.CommitDrift)
+		fmt.Fprintf(w, "  %s worktree HEAD is %s (lockfile commit field is out of date — see #73)\n",
+			output.NewStyler(w).Red("✗"), info.CommitDrift)
 	}
 	if info.Worktree != "" {
 		fmt.Fprintf(w, "Worktree:    %s\n", info.Worktree)
@@ -338,11 +339,12 @@ func renderInfoTargets(w io.Writer, info *skillInfo) {
 		return
 	}
 	fmt.Fprintln(w, "Targets:")
+	style := output.NewStyler(w)
 	for _, t := range info.TargetDetails {
-		marker := "✗"
+		marker := style.Red("✗")
 		detail := t.Error
 		if t.OK {
-			marker = "✓"
+			marker = style.Green("✓")
 			detail = t.Path
 		}
 		if detail == "" {

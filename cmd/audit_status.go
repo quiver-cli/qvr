@@ -84,7 +84,7 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 		printer.Info("Audit pipeline: enabled")
 	} else {
 		printer.Info("Audit pipeline: DISABLED — hooks are wired but no events are recorded")
-		printer.Warning("run 'qvr audit enable' to start recording")
+		printer.Hint("run `qvr audit enable` to start recording")
 	}
 	headers := []string{"AGENT", "DETECTED", "INSTALLED", "VALID", "DERIVES", "RECORDED", "SESSIONS", "ERRORS", "LAST EVENT"}
 	rows := make([][]string, 0, len(statuses))

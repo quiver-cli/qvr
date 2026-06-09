@@ -42,7 +42,7 @@ func TestRunScanCleanSkillTextSucceeds(t *testing.T) {
 		t.Fatalf("expected nil error on clean skill, got %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "scan clean") {
+	if !strings.Contains(got, "Scan clean") {
 		t.Errorf("expected success line in output, got %q", got)
 	}
 }

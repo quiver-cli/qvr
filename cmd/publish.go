@@ -241,7 +241,7 @@ func renderPublishInstalled(ps *publishInstalledState) error {
 		if result.Tag != "" {
 			tagSuffix = fmt.Sprintf(" (tag %s)", result.Tag)
 		}
-		printer.Info(fmt.Sprintf("Dry run OK: %s would be published to %s@%s%s", result.Skill, result.Remote, result.Branch, tagSuffix))
+		printer.Info(fmt.Sprintf("~ %s would be published to %s@%s%s", result.Skill, result.Remote, result.Branch, tagSuffix))
 		return nil
 	}
 	// Nothing-to-publish (issue #84): when the eject dir was clean and the
@@ -314,11 +314,11 @@ func renderAutoUnejectStatus(ps *publishInstalledState) {
 	case ps.autoUnejected:
 		printer.Info(fmt.Sprintf("Switched %s back to consume mode at %s", result.Skill, result.Tag))
 	case ps.autoUnejectNeedsAdd:
-		printer.Info(fmt.Sprintf("Hint: run `qvr add %s@%s` to finish switching back to consume mode",
+		printer.Hint(fmt.Sprintf("run `qvr add %s@%s` to finish switching back to consume mode",
 			result.Skill, result.Tag))
 	case result.Tag != "" && !result.DryRun && !result.NothingToPublish && publishFork == "":
-		printer.Info(fmt.Sprintf(
-			"Hint: run `qvr remove --force %s && qvr add %s@%s` to switch back to consume mode at the new tag",
+		printer.Hint(fmt.Sprintf(
+			"run `qvr remove --force %s && qvr add %s@%s` to switch back to consume mode at the new tag",
 			result.Skill, result.Skill, result.Tag))
 		// The --fork --migrate --tag case is handled by
 		// autoRegisterForkAsRegistry's bespoke warning when auto-uneject
@@ -354,7 +354,7 @@ func publishInstalledUnderLock(cmd *cobra.Command, name, projectRoot, lockPath s
 		return fmt.Errorf("cannot publish %q: it is a link install — edit the source path and push with raw git", name)
 	}
 	if !e.IsEdit() {
-		return fmt.Errorf("publish %s: skill is not ejected. Run `qvr edit %s` first to make it editable", name, name)
+		return fmt.Errorf("publish %s: skill is not ejected — run `qvr edit %s` first to make it editable", name, name)
 	}
 
 	editDir := skill.EffectiveTarget(e, projectRoot)
@@ -632,7 +632,7 @@ func runPublishGreenfield(cmd *cobra.Command, path string) error {
 		if result.Tag != "" {
 			tagSuffix = fmt.Sprintf(" (tag %s)", result.Tag)
 		}
-		printer.Info(fmt.Sprintf("Dry run OK: %s would be published to %s@%s%s", result.Skill, result.Registry, result.Branch, tagSuffix))
+		printer.Info(fmt.Sprintf("~ %s would be published to %s@%s%s", result.Skill, result.Registry, result.Branch, tagSuffix))
 		return nil
 	}
 	shortCommit := result.Commit

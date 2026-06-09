@@ -140,7 +140,7 @@ func buildTreeGroups(locks []scopedLock, showScope bool) []treeGroup {
 
 func renderTreeText(groups []treeGroup, showScope bool) {
 	if len(groups) == 0 {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		return
 	}
 	lastScope := ""

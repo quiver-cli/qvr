@@ -8,6 +8,7 @@ import (
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -77,8 +78,9 @@ func runHook(cmd *cobra.Command, args []string) error {
 			"qvr _hook: %s %s dropped session (no skill usage)\n", agent, hookType)
 	} else if res != nil && (res.LinesStored > 0 || res.HookStored) {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"qvr _hook: %s %s captured %d line(s), %d span(s), hook_payload=%t\n",
-			agent, hookType, res.LinesStored, res.SpansStored, res.HookStored)
+			"qvr _hook: %s %s captured %s, %s, hook_payload=%t\n",
+			agent, hookType, output.Plural(res.LinesStored, "line"),
+			output.Plural(res.SpansStored, "span"), res.HookStored)
 	}
 	return nil
 }

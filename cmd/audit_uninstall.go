@@ -6,6 +6,7 @@ import (
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -69,19 +70,20 @@ func runAuditUninstall(cmd *cobra.Command, args []string) error {
 		return printer.JSON(map[string]any{"dry_run": uninstallDryRun, "agents": outcomes})
 	}
 	anyErr := false
+	dim := printer.StyleOut().Dim
 	for _, o := range outcomes {
 		switch {
 		case o.Error != "":
 			anyErr = true
 			printer.Error(fmt.Sprintf("%s: %s", o.Agent, o.Error))
 		case uninstallDryRun:
-			printer.Info(fmt.Sprintf("~ %s: would remove %d hooks", o.Agent, len(o.HooksRemoved)))
+			printer.Info(dim(fmt.Sprintf("~ %s: would remove %s", o.Agent, output.Plural(len(o.HooksRemoved), "hook"))))
 		case o.Restored:
 			printer.Success(fmt.Sprintf("%s: restored from backup", o.Agent))
 		case len(o.HooksRemoved) > 0:
-			printer.Success(fmt.Sprintf("%s: removed %d hooks", o.Agent, len(o.HooksRemoved)))
+			printer.Success(fmt.Sprintf("%s: removed %s", o.Agent, output.Plural(len(o.HooksRemoved), "hook")))
 		default:
-			printer.Info(fmt.Sprintf("- %s: nothing to remove", o.Agent))
+			printer.Info(dim(fmt.Sprintf("- %s: nothing to remove", o.Agent)))
 		}
 		for _, w := range o.Warnings {
 			printer.Warning(fmt.Sprintf("%s: %s", o.Agent, w))

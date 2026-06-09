@@ -32,12 +32,12 @@ var (
 var errJSONHandled = errors.New("json payload already emitted")
 
 // errTextHandled is the text-mode equivalent of errJSONHandled — the command
-// already printed a per-skill `✗ ...: <reason>` line for every failure, so the
-// top-level `Error: ...` envelope would just duplicate the first one. Return
-// this from RunE when the command surfaced failures itself (e.g. batch
+// already printed a per-skill `error: ...: <reason>` line for every failure,
+// so the top-level `error:` envelope would just duplicate the first one.
+// Return this from RunE when the command surfaced failures itself (e.g. batch
 // `qvr add` where two skills failed and one succeeded). Exit code stays 1.
 // Issue #66 — without this, partial-failure batches read like total failures
-// because the trailing duplicate `Error:` is the last line on stderr.
+// because the trailing duplicate `error:` is the last line on stderr.
 var errTextHandled = errors.New("text already emitted failure")
 
 var rootCmd = &cobra.Command{
@@ -98,7 +98,7 @@ func Execute() {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]string{"error": err.Error()})
 	} else {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+		fmt.Fprintf(os.Stderr, "%s %s\n", output.NewStyler(os.Stderr).BoldRed("error:"), err.Error())
 	}
 	os.Exit(1)
 }

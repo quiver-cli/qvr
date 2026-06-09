@@ -39,7 +39,7 @@ project lock — the same code path ` + "`qvr add`" + ` uses.
   qvr import --frozen skills.lock.txt    # honor --commit pins on each line
 
 URLs already registered under a different local alias are reused silently
-rather than registered again. Per-line failures surface as ` + "`✗ import …: <reason>`" + `
+rather than registered again. Per-line failures surface as ` + "`error: import …: <reason>`" + `
 on stderr; the command exits non-zero if anything failed but successful
 installs are kept.`,
 	Args: cobra.ExactArgs(1),
@@ -193,9 +193,9 @@ func installImportEntries(ctx context.Context, entries []manifest.Entry, urlToAl
 func printImportHint(lineResults []importLineResult) {
 	if successCount(lineResults) > 0 {
 		if importGlobal {
-			printer.Info("Hint: `qvr list --global` shows what's installed in the ambient lane")
+			printer.Hint("`qvr list --global` shows what's installed in the ambient lane")
 		} else {
-			printer.Info("Hint: commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
+			printer.Hint("commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
 		}
 	}
 }
@@ -249,7 +249,7 @@ func handleEmptyManifest(parseErrs []manifest.ParseError) error {
 	if len(parseErrs) > 0 {
 		return errTextHandled
 	}
-	printer.Info("manifest is empty; nothing to import")
+	printer.Info("Manifest is empty; nothing to import")
 	return nil
 }
 
@@ -299,7 +299,7 @@ func importOneEntry(ctx context.Context, entry manifest.Entry, urlToAlias map[st
 		if pr.added {
 			printer.Success(fmt.Sprintf("Registered registry %s ← %s", pr.alias, entry.RepoURL))
 		}
-		printer.Success(fmt.Sprintf("Imported %s@%s → %v", result.Name, result.Version, result.Targets))
+		printer.Success(fmt.Sprintf("Imported %s@%s → %s", result.Name, result.Version, strings.Join(result.Targets, ", ")))
 	}
 	return lr, nil
 }

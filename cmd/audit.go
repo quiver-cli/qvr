@@ -68,7 +68,7 @@ func renderEmptyEvents() error {
 	if outputFormat == "json" {
 		return printer.JSON([]any{})
 	}
-	printer.Info("nothing recorded yet")
+	printer.Info("Nothing recorded yet")
 	return nil
 }
 

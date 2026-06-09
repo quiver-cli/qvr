@@ -102,7 +102,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		if printer.Format == output.FormatJSON {
 			return printer.JSON(res)
 		}
-		printer.Info(fmt.Sprintf("already up to date (%s)", current))
+		printer.Info(fmt.Sprintf("Already up to date (%s)", current))
 		return nil
 	}
 
@@ -118,7 +118,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		}
 		prompt := fmt.Sprintf("Upgrade %s → %s? [y/N] ", describeCurrent(current, isDev), target)
 		if !confirmYesNo(prompt) {
-			printer.Info("upgrade cancelled")
+			printer.Info("Upgrade cancelled")
 			return nil
 		}
 	}
@@ -154,9 +154,9 @@ func downloadAndReplace(ctx context.Context, up *selfupdate.Updater, res upgrade
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(res)
 	}
-	printer.Success(fmt.Sprintf("upgraded %s → %s", describeCurrent(current, isDev), target))
-	printer.Info(fmt.Sprintf("  installed: %s", exe))
-	printer.Info("  the embedded dashboard (`qvr ui`) is now current too")
+	printer.Success(fmt.Sprintf("Upgraded %s → %s", describeCurrent(current, isDev), target))
+	printer.Detail(fmt.Sprintf("installed: %s", exe))
+	printer.Detail("the embedded dashboard (`qvr ui`) is now current too")
 	return nil
 }
 
@@ -168,10 +168,11 @@ func reportUpgradeCheck(res upgradeResult, current, target string, isDev bool) e
 		return printer.JSON(res)
 	}
 	if isDev {
-		printer.Info(fmt.Sprintf("dev build (%s) — latest release is %s; run `qvr upgrade` to install it", current, target))
+		printer.Info(fmt.Sprintf("Dev build (%s) — latest release is %s", current, target))
 	} else {
-		printer.Info(fmt.Sprintf("update available: %s → %s (run `qvr upgrade` to install)", current, target))
+		printer.Info(fmt.Sprintf("Update available: %s → %s", current, target))
 	}
+	printer.Hint("run `qvr upgrade` to install it")
 	return nil
 }
 

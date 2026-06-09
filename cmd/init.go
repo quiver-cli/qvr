@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/output"
@@ -79,10 +80,10 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 
 	printer.Success(fmt.Sprintf("Initialized project %q at %s", name, model.ProjectFileName))
 	if len(targets) > 0 {
-		printer.Info(fmt.Sprintf("  Inferred default targets: %v", targets))
+		printer.Detail(fmt.Sprintf("inferred default targets: %s", strings.Join(targets, ", ")))
 	} else {
-		printer.Info("  No agent dirs detected — set targets with `qvr target add <agent>`")
+		printer.Hint("no agent dirs detected — set targets with `qvr target add <agent>`")
 	}
-	printer.Info("  Next: `qvr create <skill>` to author a skill, or `qvr add <skill>` to install one")
+	printer.Hint("run `qvr create <skill>` to author a skill, or `qvr add <skill>` to install one")
 	return nil
 }

@@ -38,8 +38,13 @@ func runVersion(cmd *cobra.Command, args []string) error {
 		})
 	}
 	// Line 1 is machine-friendly ("qvr <version>") so installers and the
-	// Makefile `verify` target can `awk '{print $2}'` it; provenance follows.
-	fmt.Fprintf(cmd.OutOrStdout(), "qvr %s\n  commit: %s\n  built:  %s\n", version, commit, date)
+	// Makefile `verify` target can `awk '{print $2}'` it; provenance follows,
+	// dimmed when stdout is a terminal.
+	w := cmd.OutOrStdout()
+	style := output.NewStyler(w)
+	fmt.Fprintf(w, "qvr %s\n", version)
+	fmt.Fprintf(w, "  %s\n", style.Dim(fmt.Sprintf("commit: %s", commit)))
+	fmt.Fprintf(w, "  %s\n", style.Dim(fmt.Sprintf("built:  %s", date)))
 	return nil
 }
 

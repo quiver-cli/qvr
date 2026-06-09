@@ -143,7 +143,7 @@ func TestAutoRegisterRegistriesFromLock_DryRunDoesNotWriteConfig(t *testing.T) {
 
 // TestRunSync_NoOpRerun_StdoutIsSingleLine is the user-facing guard for
 // issue #79: a second `qvr sync` against a steady-state lockfile must
-// emit exactly one line, "✓ Already in sync." (and nothing else) — no
+// emit exactly one line, "✓ Already in sync" (and nothing else) — no
 // repeat scan banners, no re-linked symlink chatter, no auto-register
 // notices. Matches the `uv sync` / `npm install` quiet idiom.
 //
@@ -176,7 +176,7 @@ func TestRunSync_NoOpRerun_StdoutIsSingleLine(t *testing.T) {
 
 	// Real subtreeHash matching the on-disk content so VerifySingleEntry
 	// reports OK (not Drift/Unverified) — otherwise sync's drift loop
-	// suppresses "Already in sync." regardless of state.
+	// suppresses "Already in sync" regardless of state.
 	subtreeHash, err := canonical.HashSubtreeFromDisk(editAbs)
 	if err != nil {
 		t.Fatalf("hash subtree: %v", err)
@@ -226,7 +226,7 @@ func TestRunSync_NoOpRerun_StdoutIsSingleLine(t *testing.T) {
 		t.Fatalf("second runSync: %v", err)
 	}
 	got := stdout.String()
-	want := "✓ Already in sync.\n"
+	want := "✓ Already in sync\n"
 	if got != want {
 		t.Errorf("no-op sync stdout = %q, want %q — issue #79: a steady-state rerun should emit one line, nothing else", got, want)
 	}

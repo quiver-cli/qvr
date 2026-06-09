@@ -34,24 +34,43 @@ func New(format Format) *Printer {
 	}
 }
 
+// StyleOut returns the Styler for the Printer's stdout stream. Use it to
+// emphasise fragments inside Success/Info lines (names bold, secondary
+// detail dim). Plain pass-through when stdout is not a terminal.
+func (p *Printer) StyleOut() Styler { return NewStyler(p.Out) }
+
+// StyleErr returns the Styler for the Printer's stderr stream.
+func (p *Printer) StyleErr() Styler { return NewStyler(p.Err) }
+
 // Success prints a success message (text mode only).
 func (p *Printer) Success(msg string) {
 	if p.Format == FormatText {
-		fmt.Fprintf(p.Out, "✓ %s\n", msg)
+		fmt.Fprintf(p.Out, "%s %s\n", p.StyleOut().Green("✓"), msg)
 	}
 }
 
-// Error prints an error message (text mode only).
+// Error prints an error message with a uv-style `error:` prefix (text mode
+// only).
 func (p *Printer) Error(msg string) {
 	if p.Format == FormatText {
-		fmt.Fprintf(p.Err, "✗ %s\n", msg)
+		fmt.Fprintf(p.Err, "%s %s\n", p.StyleErr().BoldRed("error:"), msg)
 	}
 }
 
-// Warning prints a warning message (text mode only).
+// Warning prints a warning message with a uv-style `warning:` prefix (text
+// mode only).
 func (p *Printer) Warning(msg string) {
 	if p.Format == FormatText {
-		fmt.Fprintf(p.Err, "! %s\n", msg)
+		fmt.Fprintf(p.Err, "%s %s\n", p.StyleErr().BoldYellow("warning:"), msg)
+	}
+}
+
+// Hint prints a follow-up suggestion with a uv-style `hint:` prefix. Hints
+// go to stderr — they are guidance about the run, not command output, so
+// piped stdout stays clean (text mode only).
+func (p *Printer) Hint(msg string) {
+	if p.Format == FormatText {
+		fmt.Fprintf(p.Err, "%s %s\n", p.StyleErr().BoldCyan("hint:"), msg)
 	}
 }
 
@@ -59,6 +78,14 @@ func (p *Printer) Warning(msg string) {
 func (p *Printer) Info(msg string) {
 	if p.Format == FormatText {
 		fmt.Fprintln(p.Out, msg)
+	}
+}
+
+// Detail prints an indented, de-emphasised follow-up line under a preceding
+// Success/Info line (text mode only).
+func (p *Printer) Detail(msg string) {
+	if p.Format == FormatText {
+		fmt.Fprintf(p.Out, "  %s\n", p.StyleOut().Dim(msg))
 	}
 }
 

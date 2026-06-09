@@ -127,7 +127,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 	renderDoctorSummary(checks, globalHint)
 	if failed > 0 {
-		return fmt.Errorf("%d check(s) failed", failed)
+		return fmt.Errorf("%s failed", output.Plural(failed, "check"))
 	}
 	return nil
 }
@@ -157,7 +157,7 @@ func emptyProjectGlobalHint(primary scopedLock, projectRoot string) string {
 	}
 	globalLockPath := model.DefaultLockPath(projectRoot, config.Dir(), true)
 	if globalLock, gerr := model.ReadLockFile(globalLockPath); gerr == nil && len(globalLock.Skills) > 0 {
-		return fmt.Sprintf("project lock is empty; %d skill(s) installed globally — run `qvr doctor --global` to diagnose them", len(globalLock.Skills))
+		return fmt.Sprintf("project lock is empty; %s installed globally — run `qvr doctor --global` to diagnose them", output.Plural(len(globalLock.Skills), "skill"))
 	}
 	return ""
 }
@@ -229,12 +229,12 @@ func renderDoctorSummary(checks []doctorCheck, globalHint string) {
 	case len(checks) == 0 && globalHint != "":
 		fmt.Fprintf(printer.Out, "\n%s\n", globalHint)
 	case len(checks) == 0:
-		fmt.Fprintf(printer.Out, "\nno installed skills to check\n")
+		fmt.Fprintf(printer.Out, "\nNo installed skills to check\n")
 	default:
 		fmt.Fprintf(printer.Out, "\n%d/%d lock-tracked checks passed",
 			lockChecks-lockFailed, lockChecks)
 		if orphanCount > 0 {
-			fmt.Fprintf(printer.Out, ", %d orphan/unreferenced artifact(s) found", orphanCount)
+			fmt.Fprintf(printer.Out, ", %s found", output.Plural(orphanCount, "orphan/unreferenced artifact"))
 		}
 		fmt.Fprintln(printer.Out)
 		if globalHint != "" {
@@ -828,14 +828,17 @@ func scanExtraSymlinks(projectRoot string, knownLinks map[string]struct{}, globa
 }
 
 func renderDoctorCheck(c doctorCheck) {
-	marker := "✗"
+	// Standalone status markers (not tabwriter cells), so colour is safe:
+	// green pass, red fail, yellow informational.
+	style := printer.StyleOut()
+	marker := style.Red("✗")
 	if c.OK {
-		marker = "✓"
+		marker = style.Green("✓")
 		// Orphan / unreferenced rows are informational, not "passing" —
 		// they need a distinct glyph or users skim past them assuming
 		// everything's fine.
 		if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" || c.Type == "project-file-drift" {
-			marker = "!"
+			marker = style.Yellow("!")
 		}
 	}
 	label := c.Type

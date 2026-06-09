@@ -191,21 +191,24 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 		return printer.JSON(reg)
 	}
 	if reg.CredentialsStripped {
-		printer.Warning("URL contained embedded credentials; stored sanitised URL. " +
-			"Configure a credential helper (e.g. `gh auth login` or osxkeychain) for auth.")
+		printer.Warning("URL contained embedded credentials; stored sanitised URL")
+		printer.Hint("configure a credential helper (e.g. `gh auth login` or osxkeychain) for auth")
 	}
-	msg := fmt.Sprintf("Added registry %q (%s) with %d skills", reg.Name, reg.URL, reg.SkillCount)
+	msg := fmt.Sprintf("Added registry %q (%s) with %s", reg.Name, reg.URL, output.Plural(reg.SkillCount, "skill"))
 	if reg.SkippedCount > 0 {
-		msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
-			reg.SkippedCount, reg.Name)
+		msg += fmt.Sprintf(" (%d skipped)", reg.SkippedCount)
 	}
 	printer.Success(msg)
+	if reg.SkippedCount > 0 {
+		printer.Hint(fmt.Sprintf("run `qvr registry update %s --verbose` for skip reasons", reg.Name))
+	}
 	printer.Info(registryTrustSummary(reg, cfg, fetchRegistryOwnerSignals(cmd.Context(), reg, cfg)))
 	// Proactive diagnostic: a default (latest-only) clone can't install tags or
 	// older versions. Tell the user how to get them rather than letting a later
 	// `qvr add skill@v1` fail mysteriously.
 	if !full {
-		printer.Info(fmt.Sprintf("Fetched the default branch only (fast). To install specific tags or older versions, re-add with: qvr registry add %s --full", reg.URL))
+		printer.Info("Fetched the default branch only (fast)")
+		printer.Hint(fmt.Sprintf("to install specific tags or older versions, re-add with `qvr registry add %s --full`", reg.URL))
 	}
 	return nil
 }
@@ -227,13 +230,15 @@ func runRegistryDeepen(cmd *cobra.Command, mgr *registry.Manager, name string, f
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(reg)
 	}
-	msg := fmt.Sprintf("Deepened registry %q (%s) to full — %d skills; all branches and tags are now installable",
-		reg.Name, reg.URL, reg.SkillCount)
+	msg := fmt.Sprintf("Deepened registry %q (%s) to full — %s; all branches and tags are now installable",
+		reg.Name, reg.URL, output.Plural(reg.SkillCount, "skill"))
 	if reg.SkippedCount > 0 {
-		msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
-			reg.SkippedCount, reg.Name)
+		msg += fmt.Sprintf(" (%d skipped)", reg.SkippedCount)
 	}
 	printer.Success(msg)
+	if reg.SkippedCount > 0 {
+		printer.Hint(fmt.Sprintf("run `qvr registry update %s --verbose` for skip reasons", reg.Name))
+	}
 	return nil
 }
 
@@ -400,7 +405,8 @@ func runRegistryList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(registries) == 0 {
-		printer.Info("No registries configured. Run 'qvr registry add <url>' to register one.")
+		printer.Info("No registries configured")
+		printer.Hint("run `qvr registry add <url>` to register one")
 		return nil
 	}
 
@@ -433,7 +439,8 @@ func runRegistryList(cmd *cobra.Command, args []string) error {
 	}
 	printer.Table(headers, rows)
 	if anySkipped {
-		printer.Info("Some skills could not be indexed. Run `qvr registry update <name> --verbose` for reasons.")
+		printer.Warning("some skills could not be indexed")
+		printer.Hint("run `qvr registry update <name> --verbose` for reasons")
 	}
 	return nil
 }
@@ -470,7 +477,7 @@ func runRegistryUpdate(cmd *cobra.Command, args []string) error {
 			printer.Error(fmt.Sprintf("%s: %s", r.Name, r.Error))
 			continue
 		}
-		msg := fmt.Sprintf("%s: updated (%d skills", r.Name, r.SkillCount)
+		msg := fmt.Sprintf("Updated %s (%s", r.Name, output.Plural(r.SkillCount, "skill"))
 		if r.SkippedCount > 0 {
 			msg += fmt.Sprintf(", %d skipped", r.SkippedCount)
 		}
@@ -478,12 +485,12 @@ func runRegistryUpdate(cmd *cobra.Command, args []string) error {
 		printer.Success(msg)
 		if registryUpdateVerbose && len(r.Skipped) > 0 {
 			for _, s := range r.Skipped {
-				printer.Warning(fmt.Sprintf("  skipped %s (%s): %s", s.Name, s.Path, s.Reason))
+				printer.Warning(fmt.Sprintf("skipped %s (%s): %s", s.Name, s.Path, s.Reason))
 			}
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d registr(y/ies) failed to update", failed)
+		return fmt.Errorf("%s failed to update", output.Plural(failed, "registry", "registries"))
 	}
 	return nil
 }
@@ -516,7 +523,7 @@ func runRegistryCheck(cmd *cobra.Command, mgr *registry.Manager, name string) er
 		}
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d registr(y/ies) failed to check", failed)
+		return fmt.Errorf("%s failed to check", output.Plural(failed, "registry", "registries"))
 	}
 	return nil
 }

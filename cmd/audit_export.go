@@ -8,6 +8,7 @@ import (
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -84,7 +85,7 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 
 	if !auditDBExists(cfg) {
 		if exportOut != "" {
-			printer.Info("no traces to export")
+			printer.Info("No traces to export")
 		}
 		return nil
 	}
@@ -119,7 +120,7 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 	}
 
 	if exportOut != "" {
-		printer.Success(fmt.Sprintf("exported %d traces to %s", count, exportOut))
+		printer.Success(fmt.Sprintf("Exported %s to %s", output.Plural(count, "trace"), exportOut))
 	}
 	return nil
 }

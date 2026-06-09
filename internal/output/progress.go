@@ -29,6 +29,7 @@ const spinnerInterval = 90 * time.Millisecond
 type Spinner struct {
 	w       io.Writer
 	enabled bool
+	style   Styler
 
 	mu    sync.Mutex
 	label string
@@ -38,7 +39,7 @@ type Spinner struct {
 }
 
 func newSpinner(w io.Writer, enabled bool) *Spinner {
-	return &Spinner{w: w, enabled: enabled}
+	return &Spinner{w: w, enabled: enabled, style: NewStyler(w)}
 }
 
 // Start begins the animation with an initial label. Calling Start on an
@@ -83,13 +84,15 @@ func (s *Spinner) run(stop, done chan struct{}) {
 func (s *Spinner) render(glyph string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Width math uses the unstyled line — ANSI escapes occupy no cells, so
+	// styling must not leak into the clear/pad accounting.
 	line := glyph + " " + s.label
 	width := len([]rune(line))
 	pad := ""
 	if n := s.last - width; n > 0 {
 		pad = strings.Repeat(" ", n)
 	}
-	fmt.Fprintf(s.w, "\r%s%s", line, pad)
+	fmt.Fprintf(s.w, "\r%s %s%s", s.style.Cyan(glyph), s.label, pad)
 	s.last = width
 }
 
