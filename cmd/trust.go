@@ -75,7 +75,7 @@ func runTrustList(cmd *cobra.Command, args []string) error {
 		return printer.JSON(policy)
 	}
 	if len(policy) == 0 {
-		printer.Info("No registry author pins configured.")
+		printer.Info("No registry author pins configured")
 		return nil
 	}
 	names := make([]string, 0, len(policy))
@@ -239,7 +239,7 @@ func runTrustVerify(cmd *cobra.Command, args []string) error {
 	}
 	printer.Table([]string{"SKILL", "REGISTRY", "AUTHOR", "STATUS", "REASON"}, table)
 	if failed > 0 {
-		return fmt.Errorf("trust verify failed for %d skill(s)", failed)
+		return fmt.Errorf("trust verify failed for %s", output.Plural(failed, "skill"))
 	}
 	return nil
 }

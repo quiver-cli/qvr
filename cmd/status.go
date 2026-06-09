@@ -53,7 +53,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(entries) == 0 {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		return nil
 	}
 

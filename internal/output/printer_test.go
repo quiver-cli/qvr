@@ -85,6 +85,48 @@ func TestTruncDesc_BoundaryUnchangedAt60(t *testing.T) {
 	}
 }
 
+func TestPrefixes_PlainWhenNotTerminal(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	p := &output.Printer{Out: &out, Err: &errBuf, Format: output.FormatText}
+
+	p.Success("Added skill")
+	p.Error("add failed")
+	p.Warning("scan skipped")
+	p.Hint("commit qvr.lock")
+	p.Detail("next step")
+
+	if got := out.String(); got != "✓ Added skill\n  next step\n" {
+		t.Errorf("stdout = %q", got)
+	}
+	want := "error: add failed\nwarning: scan skipped\nhint: commit qvr.lock\n"
+	if got := errBuf.String(); got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+	if strings.Contains(out.String()+errBuf.String(), "\x1b[") {
+		t.Errorf("non-terminal writers must not receive ANSI escapes")
+	}
+}
+
+func TestPlural(t *testing.T) {
+	cases := []struct {
+		n      int
+		noun   string
+		plural []string
+		want   string
+	}{
+		{1, "skill", nil, "1 skill"},
+		{0, "skill", nil, "0 skills"},
+		{3, "finding", nil, "3 findings"},
+		{2, "registry", []string{"registries"}, "2 registries"},
+		{1, "registry", []string{"registries"}, "1 registry"},
+	}
+	for _, c := range cases {
+		if got := output.Plural(c.n, c.noun, c.plural...); got != c.want {
+			t.Errorf("Plural(%d, %q) = %q, want %q", c.n, c.noun, got, c.want)
+		}
+	}
+}
+
 func TestTable_AwkPipelineFriendly(t *testing.T) {
 	var buf bytes.Buffer
 	p := &output.Printer{Out: &buf, Err: &buf, Format: output.FormatText}

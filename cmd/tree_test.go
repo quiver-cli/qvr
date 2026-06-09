@@ -223,7 +223,7 @@ func TestRunTree_Empty(t *testing.T) {
 	if err := runTree(treeCmd, nil); err != nil {
 		t.Fatalf("runTree empty text: %v", err)
 	}
-	if !strings.Contains(buf.String(), "No installed skills.") {
+	if !strings.Contains(buf.String(), "No installed skills") {
 		t.Errorf("expected empty-state message, got: %q", buf.String())
 	}
 

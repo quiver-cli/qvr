@@ -8,6 +8,7 @@ import (
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -61,7 +62,7 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("no transcript files found in %v (expected .jsonl)", args)
+		return fmt.Errorf("no transcript files found in %v — expected .jsonl", args)
 	}
 	if ingestSession != "" && len(files) > 1 {
 		return fmt.Errorf("--session applies to a single transcript, but %d were resolved", len(files))
@@ -95,7 +96,8 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 
 	renderIngestTable(results)
 	if failed == 0 {
-		printer.Success(fmt.Sprintf("ingested %d session(s) — view with 'qvr ui' or 'qvr audit spans --session <id>'", len(results)))
+		printer.Success(fmt.Sprintf("Ingested %s", output.Plural(len(results), "session")))
+		printer.Hint("view with `qvr ui` or `qvr audit spans --session <id>`")
 	}
 	return ingestExit(failed, len(results))
 }
@@ -158,7 +160,7 @@ func renderIngestTable(results []ingestedResult) {
 // per-file errors shown in the table.
 func ingestExit(failed, total int) error {
 	if total > 0 && failed == total {
-		return fmt.Errorf("ingest failed for all %d file(s)", total)
+		return fmt.Errorf("ingest failed for all %s", output.Plural(total, "file"))
 	}
 	return nil
 }

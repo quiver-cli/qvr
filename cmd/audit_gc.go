@@ -8,6 +8,7 @@ import (
 	"github.com/astra-sh/qvr/internal/ops/derive"
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -58,7 +59,7 @@ func runAuditGC(cmd *cobra.Command, args []string) error {
 		if outputFormat == "json" {
 			return printer.JSON(map[string]any{"traces_pruned": 0})
 		}
-		printer.Info("nothing to prune")
+		printer.Info("Nothing to prune")
 		return nil
 	}
 
@@ -87,9 +88,9 @@ func runAuditGC(cmd *cobra.Command, args []string) error {
 			"sessions_pruned": sessionsPruned,
 		})
 	}
-	printer.Success(fmt.Sprintf("pruned %d raw trace(s)", n))
+	printer.Success(fmt.Sprintf("Pruned %s", output.Plural(int(n), "raw trace")))
 	if sessionsPruned > 0 {
-		printer.Info(fmt.Sprintf("dropped %d skill-less session(s)", sessionsPruned))
+		printer.Info(fmt.Sprintf("Dropped %s", output.Plural(sessionsPruned, "skill-less session")))
 	}
 	return nil
 }

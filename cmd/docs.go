@@ -64,7 +64,7 @@ func runDocs(cmd *cobra.Command, args []string) error {
 			"skills": len(entries),
 		})
 	}
-	printer.Success(fmt.Sprintf("Wrote %s (%d skill(s))", outPath, len(entries)))
+	printer.Success(fmt.Sprintf("Wrote %s (%s)", outPath, output.Plural(len(entries), "skill")))
 	return nil
 }
 

@@ -164,7 +164,7 @@ func runGitHubSearch(cmd *cobra.Command, query string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
-		return fmt.Errorf("github API rate limit exceeded; set a token with: qvr config set github_token <token>")
+		return fmt.Errorf("GitHub API rate limit exceeded; set a token with `qvr config set github_token <token>`")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -198,6 +198,7 @@ func runGitHubSearch(cmd *cobra.Command, query string) error {
 		})
 	}
 	printer.Table(headers, rows)
-	printer.Info(fmt.Sprintf("\nFound %d results. Add with: qvr add <repo-url>", searchResp.TotalCount))
+	printer.Info(fmt.Sprintf("\nFound %s", output.Plural(searchResp.TotalCount, "result")))
+	printer.Hint("add with `qvr add <repo-url>`")
 	return nil
 }

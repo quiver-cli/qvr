@@ -66,10 +66,10 @@ func setAuditEnabled(ctx context.Context, enabled bool) error {
 	if outputFormat == "json" {
 		return printer.JSON(map[string]any{"enabled": enabled, "db_path": ops.DBPath(cfg)})
 	}
-	printer.Success("audit pipeline " + state)
+	printer.Success("Audit pipeline " + state)
 	if enabled {
-		printer.Info("Database ready at " + ops.DBPath(cfg))
-		printer.Info("Next: qvr audit install-hooks   (wire your agents)")
+		printer.Detail("database ready at " + ops.DBPath(cfg))
+		printer.Hint("run `qvr audit install-hooks` to wire your agents")
 	}
 	return nil
 }

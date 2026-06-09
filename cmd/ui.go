@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/astra-sh/qvr/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -72,15 +73,18 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
 
+	style := output.NewStyler(os.Stderr)
 	url := fmt.Sprintf("http://%s/", ln.Addr().String())
 	fmt.Fprintf(os.Stderr, "Quiver UI listening on %s\n", url)
 	if !srv.hasAudit() {
-		fmt.Fprintln(os.Stderr, "  (audit DB not found — sessions will be empty; run `qvr audit enable`)")
+		fmt.Fprintf(os.Stderr, "%s audit DB not found — sessions will be empty; run `qvr audit enable`\n",
+			style.BoldYellow("warning:"))
 	}
 	if !ui.HasIndex() {
-		fmt.Fprintln(os.Stderr, "  (dashboard bundle not built — run `make ui`; the API is live)")
+		fmt.Fprintf(os.Stderr, "%s dashboard bundle not built — run `make ui`; the API is live\n",
+			style.BoldYellow("warning:"))
 	}
-	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")
+	fmt.Fprintln(os.Stderr, style.Dim("Press Ctrl+C to stop"))
 
 	if !uiNoOpen {
 		go openBrowser(url)

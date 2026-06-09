@@ -75,7 +75,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		return printer.JSON(rows)
 	}
 	if len(rows) == 0 {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		return nil
 	}
 	headers := []string{"SKILL", "REGISTRY", "VERSION", "TARGETS", "SOURCE", "STATUS", "SIGNED"}

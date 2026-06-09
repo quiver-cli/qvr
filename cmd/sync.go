@@ -208,9 +208,9 @@ func renderSyncCleanVerdict(sr *syncReconcileResult) {
 	result := sr.result
 	if len(result.Installed)+len(result.SymlinksFixed)+len(result.Removed) == 0 && len(result.Errors) == 0 && len(sr.atOrAboveThreshold) == 0 && len(sr.driftReports) == 0 && len(sr.unverifiedReports) == 0 && len(sr.projWarnings) == 0 && sr.projWouldChange == 0 {
 		if syncCheck {
-			printer.Success("In sync with qvr.lock.")
+			printer.Success("In sync with qvr.lock")
 		} else {
-			printer.Success("Already in sync.")
+			printer.Success("Already in sync")
 		}
 	}
 }
@@ -381,7 +381,7 @@ func syncTextExitCode(result *skill.ReconcileResult, driftReports []skill.Verify
 	// silently. --allow-drift is the rare escape hatch for local debug.
 	// --frozen tolerates drift (restore-from-lock, never fail on staleness).
 	if len(driftReports) > 0 && !syncFrozen && (!syncAllowDrift || syncLocked) {
-		return fmt.Errorf("sync: %d entr(y/ies) failed integrity check (pass --allow-drift to downgrade to a warning)", len(driftReports))
+		return fmt.Errorf("sync: %s failed integrity check (pass --allow-drift to downgrade to a warning)", output.Plural(len(driftReports), "entry", "entries"))
 	}
 	// Reconciler-collected per-entry failures (install, symlink, checkout)
 	// are printed individually above via printer.Error. Without this guard,
@@ -457,7 +457,7 @@ func renderSyncSummary(result *skill.ReconcileResult, atOrAboveThreshold map[str
 			// Tag restored skills that triggered findings ≥ block_severity
 			// so a top-down read of the output doesn't end on a clean tick
 			// when the just-restored skill has a critical finding.
-			printer.Warning(fmt.Sprintf("Restored %s — scan found %s findings (see above)", name, sev))
+			printer.Warning(fmt.Sprintf("restored %s — scan found %s findings (see above)", name, sev))
 		} else {
 			printer.Success(fmt.Sprintf("Restored %s", name))
 		}
@@ -466,7 +466,7 @@ func renderSyncSummary(result *skill.ReconcileResult, atOrAboveThreshold map[str
 		printer.Info(fmt.Sprintf("Linked %s", path))
 	}
 	for _, path := range result.Removed {
-		printer.Warning(fmt.Sprintf("Removed orphan %s", path))
+		printer.Warning(fmt.Sprintf("removed orphan %s", path))
 	}
 	for _, skipped := range result.Skipped {
 		printer.Info(fmt.Sprintf("Skipped %s", skipped))
@@ -480,8 +480,8 @@ func renderSyncSummary(result *skill.ReconcileResult, atOrAboveThreshold map[str
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		printer.Warning(fmt.Sprintf("%d skill(s) raised findings at or above block_severity: %s — review and `qvr remove <name>` or `qvr switch <name> <safer-ref>` if needed",
-			len(names), strings.Join(names, ", ")))
+		printer.Warning(fmt.Sprintf("%s raised findings at or above block_severity: %s — review and `qvr remove <name>` or `qvr switch <name> <safer-ref>` if needed",
+			output.Plural(len(names), "skill"), strings.Join(names, ", ")))
 	}
 	// Drift findings — issue #65 (subtreeHash) + issue #73 (commit SHA).
 	// Surfaced after the reconcile summary so the user sees what was restored
@@ -642,7 +642,7 @@ func synthesizeProjectFileFromLock(proj *model.ProjectFile, lock *model.LockFile
 		if werr := proj.Write(); werr != nil {
 			warnings = append(warnings, fmt.Sprintf("failed to update qvr.toml (%v); qvr.lock is authoritative", werr))
 		} else if !existed {
-			printer.Info("Created qvr.toml from qvr.lock — commit it so teammates get the declarative config (`git add qvr.toml`)")
+			printer.Hint("created qvr.toml from qvr.lock — commit it so teammates get the declarative config (`git add qvr.toml`)")
 		}
 	}
 	return warnings
@@ -706,8 +706,8 @@ func printOrphanHintIfBig() {
 		orphanBytesThreshold = 100 * 1024 * 1024 // 100 MB
 	)
 	if orphanCount >= orphanCountThreshold || orphanBytes >= orphanBytesThreshold {
-		printer.Info(fmt.Sprintf("Hint: %d orphan worktree(s) (~%s) — run `qvr cache prune` to reclaim",
-			orphanCount, humanBytes(orphanBytes)))
+		printer.Hint(fmt.Sprintf("%s (~%s) — run `qvr cache prune` to reclaim",
+			output.Plural(orphanCount, "orphan worktree"), humanBytes(orphanBytes)))
 	}
 }
 
@@ -829,7 +829,8 @@ func autoRegisterRegistriesFromLock(lock *model.LockFile, dryRun bool) {
 		return
 	}
 	if saveErr := config.Save(cfg); saveErr != nil {
-		fmt.Fprintf(printer.Err, "auto-register: failed to persist config (%v); registries %v added in-memory only\n", saveErr, added)
+		fmt.Fprintf(printer.Err, "%s auto-register: failed to persist config (%v); registries %v added in-memory only\n",
+			printer.StyleErr().BoldYellow("warning:"), saveErr, added)
 	}
 }
 
@@ -862,8 +863,8 @@ func autoRegisterEntry(entry *model.LockEntry, cfg *config.Config, verb string) 
 	}
 	if existing.URL != entry.Source {
 		fmt.Fprintf(printer.Err,
-			"registry %q already configured with a different URL; lock expects %s, config has %s — leaving config unchanged\n",
-			entry.Registry, entry.Source, existing.URL)
+			"%s registry %q already configured with a different URL; lock expects %s, config has %s — leaving config unchanged\n",
+			printer.StyleErr().BoldYellow("warning:"), entry.Registry, entry.Source, existing.URL)
 	}
 	return false
 }
@@ -905,8 +906,8 @@ func scanRestoredEntry(ctx context.Context, entry *model.LockEntry, cfg *config.
 			return "", false
 		}
 	}
-	// WarnOnly=true so the ⚠ template is used even for critical findings
-	// — sync never blocks, and the old "✗ scan blocked" template was
+	// WarnOnly=true so the `warning:` template is used even for critical
+	// findings — sync never blocks, and the `error: … scan blocked` template was
 	// misleading the user into thinking the restore was aborted when in
 	// fact the symlink was created two lines later (bug #59).
 	gate, gerr := ScanAndGate(ctx, skillDir, cfg, scanGateOptions{

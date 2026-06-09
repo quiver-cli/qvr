@@ -80,7 +80,7 @@ func runEnable(cmd *cobra.Command, args []string) error {
 			"created_symlinks": created,
 		})
 	}
-	printer.Success(fmt.Sprintf("Enabled %s (linked %d target(s))", name, len(created)))
+	printer.Success(fmt.Sprintf("Enabled %s (linked %s)", name, output.Plural(len(created), "target")))
 	return nil
 }
 

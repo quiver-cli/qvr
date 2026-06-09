@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/git"
@@ -107,7 +108,7 @@ func checkRemovePreconditions(lock *model.LockFile, args []string) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("skill(s) not present in lock file: %v (no changes made)", missing)
+		return fmt.Errorf("%s not present in lock file: %s (no changes made)", output.Plural(len(missing), "skill"), strings.Join(missing, ", "))
 	}
 
 	// Mode:edit pre-flight: refuse without --force, since the eject dir
@@ -121,7 +122,7 @@ func checkRemovePreconditions(lock *model.LockFile, args []string) error {
 			}
 		}
 		if len(ejected) > 0 {
-			return fmt.Errorf("refuse to remove ejected skill(s) %v: the eject dir(s) at <projectRoot>/<EditPath> hold local edits not recoverable from upstream. Pass --force to delete them, or publish first (`qvr publish <skill>`)", ejected)
+			return fmt.Errorf("refuse to remove %s (%s): the eject dir(s) at <projectRoot>/<EditPath> hold local edits not recoverable from upstream — pass --force to delete them, or publish first (`qvr publish <skill>`)", output.Plural(len(ejected), "ejected skill"), strings.Join(ejected, ", "))
 		}
 	}
 	return nil

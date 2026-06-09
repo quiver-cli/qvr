@@ -217,7 +217,7 @@ func runCacheList(cmd *cobra.Command, args []string) error {
 		return printer.JSON(out)
 	}
 	if len(entries) == 0 {
-		printer.Info("No worktrees in cache.")
+		printer.Info("No worktrees in cache")
 		return nil
 	}
 	rows := make([][]string, 0, len(entries))
@@ -237,7 +237,7 @@ func runCacheList(cmd *cobra.Command, args []string) error {
 	// can act on the specific paths.
 	summary := fmt.Sprintf("Total: %s (%s orphan", humanBytes(out.TotalBytes), humanBytes(out.OrphanBytes))
 	if len(missing) > 0 {
-		summary += fmt.Sprintf(", %d vanished project(s)", len(missing))
+		summary += fmt.Sprintf(", %s", output.Plural(len(missing), "vanished project"))
 	}
 	summary += ")"
 	printer.Info(summary)
@@ -290,7 +290,7 @@ func runCachePrune(cmd *cobra.Command, args []string) error {
 	}
 	renderCachePrune(out)
 	if len(out.Errors) > 0 {
-		return fmt.Errorf("cache prune: %d removal(s) failed", len(out.Errors))
+		return fmt.Errorf("cache prune: %s failed", output.Plural(len(out.Errors), "removal"))
 	}
 	return nil
 }
@@ -305,17 +305,17 @@ func confirmCachePrune(orphans []CacheEntry, orphanBytes int64) (abort bool, err
 		return false, nil
 	}
 	if printer.Format != output.FormatJSON {
-		printer.Info(fmt.Sprintf("Would remove %d orphan worktree(s), freeing %s:",
-			len(orphans), humanBytes(orphanBytes)))
+		printer.Info(fmt.Sprintf("Would remove %s, freeing %s:",
+			output.Plural(len(orphans), "orphan worktree"), humanBytes(orphanBytes)))
 		for _, e := range orphans {
 			printer.Info(fmt.Sprintf("  - %s (%s)", shortenCachePath(e.Path), humanBytes(e.SizeBytes)))
 		}
 	}
 	if printer.Format == output.FormatJSON || !stdinIsTTY() {
-		return false, fmt.Errorf("refuse to delete %d orphan worktree(s) without --yes; pass --yes to confirm or --dry-run to preview (issue #110)", len(orphans))
+		return false, fmt.Errorf("refuse to delete %s without --yes; pass --yes to confirm or --dry-run to preview (issue #110)", output.Plural(len(orphans), "orphan worktree"))
 	}
 	if !confirmYesNo("Proceed? [y/N] ") {
-		printer.Info("Aborted.")
+		printer.Info("Aborted")
 		return true, nil
 	}
 	return false, nil
@@ -383,17 +383,19 @@ func renderCachePrune(out CachePruneOutput) {
 	}
 	auxRecords := out.IdentityRemoved + out.ProvenanceRemoved + out.BlobsRemoved
 	if len(activeList) == 0 && auxRecords == 0 {
-		printer.Info("Nothing to prune.")
+		printer.Info("Nothing to prune")
 	} else {
 		for _, p := range activeList {
 			printer.Info(fmt.Sprintf("%s %s", verb, shortenCachePath(p)))
 		}
 		if auxRecords > 0 {
-			printer.Info(fmt.Sprintf("%s %d blob(s), %d identity + %d provenance record(s)",
-				verb, out.BlobsRemoved, out.IdentityRemoved, out.ProvenanceRemoved))
+			printer.Info(fmt.Sprintf("%s %s, %s + %s",
+				verb, output.Plural(out.BlobsRemoved, "blob"),
+				output.Plural(out.IdentityRemoved, "identity record"),
+				output.Plural(out.ProvenanceRemoved, "provenance record")))
 		}
-		printer.Success(fmt.Sprintf("%s %d worktree(s) + %d cache record(s), freeing %s",
-			verb, len(activeList), auxRecords, humanBytes(activeBytes)))
+		printer.Success(fmt.Sprintf("%s %s + %s, freeing %s",
+			verb, output.Plural(len(activeList), "worktree"), output.Plural(auxRecords, "cache record"), humanBytes(activeBytes)))
 	}
 	if !cachePruneDryRun {
 		for _, m := range out.ForgottenProjs {
@@ -462,7 +464,7 @@ func runCacheClean(cmd *cobra.Command, args []string) error {
 
 	renderCacheClean(out)
 	if len(out.Errors) > 0 {
-		return fmt.Errorf("cache clean: %d removal(s) failed", len(out.Errors))
+		return fmt.Errorf("cache clean: %s failed", output.Plural(len(out.Errors), "removal"))
 	}
 	return nil
 }
@@ -577,18 +579,18 @@ func confirmCacheClean(targets []cleanTarget, totalBytes int64) (abort bool, err
 		return false, nil
 	}
 	if printer.Format != output.FormatJSON {
-		printer.Info(fmt.Sprintf("Would wipe the entire cache (%d item(s), freeing %s), including worktrees your installed skills point at:",
-			len(targets), humanBytes(totalBytes)))
+		printer.Info(fmt.Sprintf("Would wipe the entire cache (%s, freeing %s), including worktrees your installed skills point at:",
+			output.Plural(len(targets), "item"), humanBytes(totalBytes)))
 		for _, t := range targets {
 			printer.Info(fmt.Sprintf("  - %s (%s)", t.label, humanBytes(t.bytes)))
 		}
-		printer.Info("Run `qvr sync` afterwards to restore installed skills.")
+		printer.Hint("run `qvr sync` afterwards to restore installed skills")
 	}
 	if printer.Format == output.FormatJSON || !stdinIsTTY() {
 		return false, fmt.Errorf("refuse to wipe the cache without --yes; pass --yes to confirm or --dry-run to preview")
 	}
 	if !confirmYesNo("Proceed? [y/N] ") {
-		printer.Info("Aborted.")
+		printer.Info("Aborted")
 		return true, nil
 	}
 	return false, nil
@@ -606,14 +608,14 @@ func renderCacheClean(out CacheCleanOutput) {
 		verb = "Would remove"
 	}
 	if len(activeList) == 0 {
-		printer.Info("Cache already empty.")
+		printer.Info("Cache already empty")
 	} else {
 		for _, p := range activeList {
 			printer.Info(fmt.Sprintf("%s %s", verb, p))
 		}
-		printer.Success(fmt.Sprintf("%s %d item(s), freeing %s", verb, len(activeList), humanBytes(activeBytes)))
+		printer.Success(fmt.Sprintf("%s %s, freeing %s", verb, output.Plural(len(activeList), "item"), humanBytes(activeBytes)))
 		if !cacheCleanDryRun {
-			printer.Info("Run `qvr sync` to restore installed skills.")
+			printer.Hint("run `qvr sync` to restore installed skills")
 		}
 	}
 	for _, e := range out.Errors {

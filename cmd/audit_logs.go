@@ -64,7 +64,7 @@ func runAuditLogs(cmd *cobra.Command, args []string) error {
 		if outputFormat == "json" {
 			return printer.JSON([]*store.SpanRow{})
 		}
-		printer.Info("no activity recorded yet")
+		printer.Info("No activity recorded yet")
 		return nil
 	}
 
@@ -86,7 +86,7 @@ func runAuditLogs(cmd *cobra.Command, args []string) error {
 		return printer.JSON(spans)
 	}
 	if len(spans) == 0 {
-		printer.Info("no activity matches")
+		printer.Info("No activity matches")
 		return nil
 	}
 	headers := []string{"TIME", "AGENT", "KIND", "NAME", "SKILL"}

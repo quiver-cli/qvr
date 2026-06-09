@@ -45,14 +45,14 @@ func runAuditSessions(cmd *cobra.Command, args []string) error {
 		return showSession(cmd, cfg, args[1])
 	}
 	if len(args) > 0 {
-		return fmt.Errorf("unknown argument %q (did you mean 'sessions show <id>'?)", args[0])
+		return fmt.Errorf("unknown argument %q — did you mean `qvr audit sessions show <id>`?", args[0])
 	}
 
 	if !auditDBExists(cfg) {
 		if outputFormat == "json" {
 			return printer.JSON([]any{})
 		}
-		printer.Info("no sessions recorded yet")
+		printer.Info("No sessions recorded yet")
 		return nil
 	}
 
@@ -88,7 +88,7 @@ func renderSessions(sessions []*store.RawSession) error {
 		return printer.JSON(sessions)
 	}
 	if len(sessions) == 0 {
-		printer.Info("no sessions recorded yet")
+		printer.Info("No sessions recorded yet")
 		return nil
 	}
 	headers := []string{"STARTED", "AGENT", "LINES", "HOOKS", "ROWS", "SESSION ID"}
@@ -130,7 +130,7 @@ func showSession(cmd *cobra.Command, cfg *config.Config, idArg string) error {
 		return printer.JSON(rows)
 	}
 	if len(rows) == 0 {
-		printer.Info("no traces for that session")
+		printer.Info("No traces for that session")
 		return nil
 	}
 	w := cmd.OutOrStdout()

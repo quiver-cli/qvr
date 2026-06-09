@@ -52,7 +52,7 @@ func runDisable(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if entry.Source == "link" {
-			return fmt.Errorf("cannot disable link install %q; use qvr remove instead", name)
+			return fmt.Errorf("cannot disable link install %q; use `qvr remove` instead", name)
 		}
 
 		// Persist the disabled state before touching symlinks. A mid-flight crash
@@ -97,7 +97,7 @@ func runDisable(cmd *cobra.Command, args []string) error {
 		printer.Success(fmt.Sprintf("%s already has no active symlinks; marked disabled", name))
 		return nil
 	}
-	printer.Success(fmt.Sprintf("Disabled %s (removed %d symlink(s))", name, len(removed)))
+	printer.Success(fmt.Sprintf("Disabled %s (removed %s)", name, output.Plural(len(removed), "symlink")))
 	return nil
 }
 

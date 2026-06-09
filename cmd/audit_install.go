@@ -6,6 +6,7 @@ import (
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -120,22 +121,23 @@ func renderInstallOutcomes(cfg *config.Config, outcomes []installOutcome) error 
 	}
 
 	anyErr := false
+	dim := printer.StyleOut().Dim
 	for _, o := range outcomes {
 		switch {
 		case o.Error != "":
 			anyErr = true
 			printer.Error(fmt.Sprintf("%s: %s", o.Agent, o.Error))
 		case !o.Detected:
-			printer.Info(fmt.Sprintf("- %s: not detected", o.Agent))
+			printer.Info(dim(fmt.Sprintf("- %s: not detected", o.Agent)))
 		case installDryRun:
-			printer.Info(fmt.Sprintf("~ %s: would install %d hooks", o.Agent, len(o.HooksAdded)))
+			printer.Info(dim(fmt.Sprintf("~ %s: would install %s", o.Agent, output.Plural(len(o.HooksAdded), "hook"))))
 		case o.Installed:
-			printer.Success(fmt.Sprintf("%s: installed %d hooks", o.Agent, len(o.HooksAdded)))
+			printer.Success(fmt.Sprintf("%s: installed %s", o.Agent, output.Plural(len(o.HooksAdded), "hook")))
 			if o.BackupPath != "" {
-				printer.Info("  backup: " + o.BackupPath)
+				printer.Detail("backup: " + o.BackupPath)
 			}
 		default:
-			printer.Info(fmt.Sprintf("- %s: already installed", o.Agent))
+			printer.Info(dim(fmt.Sprintf("- %s: already installed", o.Agent)))
 		}
 		for _, w := range o.Warnings {
 			printer.Warning(fmt.Sprintf("%s: %s", o.Agent, w))
@@ -143,7 +145,8 @@ func renderInstallOutcomes(cfg *config.Config, outcomes []installOutcome) error 
 	}
 
 	if !installDryRun && !ops.Enabled(cfg) {
-		printer.Warning("audit pipeline is disabled — run 'qvr audit enable' to start recording")
+		printer.Warning("audit pipeline is disabled — no events will be recorded")
+		printer.Hint("run `qvr audit enable` to start recording")
 	}
 	if anyErr {
 		return errTextHandled

@@ -268,13 +268,13 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), repointGlobal)
 
 	// The user-facing verb tracks the alias the user actually typed, not the
-	// resolved mode: `qvr switch foo --latest` reports "switched", while
-	// `qvr pull foo` reports "pulled". `action` (error-message + registry-refresh
+	// resolved mode: `qvr switch foo --latest` reports "Switched", while
+	// `qvr pull foo` reports "Pulled". `action` (error-message + registry-refresh
 	// label) follows suit.
 	action := "switch"
-	verb := "switched"
+	verb := "Switched"
 	if cmd.CalledAs() == "pull" {
-		action, verb = "pull", "pulled"
+		action, verb = "pull", "Pulled"
 	}
 
 	var (
@@ -312,7 +312,7 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(updated)
 	}
-	printer.Success(fmt.Sprintf("%s: %s to %s (%s)", updated.Name, verb, updated.Ref, shortHash(updated.Commit)))
+	printer.Success(fmt.Sprintf("%s %s to %s (%s)", verb, updated.Name, updated.Ref, shortHash(updated.Commit)))
 	return nil
 }
 
@@ -411,7 +411,7 @@ func tipPullOne(cmd *cobra.Command, installer *skill.Installer, syncer *skill.Sy
 			*loopErr = fmt.Errorf("pull %s: %w", name, perr)
 			return true
 		}
-		printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
+		printer.Success(fmt.Sprintf("Updated %s to %s", name, shortHash(hash)))
 		*results = append(*results, map[string]string{"name": name, "status": "updated", "commit": hash})
 		return false
 	}
@@ -447,7 +447,7 @@ func tipPullOne(cmd *cobra.Command, installer *skill.Installer, syncer *skill.Sy
 		*loopErr = fmt.Errorf("write lock: %w", werr)
 		return true
 	}
-	printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
+	printer.Success(fmt.Sprintf("Updated %s to %s", name, shortHash(hash)))
 	*results = append(*results, map[string]string{"name": name, "status": "updated", "commit": hash})
 	return false
 }
@@ -502,7 +502,8 @@ func runTip(cmd *cobra.Command, names []string) error {
 		return lockErr
 	}
 	if nothing {
-		printer.Info("No installed skills. Run 'qvr add <skill>' first.")
+		printer.Info("No installed skills")
+		printer.Hint("run `qvr add <skill>` first")
 		return nil
 	}
 	registry.TouchProject(lockPath)

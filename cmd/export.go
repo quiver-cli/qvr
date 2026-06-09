@@ -87,7 +87,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	entries, excluded, excludedDetails := buildExportEntries(lock)
 
 	if len(excluded) > 0 && printer.Format != output.FormatJSON {
-		printer.Warning(fmt.Sprintf("excluded %d non-portable skill(s): %s", len(excluded), strings.Join(excluded, ", ")))
+		printer.Warning(fmt.Sprintf("excluded %s: %s", output.Plural(len(excluded), "non-portable skill"), strings.Join(excluded, ", ")))
 	}
 
 	// Choose the output sink. stdout is the default so `qvr export | …` is

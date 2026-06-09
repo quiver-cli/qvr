@@ -191,12 +191,12 @@ func runLock(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(out.Entries) == 0 {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		return nil
 	}
 	renderLockResolveEntries(out.Entries)
 	if repinned > 0 && !lockResolveDryRun {
-		printer.Info("Run `qvr sync` to materialise the re-pinned commits.")
+		printer.Hint("run `qvr sync` to materialise the re-pinned commits")
 	}
 	if failed > 0 {
 		// Per-entry errors already printed above; errTextHandled exits 1
@@ -228,7 +228,7 @@ func renderLockResolveEntries(entries []LockResolveEntryResult) {
 		case "repinned":
 			printer.Success(fmt.Sprintf("%s: re-pinned %s %s → %s", e.Name, e.Ref, e.OldCommit, e.NewCommit))
 		case "would-repin":
-			printer.Info(fmt.Sprintf("%s: would re-pin %s %s → %s", e.Name, e.Ref, e.OldCommit, e.NewCommit))
+			printer.Info(fmt.Sprintf("~ %s: would re-pin %s %s → %s", e.Name, e.Ref, e.OldCommit, e.NewCommit))
 		case "unchanged":
 			printer.Info(fmt.Sprintf("%s: unchanged (%s @ %s)", e.Name, e.Ref, e.OldCommit))
 		case "skipped":
@@ -236,7 +236,7 @@ func renderLockResolveEntries(entries []LockResolveEntryResult) {
 		case "removed":
 			printer.Success(fmt.Sprintf("%s: removed (absent from qvr.toml)", e.Name))
 		case "would-remove":
-			printer.Info(fmt.Sprintf("%s: would remove (absent from qvr.toml)", e.Name))
+			printer.Info(fmt.Sprintf("~ %s: would remove (absent from qvr.toml)", e.Name))
 		case "failed":
 			printer.Error(fmt.Sprintf("%s: failed — %s", e.Name, e.Message))
 		}
@@ -539,7 +539,7 @@ func runLockVerify(cmd *cobra.Command, args []string) error {
 		return lockErr
 	}
 	if empty {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		if printer.Format == output.FormatJSON {
 			return printer.JSON(out)
 		}
@@ -734,7 +734,7 @@ func renderVerifyText(out *VerifyOutput) {
 		case skill.VerifyStatusOK:
 			printer.Success(fmt.Sprintf("%s: ok", r.Name))
 		case skill.VerifyStatusDrift:
-			printer.Warning(fmt.Sprintf("%s: drift (%d field(s))", r.Name, len(r.Drift)))
+			printer.Warning(fmt.Sprintf("%s: drift (%s)", r.Name, output.Plural(len(r.Drift), "field")))
 			for _, d := range r.Drift {
 				printer.Warning(fmt.Sprintf("  %s: expected %s, got %s", d.Field, shortHashLabel(d.Expected), shortHashLabel(d.Actual)))
 			}
@@ -829,7 +829,7 @@ func runLockUpgrade(cmd *cobra.Command, args []string) error {
 	for _, e := range out.Entries {
 		switch e.Status {
 		case "would-upgrade":
-			printer.Info(fmt.Sprintf("%s: would upgrade", e.Name))
+			printer.Info(fmt.Sprintf("~ %s: would upgrade", e.Name))
 		case "upgraded":
 			printer.Success(fmt.Sprintf("%s: upgraded", e.Name))
 		case "unchanged":

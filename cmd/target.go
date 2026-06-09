@@ -138,7 +138,7 @@ func runTargetAdd(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	printer.Success(fmt.Sprintf("Added %s → default targets: %s", strings.Join(added, ", "), strings.Join(final, ", ")))
-	printer.Info("Hint: commit qvr.toml so teammates inherit the same agent routing (`git add qvr.toml`)")
+	printer.Hint("commit qvr.toml so teammates inherit the same agent routing (`git add qvr.toml`)")
 	return nil
 }
 
@@ -238,7 +238,8 @@ func runTargetList(cmd *cobra.Command, args []string) error {
 		sort.Strings(sorted)
 		printer.Info(fmt.Sprintf("Project default targets: %s", strings.Join(sorted, ", ")))
 	} else {
-		printer.Info("No project default targets set — `qvr add` falls back to config default_target. Set them with `qvr target add <name>...`")
+		printer.Info("No project default targets set — `qvr add` falls back to config default_target")
+		printer.Hint("set them with `qvr target add <name>...`")
 	}
 	return nil
 }

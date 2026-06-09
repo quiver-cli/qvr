@@ -93,7 +93,7 @@ func runOutdated(cmd *cobra.Command, args []string) error {
 		allEntries = append(allEntries, s.Lock.Entries()...)
 	}
 	if len(allEntries) == 0 {
-		printer.Info("No installed skills.")
+		printer.Info("No installed skills")
 		return nil
 	}
 

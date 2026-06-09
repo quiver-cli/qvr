@@ -93,9 +93,9 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		printer.Info(fmt.Sprintf("%s: already ejected at %s", updatedEntry.Name, updatedEntry.EditPath))
 		return nil
 	}
-	printer.Success(fmt.Sprintf("%s: ejected to %s — edit files there, then `qvr publish %s --tag <ver>`", updatedEntry.Name, updatedEntry.EditPath, updatedEntry.Name))
+	printer.Success(fmt.Sprintf("Ejected %s to %s — edit files there, then `qvr publish %s --tag <ver>`", updatedEntry.Name, updatedEntry.EditPath, updatedEntry.Name))
 	if len(result.SiblingLinks) > 0 {
-		printer.Info(fmt.Sprintf("  repointed %d sibling target symlink(s)", len(result.SiblingLinks)))
+		printer.Detail(fmt.Sprintf("repointed %s", output.Plural(len(result.SiblingLinks), "sibling target symlink")))
 	}
 	return nil
 }
@@ -112,8 +112,8 @@ func ejectUnderLock(name, projectRoot, lockPath, projPath string, result **skill
 	entry, err := lock.Get(name)
 	if err != nil {
 		if errors.Is(err, model.ErrLockSkillMissing) && installedGlobally(projectRoot, name) {
-			return fmt.Errorf("%s is installed globally, not in this project — qvr edit only ejects project-local skills. "+
-				"To change it: `qvr add %s` here, edit & `qvr publish`, then re-add it globally with `qvr add %s --global`", name, name, name)
+			return fmt.Errorf("%s is installed globally, not in this project — `qvr edit` only ejects project-local skills; "+
+				"to change it, `qvr add %s` here, edit & `qvr publish`, then re-add it globally with `qvr add %s --global`", name, name, name)
 		}
 		return err
 	}
