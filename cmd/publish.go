@@ -120,7 +120,20 @@ func runPublish(cmd *cobra.Command, args []string) error {
 	// re-reads under the lock if it needs to mutate.
 	lockPath := model.DefaultLockPath(projectRoot, config.Dir(), publishGlobal)
 	if lock, lerr := model.ReadLockFile(lockPath); lerr == nil {
-		if _, gerr := lock.Get(arg); gerr == nil {
+		if e, gerr := lock.Get(arg); gerr == nil {
+			// A created skill (edit-mode, no upstream) being pushed into a
+			// registry is really a greenfield publish of its edit dir — the
+			// installed-mode publisher has no Source to push to, and would
+			// die with ErrPublishNoSource while silently ignoring --registry
+			// (#242). --fork keeps installed-mode precedence (it works for
+			// sourceless entries).
+			if routesToGreenfield(e) {
+				err := runPublishGreenfield(cmd, skill.EffectiveTarget(e, projectRoot))
+				if err == nil && printer.Format != output.FormatJSON {
+					printer.Hint(fmt.Sprintf("qvr.lock still tracks the local edit copy — run `qvr remove --force %s && qvr add %s --registry %s` to consume it from the registry", arg, arg, publishRegistry))
+				}
+				return err
+			}
 			return runPublishInstalled(cmd, arg, projectRoot, lockPath)
 		}
 	}
@@ -134,6 +147,14 @@ func runPublish(cmd *cobra.Command, args []string) error {
 		return errors.New("--migrate requires --fork and an installed skill")
 	}
 	return runPublishGreenfield(cmd, arg)
+}
+
+// routesToGreenfield reports whether a lock-matched publish arg should be
+// rerouted to greenfield path mode: a sourceless edit-mode entry (a `qvr
+// create`d skill) with an explicit --registry destination and no --fork
+// intent (#242).
+func routesToGreenfield(e *model.LockEntry) bool {
+	return e.IsEdit() && e.Source == "" && publishRegistry != "" && publishFork == "" && !publishMigrate
 }
 
 // ErrPublishForkNeedsInstall is surfaced when --fork is passed but the
@@ -410,7 +431,7 @@ func publishInstalledUnderLock(cmd *cobra.Command, name, projectRoot, lockPath s
 		}
 
 		if r != nil && !r.NothingToPublish && publishTag != "" {
-			autoUnejectAfterPublish(cmd, name, projectRoot, lockPath, lock, e, ps)
+			autoUnejectAfterPublish(cmd, name, projectRoot, lockPath, lock, e, publishGate, ps)
 		}
 	}
 	ps.result = r
@@ -493,7 +514,7 @@ func preflightPublishScan(cmd *cobra.Command, name, editDir string) (*scanGateRe
 // ps.autoUnejectNeedsAdd; a registry that can't be resolved is a silent no-op
 // (auto-register is attempted for --fork --migrate; see autoRegisterForkAsRegistry,
 // issue #108).
-func autoUnejectAfterPublish(cmd *cobra.Command, name, projectRoot, lockPath string, lock *model.LockFile, e *model.LockEntry, ps *publishInstalledState) {
+func autoUnejectAfterPublish(cmd *cobra.Command, name, projectRoot, lockPath string, lock *model.LockFile, e *model.LockEntry, publishGate *scanGateResult, ps *publishInstalledState) {
 	targetsCopy := append([]string{}, e.Targets...)
 	registryName := e.Registry
 	if registryName == "" && publishFork != "" && publishMigrate {
@@ -566,7 +587,57 @@ func autoUnejectAfterPublish(cmd *cobra.Command, name, projectRoot, lockPath str
 		ps.autoUnejectNeedsAdd = true
 		printer.Warning(fmt.Sprintf("publish %s: tag pushed and eject torn down, but re-install at %s failed (%v)", name, publishTag, ierr))
 	} else {
+		restoreUnejectProvenance(lockPath, name, e, publishGate)
 		ps.autoUnejected = true
+	}
+}
+
+// restoreUnejectProvenance re-reads the lock after the auto-uneject Install —
+// which wrote a brand-new entry from the registry install path — and restores
+// the provenance + scan attestation the publish just established (#243).
+// Without this, the one operation sold on preserving lineage (--fork
+// --migrate) erased ForkedFrom/SourceUpstream, and every tagged publish
+// dropped the gate's scan record (provenance flipped to "Scan: not recorded").
+// The gate scanned the edit dir whose bytes are exactly the published (and
+// re-installed) tree, so re-applying its ScanRef attributes the right content.
+// Best-effort: the publish itself succeeded, so failures degrade to warnings.
+func restoreUnejectProvenance(lockPath, name string, prior *model.LockEntry, gate *scanGateResult) {
+	// The caller's in-memory lock is stale — Remove/Install re-read and wrote
+	// the file themselves — so work from disk.
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		printer.Warning(fmt.Sprintf("publish %s: restore provenance after un-eject failed — read lock: %v", name, err))
+		return
+	}
+	fresh, err := lock.Get(name)
+	if err != nil {
+		printer.Warning(fmt.Sprintf("publish %s: restore provenance after un-eject failed — %v", name, err))
+		return
+	}
+	changed := false
+	if fresh.ForkedFrom == "" && prior.ForkedFrom != "" {
+		fresh.ForkedFrom = prior.ForkedFrom
+		changed = true
+	}
+	if fresh.SourceUpstream == "" && prior.SourceUpstream != "" {
+		fresh.SourceUpstream = prior.SourceUpstream
+		changed = true
+	}
+	if fresh.Verification == nil || fresh.Verification.Scan == nil {
+		if scan := toScanRef(gate); scan != nil {
+			if fresh.Verification == nil {
+				fresh.Verification = &model.VerificationRecord{}
+			}
+			fresh.Verification.Scan = scan
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	lock.Put(fresh)
+	if werr := lock.Write(); werr != nil {
+		printer.Warning(fmt.Sprintf("publish %s: restore provenance after un-eject failed — write lock: %v", name, werr))
 	}
 }
 

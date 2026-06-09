@@ -109,19 +109,22 @@ qvr publish code-review -m "improved review patterns"
 # (Optional) bootstrap the project front door — writes qvr.toml, infers targets
 qvr init
 
-# Scaffold a new skill
+# Scaffold a new skill — written into your default target dir,
+# e.g. .claude/skills/my-first-skill
 qvr create my-first-skill
 
-# Edit SKILL.md with your instructions
+# Edit .claude/skills/my-first-skill/SKILL.md with your instructions
 # ...
 
 # Lint it
 qvr lint my-first-skill
 
-# Publish to your registry
-cd my-first-skill
-qvr publish --registry your-org/skills
+# Publish to your registry (the full <org>/<repo> name)
+qvr publish my-first-skill --registry your-org/skills
 ```
+
+To give the skill its own single-skill repo instead, publish with
+`qvr publish my-first-skill --fork <git-url> --migrate --tag v0.1.0`.
 
 ## Set Your Defaults
 
