@@ -71,36 +71,11 @@ func TestCapture_TailsTranscriptVerbatim(t *testing.T) {
 
 	sid := res.SessionID
 	rows := queryRows(t, s, sid)
-	// 2 transcript + 1 hook_payload, in capture order.
-	if len(rows) != 3 {
-		t.Fatalf("want 3 rows, got %d", len(rows))
-	}
-	if got := string(rows[0].Raw); got != line1 {
-		t.Errorf("row0 not verbatim:\n got: %s\nwant: %s", got, line1)
-	}
-	if got := string(rows[1].Raw); got != line2 {
-		t.Errorf("row1 not verbatim:\n got: %s\nwant: %s", got, line2)
-	}
-	if rows[2].Source != ops.RawSourceHookPayload || rows[2].HookType != "PostToolUse" {
-		t.Errorf("row2 want hook_payload/PostToolUse, got %s/%s", rows[2].Source, rows[2].HookType)
-	}
-	// seq is dense and monotonic.
-	for i, r := range rows {
-		if r.Seq != i {
-			t.Errorf("row %d: want seq %d, got %d", i, i, r.Seq)
-		}
-	}
+	assertFirstFiringRows(t, rows, line1, line2)
 
 	// Append a third line; a second firing must store ONLY the new line.
 	line3 := `{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}`
-	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString(line3 + "\n"); err != nil {
-		t.Fatal(err)
-	}
-	_ = f.Close()
+	appendLine(t, transcript, line3)
 
 	// Use a non-completion firing here so this test stays about verbatim
 	// tailing; the skill-only retention gate (which fires on "Stop") has its
@@ -120,15 +95,65 @@ func TestCapture_TailsTranscriptVerbatim(t *testing.T) {
 	}
 	// The newly tailed transcript line must be verbatim and correctly ordered
 	// before the second hook payload.
-	var gotLine3 bool
-	for _, r := range rows {
-		if r.Source == ops.RawSourceTranscript && string(r.Raw) == line3 {
-			gotLine3 = true
-		}
-	}
-	if !gotLine3 {
+	if !hasVerbatimTranscriptLine(rows, line3) {
 		t.Error("third transcript line not captured verbatim on second firing")
 	}
+}
+
+// assertFirstFiringRows verifies the rows captured by the first firing: 2
+// transcript lines stored verbatim and in order, then the hook payload, with a
+// dense monotonic sequence across all three.
+func assertFirstFiringRows(t *testing.T, rows []*ops.RawTrace, line1, line2 string) {
+	t.Helper()
+	// 2 transcript + 1 hook_payload, in capture order.
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d", len(rows))
+	}
+	if got := string(rows[0].Raw); got != line1 {
+		t.Errorf("row0 not verbatim:\n got: %s\nwant: %s", got, line1)
+	}
+	if got := string(rows[1].Raw); got != line2 {
+		t.Errorf("row1 not verbatim:\n got: %s\nwant: %s", got, line2)
+	}
+	if rows[2].Source != ops.RawSourceHookPayload || rows[2].HookType != "PostToolUse" {
+		t.Errorf("row2 want hook_payload/PostToolUse, got %s/%s", rows[2].Source, rows[2].HookType)
+	}
+	assertDenseMonotonicSeq(t, rows)
+}
+
+// appendLine appends one line (plus a trailing newline) to an existing file.
+func appendLine(t *testing.T, path, line string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+}
+
+// assertDenseMonotonicSeq asserts every row's Seq equals its index, i.e. the
+// sequence numbers form a dense monotonic run.
+func assertDenseMonotonicSeq(t *testing.T, rows []*ops.RawTrace) {
+	t.Helper()
+	for i, r := range rows {
+		if r.Seq != i {
+			t.Errorf("row %d: want seq %d, got %d", i, i, r.Seq)
+		}
+	}
+}
+
+// hasVerbatimTranscriptLine reports whether any transcript row stores want
+// byte-for-byte.
+func hasVerbatimTranscriptLine(rows []*ops.RawTrace, want string) bool {
+	for _, r := range rows {
+		if r.Source == ops.RawSourceTranscript && string(r.Raw) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCapture_NoTranscript_StillStoresHookPayload proves a firing with no

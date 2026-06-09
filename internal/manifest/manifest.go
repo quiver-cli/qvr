@@ -129,43 +129,53 @@ func parseLine(line string) (Entry, string) {
 		return Entry{}, "repo URL, skill, and version are required"
 	}
 	for _, f := range fields[3:] {
-		if !strings.HasPrefix(f, "--") {
-			return Entry{}, fmt.Sprintf("unexpected positional field %q (flags must start with --)", f)
-		}
-		key, val, ok := strings.Cut(strings.TrimPrefix(f, "--"), "=")
-		if !ok {
-			return Entry{}, fmt.Sprintf("flag %q must be --key=value", f)
-		}
-		key = strings.TrimSpace(key)
-		val = strings.TrimSpace(val)
-		if val == "" {
-			return Entry{}, fmt.Sprintf("flag --%s has empty value", key)
-		}
-		switch key {
-		case "commit":
-			entry.Commit = val
-		case "target":
-			// Comma-separated list per the issue's preferred shape. Trim each
-			// segment so "claude, cursor" parses the same as "claude,cursor".
-			parts := strings.Split(val, ",")
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					entry.Targets = append(entry.Targets, p)
-				}
-			}
-			if len(entry.Targets) == 0 {
-				return Entry{}, "flag --target has no non-empty values"
-			}
-		case "as":
-			entry.Alias = val
-		case "registry-alias":
-			entry.RegistryAlias = val
-		default:
-			return Entry{}, fmt.Sprintf("unknown flag --%s", key)
+		if perr := applyFlag(&entry, f); perr != "" {
+			return Entry{}, perr
 		}
 	}
 	return entry, ""
+}
+
+// applyFlag parses a single `--key=value` flag token and mutates entry
+// accordingly. Returns a non-empty error message on any structural failure,
+// mirroring parseLine's error contract.
+func applyFlag(entry *Entry, f string) string {
+	if !strings.HasPrefix(f, "--") {
+		return fmt.Sprintf("unexpected positional field %q (flags must start with --)", f)
+	}
+	key, val, ok := strings.Cut(strings.TrimPrefix(f, "--"), "=")
+	if !ok {
+		return fmt.Sprintf("flag %q must be --key=value", f)
+	}
+	key = strings.TrimSpace(key)
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return fmt.Sprintf("flag --%s has empty value", key)
+	}
+	switch key {
+	case "commit":
+		entry.Commit = val
+	case "target":
+		// Comma-separated list per the issue's preferred shape. Trim each
+		// segment so "claude, cursor" parses the same as "claude,cursor".
+		parts := strings.Split(val, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				entry.Targets = append(entry.Targets, p)
+			}
+		}
+		if len(entry.Targets) == 0 {
+			return "flag --target has no non-empty values"
+		}
+	case "as":
+		entry.Alias = val
+	case "registry-alias":
+		entry.RegistryAlias = val
+	default:
+		return fmt.Sprintf("unknown flag --%s", key)
+	}
+	return ""
 }
 
 // FormatOptions controls how Format renders the manifest.

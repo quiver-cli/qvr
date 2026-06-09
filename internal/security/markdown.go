@@ -117,38 +117,29 @@ func orderedCategories(groups map[Category][]Finding) []Category {
 	return out
 }
 
+// humanCategoryNames maps each detection category to its display label.
+// Unlisted categories fall back to their raw string (see humanCategory).
+var humanCategoryNames = map[Category]string{
+	CategoryPromptInjection:     "Prompt injection",
+	CategorySystemPromptLeakage: "System prompt leakage",
+	CategoryDataExfiltration:    "Data exfiltration",
+	CategoryPrivilegeEscalation: "Privilege escalation",
+	CategorySupplyChain:         "Supply chain",
+	CategoryExcessiveAgency:     "Excessive agency",
+	CategoryOutputHandling:      "Output handling",
+	CategoryMemoryPoisoning:     "Memory poisoning",
+	CategoryToolMisuse:          "Tool misuse",
+	CategoryRogueAgent:          "Rogue agent",
+	CategoryHarmfulContent:      "Harmful content",
+	CategoryTriggerAbuse:        "Trigger abuse",
+	CategoryYARAMatch:           "Signature match (YARA-lite)",
+	CategoryMCPLeastPrivilege:   "MCP least privilege",
+	CategoryMCPToolPoisoning:    "MCP tool poisoning",
+}
+
 func humanCategory(c Category) string {
-	switch c {
-	case CategoryPromptInjection:
-		return "Prompt injection"
-	case CategorySystemPromptLeakage:
-		return "System prompt leakage"
-	case CategoryDataExfiltration:
-		return "Data exfiltration"
-	case CategoryPrivilegeEscalation:
-		return "Privilege escalation"
-	case CategorySupplyChain:
-		return "Supply chain"
-	case CategoryExcessiveAgency:
-		return "Excessive agency"
-	case CategoryOutputHandling:
-		return "Output handling"
-	case CategoryMemoryPoisoning:
-		return "Memory poisoning"
-	case CategoryToolMisuse:
-		return "Tool misuse"
-	case CategoryRogueAgent:
-		return "Rogue agent"
-	case CategoryHarmfulContent:
-		return "Harmful content"
-	case CategoryTriggerAbuse:
-		return "Trigger abuse"
-	case CategoryYARAMatch:
-		return "Signature match (YARA-lite)"
-	case CategoryMCPLeastPrivilege:
-		return "MCP least privilege"
-	case CategoryMCPToolPoisoning:
-		return "MCP tool poisoning"
+	if name, ok := humanCategoryNames[c]; ok {
+		return name
 	}
 	if c == "" {
 		return "Other"

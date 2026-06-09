@@ -176,16 +176,7 @@ func runLock(cmd *cobra.Command, args []string) error {
 		registry.TouchProject(lockPath)
 	}
 
-	failed := 0
-	repinned := 0
-	for _, e := range out.Entries {
-		switch e.Status {
-		case "failed":
-			failed++
-		case "repinned":
-			repinned++
-		}
-	}
+	failed, repinned := countLockResolveStatuses(out.Entries)
 
 	if printer.Format == output.FormatJSON {
 		if err := printer.JSON(out); err != nil {
@@ -203,7 +194,36 @@ func runLock(cmd *cobra.Command, args []string) error {
 		printer.Info("No installed skills.")
 		return nil
 	}
-	for _, e := range out.Entries {
+	renderLockResolveEntries(out.Entries)
+	if repinned > 0 && !lockResolveDryRun {
+		printer.Info("Run `qvr sync` to materialise the re-pinned commits.")
+	}
+	if failed > 0 {
+		// Per-entry errors already printed above; errTextHandled exits 1
+		// without duplicating them into a trailing `Error: …` envelope.
+		return errTextHandled
+	}
+	return nil
+}
+
+// countLockResolveStatuses tallies the failed and repinned entries from a lock
+// resolve, driving runLock's exit code and the trailing "run `qvr sync`" hint.
+func countLockResolveStatuses(entries []LockResolveEntryResult) (failed, repinned int) {
+	for _, e := range entries {
+		switch e.Status {
+		case "failed":
+			failed++
+		case "repinned":
+			repinned++
+		}
+	}
+	return failed, repinned
+}
+
+// renderLockResolveEntries prints the text-mode per-entry verdict for `qvr lock`:
+// re-pinned / would-repin / unchanged / skipped / removed / would-remove / failed.
+func renderLockResolveEntries(entries []LockResolveEntryResult) {
+	for _, e := range entries {
 		switch e.Status {
 		case "repinned":
 			printer.Success(fmt.Sprintf("%s: re-pinned %s %s → %s", e.Name, e.Ref, e.OldCommit, e.NewCommit))
@@ -221,15 +241,6 @@ func runLock(cmd *cobra.Command, args []string) error {
 			printer.Error(fmt.Sprintf("%s: failed — %s", e.Name, e.Message))
 		}
 	}
-	if repinned > 0 && !lockResolveDryRun {
-		printer.Info("Run `qvr sync` to materialise the re-pinned commits.")
-	}
-	if failed > 0 {
-		// Per-entry errors already printed above; errTextHandled exits 1
-		// without duplicating them into a trailing `Error: …` envelope.
-		return errTextHandled
-	}
-	return nil
 }
 
 // lockResolveInternal is the read-modify-write loop for `qvr lock`, extracted
@@ -248,18 +259,9 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 	// [skills] ref is applied INTO the lock (the toml-authoritative direction,
 	// the inverse of `qvr sync` where the lock wins). Bare `qvr lock` re-pins the
 	// entry's current ref instead.
-	var proj *model.ProjectFile
-	projExists := false // distinguishes a present-but-empty qvr.toml from an absent one
-	if lockResolveFromToml {
-		projPath := model.DefaultProjectPath(filepath.Dir(lockPath))
-		if _, statErr := os.Stat(projPath); statErr == nil {
-			projExists = true
-		}
-		p, perr := model.ReadProjectFile(projPath)
-		if perr != nil {
-			return nil, fmt.Errorf("read qvr.toml: %w", perr)
-		}
-		proj = p
+	proj, projExists, err := loadFromTomlProject(lockPath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Register missing registries from the lock so RegistryPath/Update can find
@@ -291,37 +293,7 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 	// self-sufficient); only a qvr.toml that is actually present drives deletions.
 	removed := false
 	if proj != nil && projExists && !lockResolveGlobal && lockResolvePackage == "" {
-		declared := make(map[string]struct{}, len(proj.Skills))
-		for _, c := range proj.SkillCoordinates() {
-			declared[c] = struct{}{}
-		}
-		projectRoot := filepath.Dir(lockPath)
-		installer := skill.NewInstaller(mgr, git.NewGoGitWorktree(), gc)
-		for _, e := range lock.Entries() {
-			coord := model.SkillCoordinate(e)
-			if coord == "" {
-				continue
-			}
-			if _, ok := declared[coord]; ok {
-				continue
-			}
-			row := LockResolveEntryResult{Name: e.Name, Ref: e.Ref}
-			if lockResolveDryRun {
-				row.Status = "would-remove"
-				row.Message = "absent from qvr.toml — would remove (toml wins)"
-				out.Entries = append(out.Entries, row)
-				continue
-			}
-			if rerr := installer.RemoveFrom(e.Name, skill.InstallRequest{ProjectRoot: projectRoot, Force: true}, lock); rerr != nil {
-				row.Status = "failed"
-				row.Message = fmt.Sprintf("remove (absent from qvr.toml): %v", rerr)
-			} else {
-				row.Status = "removed"
-				row.Message = "absent from qvr.toml — removed (toml wins)"
-				removed = true
-			}
-			out.Entries = append(out.Entries, row)
-		}
+		removed = applyFromTomlDeletions(proj, lock, mgr, gc, lockPath, out)
 	}
 
 	entries := lock.Entries()
@@ -340,85 +312,9 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 	fetched := map[string]bool{}
 	changed := false
 	for _, entry := range entries {
-		row := LockResolveEntryResult{Name: entry.Name, Ref: entry.Ref}
-		switch {
-		case entry.IsLink():
-			row.Status = "skipped"
-			row.Message = "link install — no upstream to re-resolve"
-		case entry.IsEdit():
-			row.Status = "skipped"
-			row.Message = "edit install — re-pin via `qvr publish`/`qvr edit`, not `qvr lock`"
-		case entry.Registry == "":
-			row.Status = "skipped"
-			row.Message = "no registry upstream to re-resolve"
-		default:
-			// --from-toml: adopt qvr.toml's declared ref for this entry before
-			// resolving, so the lock moves to the hand-edited ref. A ref change is
-			// itself a lock mutation even if the resolved commit is unchanged.
-			// Defer the `changed` flag (and restore the ref on failure) until
-			// ResolveRef succeeds — otherwise a ref that doesn't resolve gets
-			// written into the lock, corrupting it (stale commit/hash under a
-			// dangling ref).
-			originalRef := entry.Ref
-			refAdopted := false
-			if proj != nil {
-				if coord := model.SkillCoordinate(entry); coord != "" {
-					if spec, ok := proj.Skill(coord); ok && spec.Ref != entry.Ref {
-						entry.Ref = spec.Ref
-						row.Ref = spec.Ref
-						refAdopted = true
-					}
-				}
-			}
-			if !fetched[entry.Registry] {
-				if _, uerr := mgr.Update(ctx, entry.Registry); uerr != nil {
-					printer.Warning(fmt.Sprintf("lock: refresh %s failed (%v); resolving against cached clone", entry.Registry, uerr))
-				}
-				fetched[entry.Registry] = true
-			}
-			newCommit, rerr := gc.ResolveRef(registry.RegistryPath(entry.Registry), entry.Ref)
-			if rerr != nil {
-				// Restore the original ref so the failed resolve leaves the lock
-				// entry untouched rather than persisting an unresolvable ref.
-				entry.Ref = originalRef
-				row.Ref = originalRef
-				row.Status = "failed"
-				row.Message = rerr.Error()
-				break
-			}
-			// Resolve succeeded — an adopted toml ref is now a real mutation.
-			if refAdopted {
-				changed = true
-			}
-			row.OldCommit = registry.ShortSHA(entry.Commit)
-			row.NewCommit = registry.ShortSHA(newCommit)
-			if newCommit == entry.Commit {
-				row.Status = "unchanged"
-				break
-			}
-			if lockResolveDryRun {
-				row.Status = "would-repin"
-				break
-			}
-			// Re-pin: rewrite the commit + cache key and recompute the content
-			// hash straight from the bare clone's git objects — no worktree
-			// checkout, no symlink change. The digest is identical to what a
-			// checkout of newCommit would produce, so the lock stays verifiable
-			// immediately and the next `qvr sync` materialises a worktree that
-			// matches. If hashing fails (unreadable subtree), invalidate the
-			// fields so sync recomputes them on restore rather than leaving a
-			// stale hash.
-			entry.Commit = newCommit
-			entry.InstallCommit = registry.ShortSHA(newCommit)
-			if id, herr := skill.ComputeEntryIdentityAtCommit(registry.RegistryPath(entry.Registry), newCommit, entry.Path, entry.RootCoexists); herr == nil {
-				entry.SubtreeHash = id.SubtreeHash
-				entry.TreeOID = id.TreeSHA
-			} else {
-				entry.SubtreeHash = ""
-				entry.TreeOID = ""
-			}
+		row, entryChanged := resolveLockEntry(ctx, entry, proj, fetched, mgr, gc)
+		if entryChanged {
 			changed = true
-			row.Status = "repinned"
 		}
 		out.Entries = append(out.Entries, row)
 	}
@@ -430,6 +326,160 @@ func lockResolveInternal(ctx context.Context, lockPath string) (*LockResolveOutp
 		out.LockVersion = model.LockFileVersion
 	}
 	return out, nil
+}
+
+// loadFromTomlProject reads qvr.toml for a `--from-toml` resolve, returning the
+// parsed project plus whether the file actually exists (projExists distinguishes
+// a present-but-empty qvr.toml from an absent one — the deletion pass guards on
+// it so an absent file never tears down skills). Returns (nil, false, nil) when
+// --from-toml wasn't requested.
+func loadFromTomlProject(lockPath string) (*model.ProjectFile, bool, error) {
+	if !lockResolveFromToml {
+		return nil, false, nil
+	}
+	projExists := false
+	projPath := model.DefaultProjectPath(filepath.Dir(lockPath))
+	if _, statErr := os.Stat(projPath); statErr == nil {
+		projExists = true
+	}
+	p, perr := model.ReadProjectFile(projPath)
+	if perr != nil {
+		return nil, false, fmt.Errorf("read qvr.toml: %w", perr)
+	}
+	return p, projExists, nil
+}
+
+// applyFromTomlDeletions removes lock entries whose qvr.toml coordinate is no
+// longer declared (the destructive half of `qvr lock --from-toml`, toml wins,
+// #229), tearing down symlinks + worktree via the same path as `qvr remove`.
+// Edit/link/local entries have no coordinate and are never selected. Report-only
+// under --dry-run. Appends a row per removal to out and returns whether any entry
+// was actually removed (drives the lock write-back).
+func applyFromTomlDeletions(proj *model.ProjectFile, lock *model.LockFile, mgr *registry.Manager, gc git.GitClient, lockPath string, out *LockResolveOutput) bool {
+	declared := make(map[string]struct{}, len(proj.Skills))
+	for _, c := range proj.SkillCoordinates() {
+		declared[c] = struct{}{}
+	}
+	projectRoot := filepath.Dir(lockPath)
+	installer := skill.NewInstaller(mgr, git.NewGoGitWorktree(), gc)
+	removed := false
+	for _, e := range lock.Entries() {
+		coord := model.SkillCoordinate(e)
+		if coord == "" {
+			continue
+		}
+		if _, ok := declared[coord]; ok {
+			continue
+		}
+		row := LockResolveEntryResult{Name: e.Name, Ref: e.Ref}
+		if lockResolveDryRun {
+			row.Status = "would-remove"
+			row.Message = "absent from qvr.toml — would remove (toml wins)"
+			out.Entries = append(out.Entries, row)
+			continue
+		}
+		if rerr := installer.RemoveFrom(e.Name, skill.InstallRequest{ProjectRoot: projectRoot, Force: true}, lock); rerr != nil {
+			row.Status = "failed"
+			row.Message = fmt.Sprintf("remove (absent from qvr.toml): %v", rerr)
+		} else {
+			row.Status = "removed"
+			row.Message = "absent from qvr.toml — removed (toml wins)"
+			removed = true
+		}
+		out.Entries = append(out.Entries, row)
+	}
+	return removed
+}
+
+// resolveLockEntry re-pins one lock entry's commit to the current tip of its ref
+// (adopting qvr.toml's ref first under --from-toml), fetching its registry at
+// most once via the shared `fetched` set. It mutates the entry on a real re-pin
+// and returns the result row plus whether the lock changed (a successful ref
+// adoption counts even when the resolved commit is unchanged). Link/edit/no-
+// registry entries are skipped; a failed resolve restores the original ref.
+func resolveLockEntry(ctx context.Context, entry *model.LockEntry, proj *model.ProjectFile, fetched map[string]bool, mgr *registry.Manager, gc git.GitClient) (LockResolveEntryResult, bool) {
+	row := LockResolveEntryResult{Name: entry.Name, Ref: entry.Ref}
+	changed := false
+	switch {
+	case entry.IsLink():
+		row.Status = "skipped"
+		row.Message = "link install — no upstream to re-resolve"
+	case entry.IsEdit():
+		row.Status = "skipped"
+		row.Message = "edit install — re-pin via `qvr publish`/`qvr edit`, not `qvr lock`"
+	case entry.Registry == "":
+		row.Status = "skipped"
+		row.Message = "no registry upstream to re-resolve"
+	default:
+		// --from-toml: adopt qvr.toml's declared ref for this entry before
+		// resolving, so the lock moves to the hand-edited ref. A ref change is
+		// itself a lock mutation even if the resolved commit is unchanged.
+		// Defer the `changed` flag (and restore the ref on failure) until
+		// ResolveRef succeeds — otherwise a ref that doesn't resolve gets
+		// written into the lock, corrupting it (stale commit/hash under a
+		// dangling ref).
+		originalRef := entry.Ref
+		refAdopted := false
+		if proj != nil {
+			if coord := model.SkillCoordinate(entry); coord != "" {
+				if spec, ok := proj.Skill(coord); ok && spec.Ref != entry.Ref {
+					entry.Ref = spec.Ref
+					row.Ref = spec.Ref
+					refAdopted = true
+				}
+			}
+		}
+		if !fetched[entry.Registry] {
+			if _, uerr := mgr.Update(ctx, entry.Registry); uerr != nil {
+				printer.Warning(fmt.Sprintf("lock: refresh %s failed (%v); resolving against cached clone", entry.Registry, uerr))
+			}
+			fetched[entry.Registry] = true
+		}
+		newCommit, rerr := gc.ResolveRef(registry.RegistryPath(entry.Registry), entry.Ref)
+		if rerr != nil {
+			// Restore the original ref so the failed resolve leaves the lock
+			// entry untouched rather than persisting an unresolvable ref.
+			entry.Ref = originalRef
+			row.Ref = originalRef
+			row.Status = "failed"
+			row.Message = rerr.Error()
+			return row, changed
+		}
+		// Resolve succeeded — an adopted toml ref is now a real mutation.
+		if refAdopted {
+			changed = true
+		}
+		row.OldCommit = registry.ShortSHA(entry.Commit)
+		row.NewCommit = registry.ShortSHA(newCommit)
+		if newCommit == entry.Commit {
+			row.Status = "unchanged"
+			return row, changed
+		}
+		if lockResolveDryRun {
+			row.Status = "would-repin"
+			return row, changed
+		}
+		// Re-pin: rewrite the commit + cache key and recompute the content
+		// hash straight from the bare clone's git objects — no worktree
+		// checkout, no symlink change. The digest is identical to what a
+		// checkout of newCommit would produce, so the lock stays verifiable
+		// immediately and the next `qvr sync` materialises a worktree that
+		// matches. If hashing fails (unreadable subtree), invalidate the
+		// fields so sync recomputes them on restore rather than leaving a
+		// stale hash.
+		entry.Commit = newCommit
+		entry.InstallCommit = registry.ShortSHA(newCommit)
+		if id, herr := skill.ComputeEntryIdentityAtCommit(registry.RegistryPath(entry.Registry), newCommit, entry.Path, entry.RootCoexists); herr == nil {
+			entry.SubtreeHash = id.SubtreeHash
+			entry.TreeOID = id.TreeSHA
+		} else {
+			entry.SubtreeHash = ""
+			entry.TreeOID = ""
+		}
+		changed = true
+		row.Status = "repinned"
+	}
+	return row, changed
 }
 
 // VerifySummary aggregates per-status counts for the JSON output.
@@ -815,71 +865,10 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 	}
 	changed := false
 	for _, entry := range lock.Entries() {
-		row := UpgradeEntryResult{Name: entry.Name}
-		switch {
-		case entry.IsLink():
-			row.Status = "skipped"
-			row.Message = "link install — no upstream subtree to hash"
-		case entry.SubtreeHash == "":
-			if lockUpgradeDryRun {
-				row.Status = "would-upgrade"
-				row.Message = "would compute subtree hash"
-			} else {
-				// Hash the on-disk skill dir (works for worktree-free content
-				// dirs and legacy worktrees alike) and seal it onto the entry.
-				if err := skill.RefreshSubtreeHash(entry); err != nil || entry.SubtreeHash == "" {
-					row.Status = "skipped"
-					if err != nil {
-						row.Message = err.Error()
-					} else {
-						row.Message = "could not compute subtree hash"
-					}
-				} else {
-					row.Status = "upgraded"
-					changed = true
-				}
-			}
-		default:
-			row.Status = "unchanged"
+		row, entryChanged := upgradeLockEntry(entry, cfg)
+		if entryChanged {
+			changed = true
 		}
-
-		// Issue #63 — also restore the verification.scan block when the
-		// gate is configured and the entry is missing one. Runs on both
-		// freshly-hashed entries (status="upgraded") and previously
-		// unchanged entries (status="unchanged") that just lack the
-		// scan record. We only mutate row.Status when we actually wrote
-		// the scan, so dry-run / skipped / link rows pass through.
-		if !lockUpgradeDryRun && !entry.IsLink() && entry.SubtreeHash != "" &&
-			(entry.Verification == nil || entry.Verification.Scan == nil) &&
-			gateAvailable(cfg, false) {
-			worktreePath := skill.EntryWorktreePath(entry)
-			skillDir := worktreePath
-			if entry.Path != "" {
-				skillDir = filepath.Join(worktreePath, entry.Path)
-			}
-			gate, gerr := ScanAndGate(context.Background(), skillDir, cfg, scanGateOptions{
-				Action:   "lock upgrade",
-				Subject:  entry.Name,
-				WarnOnly: true,
-			})
-			if gerr == nil && gate != nil && !gate.Skipped {
-				if scan := toScanRef(gate); scan != nil {
-					if entry.Verification == nil {
-						entry.Verification = &model.VerificationRecord{}
-					}
-					entry.Verification.Scan = scan
-					changed = true
-					// Promote unchanged rows to "upgraded" so callers
-					// see that something happened. Hash-side upgrades
-					// stay "upgraded".
-					if row.Status == "unchanged" {
-						row.Status = "upgraded"
-						row.Message = "restored verification.scan"
-					}
-				}
-			}
-		}
-
 		out.Entries = append(out.Entries, row)
 	}
 
@@ -890,4 +879,93 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 		out.LockVersion = model.LockFileVersion
 	}
 	return out, nil
+}
+
+// upgradeLockEntry backfills one lock entry's missing top-level SubtreeHash and,
+// when the scan gate is configured and the entry lacks a verification.scan block,
+// restores that block too (issue #63). It mutates the entry and returns the
+// result row plus whether the lock changed. Link entries are skipped; dry-run
+// reports "would-upgrade" without mutating.
+func upgradeLockEntry(entry *model.LockEntry, cfg *config.Config) (UpgradeEntryResult, bool) {
+	row := UpgradeEntryResult{Name: entry.Name}
+	changed := false
+	switch {
+	case entry.IsLink():
+		row.Status = "skipped"
+		row.Message = "link install — no upstream subtree to hash"
+	case entry.SubtreeHash == "":
+		if lockUpgradeDryRun {
+			row.Status = "would-upgrade"
+			row.Message = "would compute subtree hash"
+		} else {
+			// Hash the on-disk skill dir (works for worktree-free content
+			// dirs and legacy worktrees alike) and seal it onto the entry.
+			if err := skill.RefreshSubtreeHash(entry); err != nil || entry.SubtreeHash == "" {
+				row.Status = "skipped"
+				if err != nil {
+					row.Message = err.Error()
+				} else {
+					row.Message = "could not compute subtree hash"
+				}
+			} else {
+				row.Status = "upgraded"
+				changed = true
+			}
+		}
+	default:
+		row.Status = "unchanged"
+	}
+
+	// Issue #63 — also restore the verification.scan block when the
+	// gate is configured and the entry is missing one. Runs on both
+	// freshly-hashed entries (status="upgraded") and previously
+	// unchanged entries (status="unchanged") that just lack the
+	// scan record. We only mutate row.Status when we actually wrote
+	// the scan, so dry-run / skipped / link rows pass through.
+	if restoreUpgradeScanRecord(entry, cfg, &row) {
+		changed = true
+	}
+	return row, changed
+}
+
+// restoreUpgradeScanRecord re-runs the configured scan gate against an entry
+// missing a verification.scan block and seals the resulting ScanRef onto it
+// (issue #63). Returns whether it wrote the scan; an "unchanged" row is promoted
+// to "upgraded" so callers see the change. No-op under dry-run, for link
+// entries, when the entry already has a scan, or when no gate is configured.
+func restoreUpgradeScanRecord(entry *model.LockEntry, cfg *config.Config, row *UpgradeEntryResult) bool {
+	if lockUpgradeDryRun || entry.IsLink() || entry.SubtreeHash == "" ||
+		(entry.Verification != nil && entry.Verification.Scan != nil) ||
+		!gateAvailable(cfg, false) {
+		return false
+	}
+	worktreePath := skill.EntryWorktreePath(entry)
+	skillDir := worktreePath
+	if entry.Path != "" {
+		skillDir = filepath.Join(worktreePath, entry.Path)
+	}
+	gate, gerr := ScanAndGate(context.Background(), skillDir, cfg, scanGateOptions{
+		Action:   "lock upgrade",
+		Subject:  entry.Name,
+		WarnOnly: true,
+	})
+	if gerr != nil || gate == nil || gate.Skipped {
+		return false
+	}
+	scan := toScanRef(gate)
+	if scan == nil {
+		return false
+	}
+	if entry.Verification == nil {
+		entry.Verification = &model.VerificationRecord{}
+	}
+	entry.Verification.Scan = scan
+	// Promote unchanged rows to "upgraded" so callers
+	// see that something happened. Hash-side upgrades
+	// stay "upgraded".
+	if row.Status == "unchanged" {
+		row.Status = "upgraded"
+		row.Message = "restored verification.scan"
+	}
+	return true
 }

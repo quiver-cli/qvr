@@ -14,11 +14,11 @@ import (
 // other methods to the embedded interface value.
 type countingGit struct {
 	git.GitClient
-	resolveRefN int64
+	resolveRefN atomic.Int64
 }
 
 func (c *countingGit) ResolveRef(repoPath, ref string) (string, error) {
-	atomic.AddInt64(&c.resolveRefN, 1)
+	c.resolveRefN.Add(1)
 	return c.GitClient.ResolveRef(repoPath, ref)
 }
 
@@ -69,7 +69,7 @@ func TestResolveRefCached_CollapsesBatchResolution(t *testing.T) {
 	// 4 skills, one registry, one default ref → exactly one underlying
 	// ResolveRef. Anything ≥ the skill count means the per-skill/per-pass
 	// resolution redundancy regressed.
-	if got := atomic.LoadInt64(&counter.resolveRefN); got != 1 {
+	if got := counter.resolveRefN.Load(); got != 1 {
 		t.Errorf("ResolveRef called %d times for a 4-skill same-ref batch; want 1 (resolution cache collapse)", got)
 	}
 }

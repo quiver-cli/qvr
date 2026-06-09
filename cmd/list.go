@@ -84,41 +84,47 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 	var tbl [][]string
 	for _, r := range rows {
-		reg := r.Registry
-		if reg == "" {
-			reg = "-"
-		}
-		// SOURCE column precedence (issue #117): mode wins over the raw
-		// Source field. A `qvr edit`-ejected skill still has the
-		// upstream URL in Source (preserved as SourceUpstream too), so
-		// keying the column off Source alone painted ejected entries
-		// identical to shared ones — the user couldn't tell at a glance
-		// that the row was now eject-mode and writable. Link installs
-		// get their own marker for the same reason; only true shared
-		// installs surface the upstream URL.
-		var source string
-		switch {
-		case r.LockEntry != nil && r.IsEdit():
-			source = "edit"
-		case r.LockEntry != nil && r.IsLink():
-			source = "local"
-		case r.Source != "":
-			source = r.Source
-		default:
-			source = "-"
-		}
-		status := "enabled"
-		if r.Disabled {
-			status = "disabled"
-		}
-		row := []string{
-			r.Name, reg, r.Ref, strings.Join(r.Targets, ","), source, status, signedCol(recordedSigStatus(r.LockEntry)),
-		}
-		if listAll {
-			row = append([]string{r.Scope}, row...)
-		}
-		tbl = append(tbl, row)
+		tbl = append(tbl, listTableRow(r))
 	}
 	printer.Table(headers, tbl)
 	return nil
+}
+
+// listTableRow renders one installed-skill row for the `qvr list` text table,
+// prepending the SCOPE column under --all.
+func listTableRow(r scopedListEntry) []string {
+	reg := r.Registry
+	if reg == "" {
+		reg = "-"
+	}
+	// SOURCE column precedence (issue #117): mode wins over the raw
+	// Source field. A `qvr edit`-ejected skill still has the
+	// upstream URL in Source (preserved as SourceUpstream too), so
+	// keying the column off Source alone painted ejected entries
+	// identical to shared ones — the user couldn't tell at a glance
+	// that the row was now eject-mode and writable. Link installs
+	// get their own marker for the same reason; only true shared
+	// installs surface the upstream URL.
+	var source string
+	switch {
+	case r.LockEntry != nil && r.IsEdit():
+		source = "edit"
+	case r.LockEntry != nil && r.IsLink():
+		source = "local"
+	case r.Source != "":
+		source = r.Source
+	default:
+		source = "-"
+	}
+	status := "enabled"
+	if r.Disabled {
+		status = "disabled"
+	}
+	row := []string{
+		r.Name, reg, r.Ref, strings.Join(r.Targets, ","), source, status, signedCol(recordedSigStatus(r.LockEntry)),
+	}
+	if listAll {
+		row = append([]string{r.Scope}, row...)
+	}
+	return row
 }

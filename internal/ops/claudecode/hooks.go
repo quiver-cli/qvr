@@ -205,36 +205,60 @@ func (a *Adapter) Uninstall(opts ops.UninstallOptions) (ops.UninstallResult, err
 	}
 
 	if opts.DryRun {
-		settings, rErr := readSettings(path)
-		if rErr != nil {
-			return res, rErr
-		}
-		hooks, hErr := hooksSection(settings)
-		if hErr != nil {
-			return res, hErr
-		}
-		for ht, matchers := range hooks {
-			if len(matchers) != len(stripQuiver(matchers)) {
-				res.HooksRemoved = append(res.HooksRemoved, ht)
-			}
-		}
-		return res, nil
+		return uninstallDryRun(path)
 	}
 
 	// Prefer restoring the pre-install backup verbatim.
+	if restored, ok, rErr := restoreFromBackup(path); rErr != nil || ok {
+		return restored, rErr
+	}
+
+	// No backup — strip Quiver entries surgically.
+	return stripQuiverInPlace(path)
+}
+
+// uninstallDryRun reports which hook types a real uninstall would touch,
+// without modifying settings.json.
+func uninstallDryRun(path string) (ops.UninstallResult, error) {
+	var res ops.UninstallResult
+	settings, rErr := readSettings(path)
+	if rErr != nil {
+		return res, rErr
+	}
+	hooks, hErr := hooksSection(settings)
+	if hErr != nil {
+		return res, hErr
+	}
+	for ht, matchers := range hooks {
+		if len(matchers) != len(stripQuiver(matchers)) {
+			res.HooksRemoved = append(res.HooksRemoved, ht)
+		}
+	}
+	return res, nil
+}
+
+// restoreFromBackup restores settings.json verbatim from the newest backup
+// when one exists. ok reports whether a backup was found and applied.
+func restoreFromBackup(path string) (ops.UninstallResult, bool, error) {
+	var res ops.UninstallResult
 	if backupDir, bErr := ops.LatestBackupDir(AgentName); bErr == nil && backupDir != "" {
 		bak := filepath.Join(backupDir, "settings.json.bak")
 		if _, sErr := os.Stat(bak); sErr == nil {
 			if err := ops.CopyFile(bak, path); err != nil {
-				return res, fmt.Errorf("restore backup: %w", err)
+				return res, true, fmt.Errorf("restore backup: %w", err)
 			}
 			res.Restored = true
 			res.HooksRemoved = append([]string(nil), hookTypes...)
-			return res, nil
+			return res, true, nil
 		}
 	}
+	return res, false, nil
+}
 
-	// No backup — strip Quiver entries surgically.
+// stripQuiverInPlace surgically removes Quiver entries from settings.json,
+// used when no pre-install backup is available.
+func stripQuiverInPlace(path string) (ops.UninstallResult, error) {
+	var res ops.UninstallResult
 	settings, err := readSettings(path)
 	if err != nil {
 		return res, err

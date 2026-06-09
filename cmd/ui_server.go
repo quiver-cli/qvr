@@ -428,32 +428,10 @@ func (s *uiServer) handleRegistrySkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Repo-level version timeline: branches + tags resolved to commit + time.
-	if vers, err := gc.RefVersions(repoPath); err == nil {
-		for _, v := range vers {
-			resp.Versions = append(resp.Versions, registryVersion{
-				Ref:     v.Name,
-				IsTag:   v.IsTag,
-				SHA:     v.Hash,
-				Time:    v.Time,
-				Subject: v.Subject,
-				Current: v.Name == defaultBranch,
-			})
-		}
-	}
+	s.fillRegistrySkillVersions(&resp, gc, repoPath, defaultBranch)
 
 	// Install status in the active scope, so the in-use ref/commit can be marked.
-	if sc, err := s.resolveScope(r); err == nil {
-		if entries, err := s.entriesForScope(sc); err == nil {
-			for _, e := range entries {
-				if e.Registry == name && e.Name == skillName {
-					resp.Installed = true
-					resp.InstalledRef = e.Ref
-					resp.InstalledCommit = e.Commit
-					break
-				}
-			}
-		}
-	}
+	s.markRegistrySkillInstalled(r, &resp, name, skillName)
 
 	// Resolve the skill's subpath from the cache-aware index (no network), then
 	// list its files from the bare clone at the chosen ref.
@@ -492,7 +470,54 @@ func (s *uiServer) handleRegistrySkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A root-layout skill (Path ".") lives at the repo root: list the whole tree.
+	s.fillRegistrySkillFiles(w, &resp, gc, repoPath, ref, skillPath)
+}
+
+// fillRegistrySkillVersions appends the repo-level version timeline (branches +
+// tags resolved to commit + time) onto resp, marking the default branch current.
+func (s *uiServer) fillRegistrySkillVersions(resp *registrySkillDetail, gc *git.GoGitClient, repoPath, defaultBranch string) {
+	vers, err := gc.RefVersions(repoPath)
+	if err != nil {
+		return
+	}
+	for _, v := range vers {
+		resp.Versions = append(resp.Versions, registryVersion{
+			Ref:     v.Name,
+			IsTag:   v.IsTag,
+			SHA:     v.Hash,
+			Time:    v.Time,
+			Subject: v.Subject,
+			Current: v.Name == defaultBranch,
+		})
+	}
+}
+
+// markRegistrySkillInstalled flags resp when the skill is installed in the
+// request's active scope, recording the in-use ref/commit.
+func (s *uiServer) markRegistrySkillInstalled(r *http.Request, resp *registrySkillDetail, name, skillName string) {
+	sc, err := s.resolveScope(r)
+	if err != nil {
+		return
+	}
+	entries, err := s.entriesForScope(sc)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Registry == name && e.Name == skillName {
+			resp.Installed = true
+			resp.InstalledRef = e.Ref
+			resp.InstalledCommit = e.Commit
+			break
+		}
+	}
+}
+
+// fillRegistrySkillFiles lists the skill's files from the bare clone at ref and
+// writes the final JSON response (or an error payload on a listing failure). A
+// root-layout skill (Path ".") lives at the repo root, so the whole tree is
+// listed.
+func (s *uiServer) fillRegistrySkillFiles(w http.ResponseWriter, resp *registrySkillDetail, gc *git.GoGitClient, repoPath, ref, skillPath string) {
 	treePath := skillPath
 	if treePath == "." {
 		treePath = ""
@@ -529,7 +554,7 @@ type projectSummary struct {
 	Skills   int       `json:"skills"`
 	Sessions int64     `json:"sessions"`
 	Events   int64     `json:"events"`
-	LastSeen time.Time `json:"lastSeen,omitempty"`
+	LastSeen time.Time `json:"lastSeen"`
 }
 
 func (s *uiServer) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -1263,10 +1288,9 @@ func parsePositiveInt(s string) (int, error) {
 			return 0, fmt.Errorf("not a number: %q", s)
 		}
 		if n < maxN {
-			n = n*10 + int(c-'0')
-			if n > maxN {
-				n = maxN // clamp; keep scanning to validate the rest
-			}
+			n = min(n*10+int(c-'0'),
+				// clamp; keep scanning to validate the rest
+				maxN)
 		}
 	}
 	if n <= 0 {

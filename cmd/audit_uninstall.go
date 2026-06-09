@@ -62,33 +62,7 @@ func runAuditUninstall(cmd *cobra.Command, args []string) error {
 
 	outcomes := make([]uninstallOutcome, 0, len(installers))
 	for _, inst := range installers {
-		out := uninstallOutcome{Agent: inst.Name()}
-
-		res, uerr := inst.Uninstall(ops.UninstallOptions{DryRun: uninstallDryRun, Force: uninstallForce})
-		out.Restored = res.Restored
-		out.HooksRemoved = res.HooksRemoved
-		out.Warnings = append(out.Warnings, res.Warnings...)
-		if uerr != nil {
-			out.Error = uerr.Error()
-		}
-
-		if s != nil {
-			result := store.ResultAudit_Success
-			errMsg := ""
-			if uerr != nil {
-				result = store.ResultAudit_Error
-				errMsg = uerr.Error()
-			}
-			if aerr := recordSelfAudit(cmd.Context(), s, store.ActionAdapterUninstall, inst.Name(), result, errMsg, map[string]any{
-				"hooks_removed": res.HooksRemoved,
-				"restored":      res.Restored,
-				"dry_run":       uninstallDryRun,
-			}); aerr != nil {
-				out.Warnings = append(out.Warnings, "self-audit write failed: "+aerr.Error())
-			}
-		}
-
-		outcomes = append(outcomes, out)
+		outcomes = append(outcomes, uninstallOneAgent(cmd, s, inst))
 	}
 
 	if outputFormat == "json" {
@@ -117,4 +91,35 @@ func runAuditUninstall(cmd *cobra.Command, args []string) error {
 		return errTextHandled
 	}
 	return nil
+}
+
+// uninstallOneAgent removes Quiver's hooks for a single agent and (unless this
+// is a dry run, when s is nil) records the self-audit row for the action.
+func uninstallOneAgent(cmd *cobra.Command, s store.Store, inst ops.HookInstaller) uninstallOutcome {
+	out := uninstallOutcome{Agent: inst.Name()}
+
+	res, uerr := inst.Uninstall(ops.UninstallOptions{DryRun: uninstallDryRun, Force: uninstallForce})
+	out.Restored = res.Restored
+	out.HooksRemoved = res.HooksRemoved
+	out.Warnings = append(out.Warnings, res.Warnings...)
+	if uerr != nil {
+		out.Error = uerr.Error()
+	}
+
+	if s != nil {
+		result := store.ResultAudit_Success
+		errMsg := ""
+		if uerr != nil {
+			result = store.ResultAudit_Error
+			errMsg = uerr.Error()
+		}
+		if aerr := recordSelfAudit(cmd.Context(), s, store.ActionAdapterUninstall, inst.Name(), result, errMsg, map[string]any{
+			"hooks_removed": res.HooksRemoved,
+			"restored":      res.Restored,
+			"dry_run":       uninstallDryRun,
+		}); aerr != nil {
+			out.Warnings = append(out.Warnings, "self-audit write failed: "+aerr.Error())
+		}
+	}
+	return out
 }

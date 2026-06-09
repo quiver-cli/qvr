@@ -27,11 +27,9 @@
 <text x="135.200" y="76.50" text-anchor="start" font-size="11px" fill="#8b949e">3.25s</text>
 <rect x="0" y="80.00" width="78.720" height="10" fill="#32CD32"/>
 <text x="83.720" y="88.50" text-anchor="start" font-size="11px" fill="#8b949e">1.97s</text>
-<text x="-10" y="117.00" text-anchor="end" font-size="12px" fill="#8b949e">asm</text>
+<text x="-10" y="110.50" text-anchor="end" font-size="12px" fill="#8b949e">asm</text>
 <rect x="0" y="102.00" width="332.280" height="10" fill="#1E7B34"/>
 <text x="337.280" y="110.50" text-anchor="start" font-size="11px" fill="#8b949e">8.31s</text>
-<rect x="0" y="114.00" width="317.720" height="10" fill="#32CD32"/>
-<text x="322.720" y="122.50" text-anchor="start" font-size="11px" fill="#8b949e">7.94s</text>
 <rect x="0" y="148.0" width="11" height="10" fill="#1E7B34"/>
 <text x="16" y="157.0" font-size="11px" fill="#8b949e">cold (first install)</text>
 <rect x="135" y="148.0" width="11" height="10" fill="#32CD32"/>

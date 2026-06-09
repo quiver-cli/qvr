@@ -834,6 +834,14 @@ func TestUI_RegistrySkill(t *testing.T) {
 	if got.Installed {
 		t.Errorf("installed = true, want false (skill not in lock)")
 	}
+	assertRegistrySkillFiles(t, got)
+	assertRegistrySkillVersions(t, got)
+}
+
+// assertRegistrySkillFiles checks the skill's file list is skill-relative and
+// carries the expected entries.
+func assertRegistrySkillFiles(t *testing.T, got registrySkillDetail) {
+	t.Helper()
 	wantFiles := map[string]bool{"SKILL.md": false, "scripts/run.sh": false}
 	for _, f := range got.Files {
 		if _, ok := wantFiles[f]; ok {
@@ -848,6 +856,12 @@ func TestUI_RegistrySkill(t *testing.T) {
 			t.Errorf("missing file %q in %v", f, got.Files)
 		}
 	}
+}
+
+// assertRegistrySkillVersions checks the version timeline includes the main
+// branch, marked current as the default branch.
+func assertRegistrySkillVersions(t *testing.T, got registrySkillDetail) {
+	t.Helper()
 	var foundMain bool
 	for _, v := range got.Versions {
 		if v.Ref == "main" {

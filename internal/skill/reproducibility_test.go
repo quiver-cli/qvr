@@ -93,6 +93,15 @@ func TestSync_RestoresLockedCommitNotMovedRef(t *testing.T) {
 	// The restored dir is worktree-free (no git HEAD), so prove reproducibility
 	// by content: its on-disk subtree hash must equal the bare repo's hash at the
 	// PINNED commit c1, not the advanced tip c2.
+	assertRestoredContentMatchesPinned(t, e2, c1, c2)
+}
+
+// assertRestoredContentMatchesPinned proves uv reproducibility by content: the
+// restored worktree-free dir's on-disk subtree hash must equal the bare repo's
+// hash at the PINNED commit c1, not the advanced tip c2. It first checks the two
+// commits actually differ in content so the comparison has teeth.
+func assertRestoredContentMatchesPinned(t *testing.T, e2 *model.LockEntry, c1, c2 string) {
+	t.Helper()
 	bare := registry.RegistryPath("acme")
 	idC1, err := skill.ComputeEntryIdentityAtCommit(bare, c1, e2.Path, e2.RootCoexists)
 	if err != nil {

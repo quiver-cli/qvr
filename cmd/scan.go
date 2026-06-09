@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/output"
 	"github.com/astra-sh/qvr/internal/security"
 	"github.com/astra-sh/qvr/internal/skill"
@@ -63,13 +64,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		dir = args[0]
 	}
 
-	severityMin, err := security.ParseSeverity(scanSeverity)
+	severityMin, failOn, err := parseScanSeverityFlags()
 	if err != nil {
-		return fmt.Errorf("--severity: %w", err)
-	}
-	failOn, err := security.ParseSeverity(scanFailOn)
-	if err != nil {
-		return fmt.Errorf("--fail-on: %w", err)
+		return err
 	}
 
 	// Validate --format up front so typos fail loudly (issue #36).
@@ -106,35 +103,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	resolved, discovered, err := resolveSkillArg(dir, scanGlobal)
+	resolved, s, err := resolveAndLoadScanSkill(dir)
 	if err != nil {
-		if printer.Format == output.FormatJSON {
-			_ = printer.JSON(map[string]any{
-				"path":       dir,
-				"discovered": discovered,
-				"error":      err.Error(),
-			})
-			return errJSONHandled
-		}
 		return err
-	}
-	if resolved != dir {
-		// stderr only — stdout is reserved for the structured payload
-		// when --format json/sarif/markdown is in use (issue #35).
-		// In text mode, stderr still surfaces it to the human.
-		fmt.Fprintf(printer.Err, "discovered skill at %s\n", resolved)
-	}
-
-	s, err := skill.LoadFromPath(resolved)
-	if err != nil {
-		if printer.Format == output.FormatJSON {
-			_ = printer.JSON(map[string]any{
-				"path":  resolved,
-				"error": err.Error(),
-			})
-			return errJSONHandled
-		}
-		return fmt.Errorf("load skill: %w", err)
 	}
 
 	scanner := security.New()
@@ -150,19 +121,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 	result.Lint = lintReportFor(s)
 	if scanAgainst != "" {
-		ctx := cmd.Context()
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		baseline, cleanup, err := scanBaseline(ctx, scanner, resolved, scanAgainst)
-		if cleanup != nil {
-			defer cleanup()
-		}
-		if err != nil {
+		if err := applyScanBaseline(cmd, scanner, resolved, result); err != nil {
 			return err
 		}
-		result.Findings = diffFindings(result.Findings, baseline.Findings)
-		result.Summary = summariseScanFindings(result.Findings)
 	}
 
 	// Apply the display filter without rewriting Summary — the summary
@@ -170,6 +131,86 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// doesn't have to recompute it.
 	result.Findings = security.Filter(result.Findings, severityMin)
 
+	return emitScanResult(result, failOn)
+}
+
+// resolveAndLoadScanSkill resolves the scan argument to a concrete skill dir
+// (auto-discovering a nested skill) and loads it. Resolution / load failures are
+// emitted as a JSON error payload under --output json (errJSONHandled) or a
+// wrapped error otherwise. Returns the resolved path and loaded skill.
+func resolveAndLoadScanSkill(dir string) (string, *model.Skill, error) {
+	resolved, discovered, err := resolveSkillArg(dir, scanGlobal)
+	if err != nil {
+		if printer.Format == output.FormatJSON {
+			_ = printer.JSON(map[string]any{
+				"path":       dir,
+				"discovered": discovered,
+				"error":      err.Error(),
+			})
+			return "", nil, errJSONHandled
+		}
+		return "", nil, err
+	}
+	if resolved != dir {
+		// stderr only — stdout is reserved for the structured payload
+		// when --format json/sarif/markdown is in use (issue #35).
+		// In text mode, stderr still surfaces it to the human.
+		fmt.Fprintf(printer.Err, "discovered skill at %s\n", resolved)
+	}
+
+	s, err := skill.LoadFromPath(resolved)
+	if err != nil {
+		if printer.Format == output.FormatJSON {
+			_ = printer.JSON(map[string]any{
+				"path":  resolved,
+				"error": err.Error(),
+			})
+			return "", nil, errJSONHandled
+		}
+		return "", nil, fmt.Errorf("load skill: %w", err)
+	}
+	return resolved, s, nil
+}
+
+// applyScanBaseline scans the --against ref's view of the same skill and reduces
+// result.Findings to the delta (new findings only), recomputing the summary. The
+// baseline's temp checkout is cleaned up before return.
+func applyScanBaseline(cmd *cobra.Command, scanner *security.Scanner, resolved string, result *security.ScanResult) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseline, cleanup, err := scanBaseline(ctx, scanner, resolved, scanAgainst)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return err
+	}
+	result.Findings = diffFindings(result.Findings, baseline.Findings)
+	result.Summary = summariseScanFindings(result.Findings)
+	return nil
+}
+
+// parseScanSeverityFlags parses --severity (the display floor) and --fail-on
+// (the exit-code threshold), wrapping each with its flag name on error.
+func parseScanSeverityFlags() (severityMin, failOn security.Severity, err error) {
+	severityMin, err = security.ParseSeverity(scanSeverity)
+	if err != nil {
+		return "", "", fmt.Errorf("--severity: %w", err)
+	}
+	failOn, err = security.ParseSeverity(scanFailOn)
+	if err != nil {
+		return "", "", fmt.Errorf("--fail-on: %w", err)
+	}
+	return severityMin, failOn, nil
+}
+
+// emitScanResult renders the scan result in the effective format (sarif /
+// markdown / json / text) and applies the exit-code contract: findings at or
+// above --fail-on flip the exit non-zero — via errJSONHandled for the structured
+// JSON/SARIF streams (single document) and a plain error for markdown/text.
+func emitScanResult(result *security.ScanResult, failOn security.Severity) error {
 	switch effectiveScanFormat(printer.Format) {
 	case "sarif":
 		if err := printer.JSON(security.ToSARIF(result)); err != nil {

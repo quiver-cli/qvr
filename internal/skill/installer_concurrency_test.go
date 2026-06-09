@@ -33,7 +33,6 @@ func TestInstaller_ConcurrentInstallSerialisesUnderWithLock(t *testing.T) {
 	wg.Add(len(names))
 	errs := make(chan error, len(names))
 	for _, name := range names {
-		name := name // capture loop variable
 		go func() {
 			defer wg.Done()
 			err := model.WithLock(quiverHome, lockPath, func() error {

@@ -283,7 +283,7 @@ func (c *mcpToolPoisoningCheck) scanField(f metadataField) []Finding {
 // hasMixedScriptWord reports whether any whitespace-delimited word in s
 // mixes Latin with Cyrillic or Greek — the canonical homoglyph attack.
 func hasMixedScriptWord(s string) bool {
-	for _, word := range strings.Fields(s) {
+	for word := range strings.FieldsSeq(s) {
 		var hasLatin, hasCyrillicOrGreek bool
 		for _, r := range word {
 			switch {

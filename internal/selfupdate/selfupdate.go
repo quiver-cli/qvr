@@ -282,7 +282,7 @@ func verifyChecksum(archive, checksums []byte, asset string) error {
 	got := hex.EncodeToString(sum[:])
 
 	want := ""
-	for _, line := range strings.Split(string(checksums), "\n") {
+	for line := range strings.SplitSeq(string(checksums), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[1] == asset {
 			want = fields[0]

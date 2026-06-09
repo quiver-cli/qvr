@@ -57,35 +57,19 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 		t.Fatalf("derive: %v", err)
 	}
 
-	var llm, tool, skill *derive.Span
-	for i := range spans {
-		switch spans[i].Kind {
-		case derive.KindLLM:
-			llm = &spans[i]
-		case derive.KindTool:
-			tool = &spans[i]
-		case derive.KindSkill:
-			skill = &spans[i]
-		}
-	}
+	llm, tool, skill := splitSpanKinds(spans)
 	if llm == nil || tool == nil || skill == nil {
 		t.Fatalf("want LLM+TOOL+SKILL spans, got %d spans (%+v)", len(spans), spans)
 	}
 
 	// LLM turn: model from turn_context, tokens summed across both token_count
 	// events, prompt from the user_message event (not the injected context).
-	if llm.Attributes["gen_ai.request.model"] != "gpt-5.5" {
-		t.Errorf("model: got %v", llm.Attributes["gen_ai.request.model"])
-	}
-	if llm.Attributes["gen_ai.provider.name"] != "openai" {
-		t.Errorf("provider: got %v", llm.Attributes["gen_ai.provider.name"])
-	}
-	if got := llm.Attributes["gen_ai.usage.input_tokens"]; got != 23896+24160 {
-		t.Errorf("input tokens: want %d, got %v", 23896+24160, got)
-	}
-	if got := llm.Attributes["gen_ai.usage.output_tokens"]; got != 113+85 {
-		t.Errorf("output tokens: want %d, got %v", 113+85, got)
-	}
+	wantAttrs(t, llm, map[string]any{
+		"gen_ai.request.model":       "gpt-5.5",
+		"gen_ai.provider.name":       "openai",
+		"gen_ai.usage.input_tokens":  23896 + 24160,
+		"gen_ai.usage.output_tokens": 113 + 85,
+	})
 	if s, _ := llm.Attributes["gen_ai.input.messages"].(string); !strings.Contains(s, "list files then read the review skill") {
 		t.Errorf("input messages missing prompt: got %v", llm.Attributes["gen_ai.input.messages"])
 	}
@@ -106,15 +90,11 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 	}
 
 	// TOOL span: result attached from function_call_output, parents to the turn.
-	if tool.Attributes["gen_ai.tool.name"] != "exec_command" {
-		t.Errorf("tool name: got %v", tool.Attributes["gen_ai.tool.name"])
-	}
-	if tool.Attributes["gen_ai.tool.call.result"] != "AGENTS.md\nCLAUDE.md" {
-		t.Errorf("tool result: got %v", tool.Attributes["gen_ai.tool.call.result"])
-	}
-	if tool.Attributes["gen_ai.tool.description"] != "ls" {
-		t.Errorf("tool description: got %v", tool.Attributes["gen_ai.tool.description"])
-	}
+	wantAttrs(t, tool, map[string]any{
+		"gen_ai.tool.name":        "exec_command",
+		"gen_ai.tool.call.result": "AGENTS.md\nCLAUDE.md",
+		"gen_ai.tool.description": "ls",
+	})
 	if tool.ParentSpanID != llm.SpanID {
 		t.Errorf("tool should parent to the turn LLM span")
 	}
@@ -128,6 +108,38 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 	// #147: a command's begin (function_call) and end (function_call_output)
 	// must collapse onto ONE span, so every emitted span_id is unique. A dup
 	// here is exactly what tripped the UNIQUE constraint and dropped sessions.
+	assertUniqueSpanIDs(t, spans)
+}
+
+// splitSpanKinds returns the last LLM, TOOL, and SKILL span (each may be nil).
+func splitSpanKinds(spans []derive.Span) (llm, tool, skill *derive.Span) {
+	for i := range spans {
+		switch spans[i].Kind {
+		case derive.KindLLM:
+			llm = &spans[i]
+		case derive.KindTool:
+			tool = &spans[i]
+		case derive.KindSkill:
+			skill = &spans[i]
+		}
+	}
+	return llm, tool, skill
+}
+
+// wantAttrs asserts each key on sp.Attributes equals the expected value.
+func wantAttrs(t *testing.T, sp *derive.Span, want map[string]any) {
+	t.Helper()
+	for k, v := range want {
+		if got := sp.Attributes[k]; got != v {
+			t.Errorf("%s: want %v, got %v", k, v, got)
+		}
+	}
+}
+
+// assertUniqueSpanIDs fails if any span_id repeats — i.e. a command's begin+end
+// did not collapse onto one span.
+func assertUniqueSpanIDs(t *testing.T, spans []derive.Span) {
+	t.Helper()
 	ids := map[string]bool{}
 	for _, sp := range spans {
 		if ids[sp.SpanID] {

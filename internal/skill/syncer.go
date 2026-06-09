@@ -139,42 +139,14 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 	if entry.IsLocal() {
 		return "", errors.New("cannot pull a local install — it has no upstream; edit the source folder and re-run `qvr add --local`")
 	}
-	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
+	repo, wt, err := openCleanWorktree(entry)
 	if err != nil {
-		return "", fmt.Errorf("open worktree: %w", err)
-	}
-	wt, err := repo.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("worktree handle: %w", err)
-	}
-	// Refuse to pull into a dirty tree — a fast-forward-checkout would either
-	// clobber changes or fail with an opaque error. Clear signal, clear recovery.
-	status, err := wt.Status()
-	if err != nil {
-		return "", fmt.Errorf("status: %w", err)
-	}
-	if !status.IsClean() {
-		return "", fmt.Errorf("%w: worktree has uncommitted changes", ErrDivergence)
+		return "", err
 	}
 
-	// Fetch remote branch into refs/remotes/origin/<branch>.
-	branch := entry.Ref
-	if branch == "" {
-		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
-			branch = head.Name().Short()
-		}
-	}
-	if branch == "" {
-		return "", fmt.Errorf("cannot pull: branch is empty and HEAD is detached")
-	}
-	// Pull only makes sense for branches. If the pinned ref resolves as a tag
-	// (no matching local branch, but a matching tag), surface a clear sentinel
-	// the CLI can treat as a non-fatal skip — moving off a tag is an explicit
-	// upgrade/switch, not a fast-forward pull.
-	if _, err := repo.Reference(plumbing.NewTagReferenceName(branch), true); err == nil {
-		if _, berr := repo.Reference(plumbing.NewBranchReferenceName(branch), true); berr != nil {
-			return "", fmt.Errorf("%w: %s", ErrPinnedToTag, branch)
-		}
+	branch, err := resolvePullBranch(repo, entry)
+	if err != nil {
+		return "", err
 	}
 	if err := s.Git.FetchWorktree(ctx, EntryWorktreePath(entry)); err != nil {
 		return "", fmt.Errorf("fetch: %w", err)
@@ -210,31 +182,80 @@ func (s *Syncer) Pull(ctx context.Context, entry *model.LockEntry) (string, erro
 			shortHash(localRef.Hash().String()), shortHash(remoteRef.Hash().String()))
 	}
 
-	// The installed subtree is frozen read-only for immutability. A
-	// fast-forward rewrites working-tree files, so unlock it, advance, then
-	// re-freeze at the new content — the shared install stays immutable
-	// between operations.
+	if err := s.applyFastForward(repo, wt, entry, branch, remoteRef.Hash()); err != nil {
+		return "", err
+	}
+	return remoteRef.Hash().String(), nil
+}
+
+// openCleanWorktree opens the entry's worktree repo + worktree handle and
+// refuses a dirty tree — a fast-forward checkout would either clobber changes or
+// fail opaquely, so this gives a clear signal and recovery path.
+func openCleanWorktree(entry *model.LockEntry) (*gogit.Repository, *gogit.Worktree, error) {
+	repo, err := gogit.PlainOpen(EntryWorktreePath(entry))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open worktree: %w", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return nil, nil, fmt.Errorf("worktree handle: %w", err)
+	}
+	status, err := wt.Status()
+	if err != nil {
+		return nil, nil, fmt.Errorf("status: %w", err)
+	}
+	if !status.IsClean() {
+		return nil, nil, fmt.Errorf("%w: worktree has uncommitted changes", ErrDivergence)
+	}
+	return repo, wt, nil
+}
+
+// resolvePullBranch resolves the branch to fast-forward: the entry's Ref, else
+// the current HEAD branch. A detached HEAD with no Ref is an error. A pinned ref
+// that resolves as a tag (no matching branch) yields ErrPinnedToTag — moving off
+// a tag is an explicit upgrade/switch, not a fast-forward pull.
+func resolvePullBranch(repo *gogit.Repository, entry *model.LockEntry) (string, error) {
+	branch := entry.Ref
+	if branch == "" {
+		if head, err := repo.Head(); err == nil && head.Name().IsBranch() {
+			branch = head.Name().Short()
+		}
+	}
+	if branch == "" {
+		return "", fmt.Errorf("cannot pull: branch is empty and HEAD is detached")
+	}
+	if _, err := repo.Reference(plumbing.NewTagReferenceName(branch), true); err == nil {
+		if _, berr := repo.Reference(plumbing.NewBranchReferenceName(branch), true); berr != nil {
+			return "", fmt.Errorf("%w: %s", ErrPinnedToTag, branch)
+		}
+	}
+	return branch, nil
+}
+
+// applyFastForward advances the local branch to remoteHash and checks it out.
+// The installed subtree is frozen read-only for immutability; a fast-forward
+// rewrites working-tree files, so it unlocks the subtree, advances, then
+// re-freezes at the new content (the shared install stays immutable between
+// operations). Sparse checkout is re-applied since go-git's Checkout populates
+// files outside the configured sparse paths.
+func (s *Syncer) applyFastForward(repo *gogit.Repository, wt *gogit.Worktree, entry *model.LockEntry, branch string, remoteHash plumbing.Hash) error {
 	subtree := filepath.Join(EntryWorktreePath(entry), entry.Path)
 	setSubtreeWritable(subtree)
 	defer setSubtreeReadOnly(subtree)
 
-	// Fast-forward: move branch ref, then check out to update working tree.
 	if err := repo.Storer.SetReference(plumbing.NewHashReference(
-		plumbing.NewBranchReferenceName(branch), remoteRef.Hash(),
+		plumbing.NewBranchReferenceName(branch), remoteHash,
 	)); err != nil {
-		return "", fmt.Errorf("advance branch: %w", err)
+		return fmt.Errorf("advance branch: %w", err)
 	}
 	if err := wt.Checkout(&gogit.CheckoutOptions{
 		Branch: plumbing.NewBranchReferenceName(branch),
 		Force:  true,
 	}); err != nil {
-		return "", fmt.Errorf("checkout: %w", err)
+		return fmt.Errorf("checkout: %w", err)
 	}
-	// Re-apply sparse if configured — go-git's Checkout populates files
-	// outside the configured sparse paths, so leaning on git to retrim
-	// keeps the worktree consistent after a fast-forward pull.
 	_ = s.Worktree.ReapplySparseCheckout(EntryWorktreePath(entry))
-	return remoteRef.Hash().String(), nil
+	return nil
 }
 
 // computeAheadBehind counts how many commits the local branch is ahead and

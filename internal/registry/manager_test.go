@@ -364,7 +364,7 @@ func TestManager_List_Sorted(t *testing.T) {
 
 	// Run List a handful of times; every result must be the same sorted order.
 	want := []string{"alpha", "bravo", "charlie"}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		list, err := mgr.List()
 		if err != nil {
 			t.Fatalf("List #%d: %v", i, err)
@@ -881,7 +881,7 @@ func TestWorktreePath_RefHostility(t *testing.T) {
 			// `..--..--etc--passwd` is a literal directory name, not a
 			// traversal segment — slugSegment has already flattened the
 			// slashes. Only an exact `..` or empty segment would escape.
-			for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+			for seg := range strings.SplitSeq(rel, string(filepath.Separator)) {
 				if seg == "" || seg == ".." || seg == "." {
 					t.Errorf("worktree rel %q contains traversal segment %q", rel, seg)
 				}

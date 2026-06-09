@@ -166,6 +166,28 @@ func isTagPinnedRef(gc git.GitClient, entry *model.LockEntry) bool {
 	return true
 }
 
+// resolveRepointMode picks the operation mode from the mode flags, falling back
+// to the historical default of the verb actually typed when no flag is set.
+func resolveRepointMode(calledAs string) repointMode {
+	switch {
+	case repointTip:
+		return modeTip
+	case repointLatest:
+		return modeLatest
+	case repointTo != "":
+		return modeExplicit
+	default:
+		// No mode flag: fall back to the historical default of the verb
+		// the user actually typed.
+		switch calledAs {
+		case "pull":
+			return modeTip
+		default: // "switch" needs an explicit ref
+			return modeExplicit
+		}
+	}
+}
+
 // resolveRepoint maps (how-it-was-called, positional args, flags) onto a single
 // mode + targets. The flags win; absent any, the alias name supplies the
 // historical default (upgrade→latest, pull→tip, switch→explicit).
@@ -182,25 +204,7 @@ func resolveRepoint(calledAs string, args []string) (repointMode, []string, stri
 		return 0, nil, "", errors.New("--latest and --to are mutually exclusive")
 	}
 
-	// Decide the mode.
-	var mode repointMode
-	switch {
-	case repointTip:
-		mode = modeTip
-	case repointLatest:
-		mode = modeLatest
-	case repointTo != "":
-		mode = modeExplicit
-	default:
-		// No mode flag: fall back to the historical default of the verb
-		// the user actually typed.
-		switch calledAs {
-		case "pull":
-			mode = modeTip
-		default: // "switch" needs an explicit ref
-			mode = modeExplicit
-		}
-	}
+	mode := resolveRepointMode(calledAs)
 
 	switch mode {
 	case modeTip:
@@ -224,6 +228,31 @@ func resolveRepoint(calledAs string, args []string) (repointMode, []string, stri
 		}
 		return modeExplicit, args[:1], args[1], nil
 	}
+}
+
+// resolveRepointTarget returns the ref runRepoint should install onto: the
+// explicit ref for modeExplicit, or the latest semver tag (scoped to the
+// entry's current source) for modeLatest.
+func resolveRepointTarget(mgr *registry.Manager, mode repointMode, canonicalName, ref string, entry *model.LockEntry) (string, error) {
+	if mode != modeLatest {
+		return ref, nil
+	}
+	// Scope tag discovery to the entry's CURRENT source, not the first
+	// registry that alphabetically shares the skill name. A skill
+	// fork-migrated with `publish --fork --migrate` has its tags on the
+	// fork (entry.Source), while the original registry it was first
+	// added from may carry none — resolving by name alone dead-ends
+	// --latest on every migrated skill (#183). This matches how
+	// outdated/provenance/`switch <ref>` already resolve the entry.
+	loc, err := mgr.FindSkillForSource(canonicalName, entry.Registry, entry.Source)
+	if err != nil {
+		return "", fmt.Errorf("locate skill: %w", err)
+	}
+	target := skill.LatestSemverTag(loc.Entry.Versions.Tags)
+	if target == "" {
+		return "", fmt.Errorf("no semver tags found for %s in registry %s; pass an explicit <ref> (or --to) instead", canonicalName, loc.RegistryName)
+	}
+	return target, nil
 }
 
 // runRepoint moves a single skill onto an explicit ref (modeExplicit) or the
@@ -254,85 +283,7 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 		latestLock      *model.LockFile
 	)
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
-		lock, err := model.ReadLockFile(lockPath)
-		if err != nil {
-			return fmt.Errorf("read lock: %w", err)
-		}
-		entry, err := lock.Get(name)
-		if err != nil {
-			return err
-		}
-
-		// Aliased installs (qvr add --as) keep the registry-side skill name in
-		// entry.Canonical; the lock key is the alias. Index lookups need the
-		// canonical name; replay the alias via As so Install rewrites the same
-		// lock key instead of creating a new entry under the canonical name.
-		canonicalName := name
-		aliasFlag := ""
-		if entry.Canonical != "" {
-			canonicalName = entry.Canonical
-			aliasFlag = name
-		}
-
-		gc := git.NewGoGitClient()
-		wt := git.NewGoGitWorktree()
-		mgr := newRegistryManager(gc)
-		// Refresh the source registry so a just-published ref/tag is visible to
-		// Install — both paths do this now (the old `switch` skipped it and hit
-		// "ref not found" on fresh tags; issue #107). Best-effort: offline flows
-		// resolve against the cached index.
-		maybeRefreshRegistryForSkill(cmd.Context(), mgr, canonicalName, action)
-
-		target := ref
-		if mode == modeLatest {
-			// Scope tag discovery to the entry's CURRENT source, not the first
-			// registry that alphabetically shares the skill name. A skill
-			// fork-migrated with `publish --fork --migrate` has its tags on the
-			// fork (entry.Source), while the original registry it was first
-			// added from may carry none — resolving by name alone dead-ends
-			// --latest on every migrated skill (#183). This matches how
-			// outdated/provenance/`switch <ref>` already resolve the entry.
-			loc, err := mgr.FindSkillForSource(canonicalName, entry.Registry, entry.Source)
-			if err != nil {
-				return fmt.Errorf("locate skill: %w", err)
-			}
-			target = skill.LatestSemverTag(loc.Entry.Versions.Tags)
-			if target == "" {
-				return fmt.Errorf("no semver tags found for %s in registry %s; pass an explicit <ref> (or --to) instead", canonicalName, loc.RegistryName)
-			}
-		}
-		// modeLatest is idempotent: re-running on the tag you're already on is a
-		// no-op. modeExplicit always re-materialises (Force) so a user can
-		// repair a damaged worktree by switching to the ref it's already on.
-		if mode == modeLatest && target == entry.Ref {
-			alreadyOnTarget = true
-			printer.Info(fmt.Sprintf("%s: already on %s", name, target))
-			return nil
-		}
-
-		installer := skill.NewInstaller(mgr, wt, gc)
-		if _, err := installer.Install(skill.InstallRequest{
-			Skill:       canonicalName + "@" + target,
-			Targets:     entry.Targets,
-			Global:      repointGlobal,
-			ProjectRoot: projectRoot,
-			LockPath:    lockPath,
-			Force:       true,
-			As:          aliasFlag,
-		}); err != nil {
-			return fmt.Errorf("%s: %w", action, err)
-		}
-		// Re-read so updated reflects what Install just wrote.
-		lock, err = model.ReadLockFile(lockPath)
-		if err != nil {
-			return fmt.Errorf("re-read lock: %w", err)
-		}
-		updated, err = lock.Get(name)
-		if err != nil {
-			return fmt.Errorf("entry vanished after %s: %w", action, err)
-		}
-		latestLock = lock
-		return nil
+		return repointUnderLock(cmd, mode, name, ref, action, projectRoot, lockPath, &updated, &alreadyOnTarget, &latestLock)
 	})
 	if lockErr != nil {
 		return lockErr
@@ -363,6 +314,142 @@ func runRepoint(cmd *cobra.Command, mode repointMode, name, ref string) error {
 	}
 	printer.Success(fmt.Sprintf("%s: %s to %s (%s)", updated.Name, verb, updated.Ref, shortHash(updated.Commit)))
 	return nil
+}
+
+// repointUnderLock performs the lock-held portion of runRepoint: read the
+// entry, resolve the target ref, and re-install onto it. It writes the result
+// back through the out-pointers (updated entry, already-on-target short-circuit,
+// and the post-install lock).
+func repointUnderLock(cmd *cobra.Command, mode repointMode, name, ref, action, projectRoot, lockPath string, updated **model.LockEntry, alreadyOnTarget *bool, latestLock **model.LockFile) error {
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lock: %w", err)
+	}
+	entry, err := lock.Get(name)
+	if err != nil {
+		return err
+	}
+
+	// Aliased installs (qvr add --as) keep the registry-side skill name in
+	// entry.Canonical; the lock key is the alias. Index lookups need the
+	// canonical name; replay the alias via As so Install rewrites the same
+	// lock key instead of creating a new entry under the canonical name.
+	canonicalName := name
+	aliasFlag := ""
+	if entry.Canonical != "" {
+		canonicalName = entry.Canonical
+		aliasFlag = name
+	}
+
+	gc := git.NewGoGitClient()
+	wt := git.NewGoGitWorktree()
+	mgr := newRegistryManager(gc)
+	// Refresh the source registry so a just-published ref/tag is visible to
+	// Install — both paths do this now (the old `switch` skipped it and hit
+	// "ref not found" on fresh tags; issue #107). Best-effort: offline flows
+	// resolve against the cached index.
+	maybeRefreshRegistryForSkill(cmd.Context(), mgr, canonicalName, action)
+
+	target, err := resolveRepointTarget(mgr, mode, canonicalName, ref, entry)
+	if err != nil {
+		return err
+	}
+	// modeLatest is idempotent: re-running on the tag you're already on is a
+	// no-op. modeExplicit always re-materialises (Force) so a user can
+	// repair a damaged worktree by switching to the ref it's already on.
+	if mode == modeLatest && target == entry.Ref {
+		*alreadyOnTarget = true
+		printer.Info(fmt.Sprintf("%s: already on %s", name, target))
+		return nil
+	}
+
+	installer := skill.NewInstaller(mgr, wt, gc)
+	if _, err := installer.Install(skill.InstallRequest{
+		Skill:       canonicalName + "@" + target,
+		Targets:     entry.Targets,
+		Global:      repointGlobal,
+		ProjectRoot: projectRoot,
+		LockPath:    lockPath,
+		Force:       true,
+		As:          aliasFlag,
+	}); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	// Re-read so updated reflects what Install just wrote.
+	lock, err = model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("re-read lock: %w", err)
+	}
+	*updated, err = lock.Get(name)
+	if err != nil {
+		return fmt.Errorf("entry vanished after %s: %w", action, err)
+	}
+	*latestLock = lock
+	return nil
+}
+
+// tipPullOne advances a single named skill to the tip of its current ref,
+// dispatching between the worktree-free Install re-materialize and the legacy
+// git fast-forward. It records the per-skill result (success or refusal) into
+// the shared slices and returns brk=true when the caller's loop must stop on a
+// fatal error (loopErr is set in that case).
+func tipPullOne(cmd *cobra.Command, installer *skill.Installer, syncer *skill.Syncer, mgr *registry.Manager, gc git.GitClient, lock *model.LockFile, entry *model.LockEntry, name, projectRoot, lockPath string, results *[]map[string]string, refused *int, loopErr *error) bool {
+	// Worktree-free consume install (#204): immutable + SHA-keyed, so
+	// "pull to tip" is a re-materialize at the current tip of the pinned
+	// ref (new SHA dir + symlink repoint), identical to switch/upgrade —
+	// not a git fast-forward. A tag pin is refused, matching the legacy
+	// path. Install persists the lock itself.
+	if !skill.HasGitDir(skill.EntryWorktreePath(entry)) {
+		hash, perr := tipPullViaInstall(cmd, installer, mgr, gc, entry, projectRoot, lockPath)
+		if perr != nil {
+			if errors.Is(perr, skill.ErrPinnedToTag) {
+				printer.Warning(fmt.Sprintf("%s: %v", name, perr))
+				*results = append(*results, map[string]string{"name": name, "status": "skipped", "message": perr.Error()})
+				*refused++
+				return false
+			}
+			*loopErr = fmt.Errorf("pull %s: %w", name, perr)
+			return true
+		}
+		printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
+		*results = append(*results, map[string]string{"name": name, "status": "updated", "commit": hash})
+		return false
+	}
+
+	// Legacy git worktree: fast-forward in place.
+	hash, err := syncer.Pull(cmd.Context(), entry)
+	if err != nil {
+		// A diverged or tag-pinned entry is a refusal: the requested
+		// pull did not happen. Both are diagnostics (→ stderr, never
+		// stdout — stdout stays clean for the JSON payload) and both
+		// flip the exit code non-zero so a script notices. We
+		// `continue` rather than `break` so the remaining named skills
+		// still get pulled (AC-LIFE-3 / AC-LIFE-4, #129).
+		if errors.Is(err, skill.ErrDivergence) {
+			printer.Warning(fmt.Sprintf("%s: %v", name, err))
+			*results = append(*results, map[string]string{"name": name, "status": "conflict", "message": err.Error()})
+			*refused++
+			return false
+		}
+		if errors.Is(err, skill.ErrPinnedToTag) {
+			printer.Warning(fmt.Sprintf("%s: %v", name, err))
+			*results = append(*results, map[string]string{"name": name, "status": "skipped", "message": err.Error()})
+			*refused++
+			return false
+		}
+		*loopErr = fmt.Errorf("pull %s: %w", name, err)
+		return true
+	}
+	entry.Commit = hash
+	_ = skill.RefreshSubtreeHash(entry)
+	lock.Put(entry)
+	if werr := lock.Write(); werr != nil {
+		*loopErr = fmt.Errorf("write lock: %w", werr)
+		return true
+	}
+	printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
+	*results = append(*results, map[string]string{"name": name, "status": "updated", "commit": hash})
+	return false
 }
 
 // runTip fast-forwards each named skill's worktree to the tip of its current
@@ -403,77 +490,7 @@ func runTip(cmd *cobra.Command, names []string) error {
 		mgr := newRegistryManager(gc)
 		installer := skill.NewInstaller(mgr, wt, gc)
 		syncer := skill.NewSyncer(wt, gc)
-		for _, name := range names {
-			// Re-read the lock each iteration. A worktree-free pull advances via
-			// Install, which writes the lock file directly, so a single in-memory
-			// copy would go stale and clobber prior updates.
-			lock, err = model.ReadLockFile(lockPath)
-			if err != nil {
-				loopErr = fmt.Errorf("read lock: %w", err)
-				break
-			}
-			entry, err := lock.Get(name)
-			if err != nil {
-				loopErr = fmt.Errorf("%s: %w", name, err)
-				break
-			}
-
-			// Worktree-free consume install (#204): immutable + SHA-keyed, so
-			// "pull to tip" is a re-materialize at the current tip of the pinned
-			// ref (new SHA dir + symlink repoint), identical to switch/upgrade —
-			// not a git fast-forward. A tag pin is refused, matching the legacy
-			// path. Install persists the lock itself.
-			if !skill.HasGitDir(skill.EntryWorktreePath(entry)) {
-				hash, perr := tipPullViaInstall(cmd, installer, mgr, gc, entry, projectRoot, lockPath)
-				if perr != nil {
-					if errors.Is(perr, skill.ErrPinnedToTag) {
-						printer.Warning(fmt.Sprintf("%s: %v", name, perr))
-						results = append(results, map[string]string{"name": name, "status": "skipped", "message": perr.Error()})
-						refused++
-						continue
-					}
-					loopErr = fmt.Errorf("pull %s: %w", name, perr)
-					break
-				}
-				printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
-				results = append(results, map[string]string{"name": name, "status": "updated", "commit": hash})
-				continue
-			}
-
-			// Legacy git worktree: fast-forward in place.
-			hash, err := syncer.Pull(cmd.Context(), entry)
-			if err != nil {
-				// A diverged or tag-pinned entry is a refusal: the requested
-				// pull did not happen. Both are diagnostics (→ stderr, never
-				// stdout — stdout stays clean for the JSON payload) and both
-				// flip the exit code non-zero so a script notices. We
-				// `continue` rather than `break` so the remaining named skills
-				// still get pulled (AC-LIFE-3 / AC-LIFE-4, #129).
-				if errors.Is(err, skill.ErrDivergence) {
-					printer.Warning(fmt.Sprintf("%s: %v", name, err))
-					results = append(results, map[string]string{"name": name, "status": "conflict", "message": err.Error()})
-					refused++
-					continue
-				}
-				if errors.Is(err, skill.ErrPinnedToTag) {
-					printer.Warning(fmt.Sprintf("%s: %v", name, err))
-					results = append(results, map[string]string{"name": name, "status": "skipped", "message": err.Error()})
-					refused++
-					continue
-				}
-				loopErr = fmt.Errorf("pull %s: %w", name, err)
-				break
-			}
-			entry.Commit = hash
-			_ = skill.RefreshSubtreeHash(entry)
-			lock.Put(entry)
-			if werr := lock.Write(); werr != nil {
-				loopErr = fmt.Errorf("write lock: %w", werr)
-				break
-			}
-			printer.Success(fmt.Sprintf("%s: updated to %s", name, shortHash(hash)))
-			results = append(results, map[string]string{"name": name, "status": "updated", "commit": hash})
-		}
+		tipPullLoop(cmd, installer, syncer, mgr, gc, names, projectRoot, lockPath, &results, &refused, &loopErr)
 		// Re-read for the AGENTS.md refresh / JSON payload below; per-iteration
 		// writes (and Install) have already persisted every change.
 		if l, lerr := model.ReadLockFile(lockPath); lerr == nil {
@@ -495,6 +512,38 @@ func runTip(cmd *cobra.Command, names []string) error {
 	if loopErr != nil {
 		return loopErr
 	}
+	return renderTipResults(results, refused)
+}
+
+// tipPullLoop advances each named skill to its current ref's tip, re-reading
+// the lock per iteration so worktree-free Install writes aren't clobbered. It
+// stops early when tipPullOne reports a fatal error (recorded in loopErr).
+func tipPullLoop(cmd *cobra.Command, installer *skill.Installer, syncer *skill.Syncer, mgr *registry.Manager, gc git.GitClient, names []string, projectRoot, lockPath string, results *[]map[string]string, refused *int, loopErr *error) {
+	for _, name := range names {
+		// Re-read the lock each iteration. A worktree-free pull advances via
+		// Install, which writes the lock file directly, so a single in-memory
+		// copy would go stale and clobber prior updates.
+		lock, err := model.ReadLockFile(lockPath)
+		if err != nil {
+			*loopErr = fmt.Errorf("read lock: %w", err)
+			return
+		}
+		entry, err := lock.Get(name)
+		if err != nil {
+			*loopErr = fmt.Errorf("%s: %w", name, err)
+			return
+		}
+
+		if tipPullOne(cmd, installer, syncer, mgr, gc, lock, entry, name, projectRoot, lockPath, results, refused, loopErr) {
+			return
+		}
+	}
+}
+
+// renderTipResults emits the runTip payload (JSON or per-skill text already
+// printed) and maps any refusal count onto the sentinel that flips the exit
+// code without re-printing (#129).
+func renderTipResults(results []map[string]string, refused int) error {
 	if printer.Format == output.FormatJSON {
 		if err := printer.JSON(results); err != nil {
 			return err

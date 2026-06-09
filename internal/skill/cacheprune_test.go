@@ -43,15 +43,7 @@ func TestPruneAuxCaches_KeepsReachableThenSweepsOrphans(t *testing.T) {
 	registry.TouchProject(lockPath) // make the project reachable to prune
 
 	// All three derived caches should now hold records.
-	if n := countCacheFiles(t, registry.BlobStoreRoot()); n == 0 {
-		t.Fatal("expected blobs after install")
-	}
-	if n := countCacheFiles(t, registry.IdentityCacheRoot()); n == 0 {
-		t.Fatal("expected identity records after install")
-	}
-	if n := countCacheFiles(t, registry.ProvenanceCacheRoot()); n == 0 {
-		t.Fatal("expected provenance records after install")
-	}
+	assertAllCachesNonEmpty(t, "after install")
 
 	// Reachable install: prune must remove nothing (this also proves the live
 	// key derivation matches what Install wrote).
@@ -77,15 +69,7 @@ func TestPruneAuxCaches_KeepsReachableThenSweepsOrphans(t *testing.T) {
 	if dry.IdentityRemoved == 0 || dry.ProvenanceRemoved == 0 || dry.BlobsRemoved == 0 {
 		t.Errorf("dry-run should report orphans in all caches: %+v", dry)
 	}
-	if countCacheFiles(t, registry.BlobStoreRoot()) == 0 {
-		t.Error("dry-run deleted blobs (should not touch disk)")
-	}
-	if countCacheFiles(t, registry.IdentityCacheRoot()) == 0 {
-		t.Error("dry-run deleted identity cache (should not touch disk)")
-	}
-	if countCacheFiles(t, registry.ProvenanceCacheRoot()) == 0 {
-		t.Error("dry-run deleted provenance cache (should not touch disk)")
-	}
+	assertAllCachesNonEmpty(t, "dry-run (should not touch disk)")
 
 	// Real run reclaims everything.
 	got, err := skill.PruneAuxCaches(false)
@@ -99,5 +83,21 @@ func TestPruneAuxCaches_KeepsReachableThenSweepsOrphans(t *testing.T) {
 		if n := countCacheFiles(t, root); n != 0 {
 			t.Errorf("cache %s not emptied after prune: %d files remain", root, n)
 		}
+	}
+}
+
+// assertAllCachesNonEmpty fails the test if any of the three derived caches
+// (blobs, identity, provenance) holds zero files. phase labels the failure so a
+// caller checking "after install" vs "dry-run" reads clearly.
+func assertAllCachesNonEmpty(t *testing.T, phase string) {
+	t.Helper()
+	if countCacheFiles(t, registry.BlobStoreRoot()) == 0 {
+		t.Errorf("expected blobs (%s)", phase)
+	}
+	if countCacheFiles(t, registry.IdentityCacheRoot()) == 0 {
+		t.Errorf("expected identity records (%s)", phase)
+	}
+	if countCacheFiles(t, registry.ProvenanceCacheRoot()) == 0 {
+		t.Errorf("expected provenance records (%s)", phase)
 	}
 }

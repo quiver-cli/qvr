@@ -119,13 +119,13 @@ func spanAttr(attrsJSON, key string) string {
 	}
 	// Cheap substring extraction avoids a full unmarshal for one field.
 	needle := `"` + key + `":"`
-	i := strings.Index(attrsJSON, needle)
-	if i < 0 {
+	_, after, ok := strings.Cut(attrsJSON, needle)
+	if !ok {
 		return ""
 	}
-	rest := attrsJSON[i+len(needle):]
-	if j := strings.IndexByte(rest, '"'); j >= 0 {
-		return rest[:j]
+	rest := after
+	if before, _, ok := strings.Cut(rest, "\""); ok {
+		return before
 	}
 	return ""
 }

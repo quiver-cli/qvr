@@ -6,12 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	gogit "github.com/go-git/go-git/v5"
 	gogitcfg "github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/astra-sh/qvr/internal/canonical"
 	"github.com/astra-sh/qvr/internal/git"
@@ -142,22 +138,8 @@ func TestMaterialize_ExecBitPreserved(t *testing.T) {
 // symlink handling (git mode 0120000, blob = link target) can be exercised.
 func seedRemoteWithSymlink(t *testing.T, name string) string {
 	t.Helper()
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if _, err := gogit.PlainInit(remote, true); err != nil {
-		t.Fatalf("init remote: %v", err)
-	}
-	seed := t.TempDir()
-	sr, err := gogit.PlainInit(seed, false)
-	if err != nil {
-		t.Fatalf("init seed: %v", err)
-	}
-	if _, err := sr.CreateRemote(&gogitcfg.RemoteConfig{Name: "origin", URLs: []string{remote}}); err != nil {
-		t.Fatalf("create remote: %v", err)
-	}
-	wt, err := sr.Worktree()
-	if err != nil {
-		t.Fatalf("worktree: %v", err)
-	}
+	remote, sr, wt := newSeedRepo(t)
+	seed := wt.Filesystem.Root()
 	dir := filepath.Join(seed, "skills", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -174,35 +156,8 @@ func seedRemoteWithSymlink(t *testing.T, name string) string {
 	if _, err := wt.Add(filepath.Join("skills", name, "link.md")); err != nil {
 		t.Fatalf("add link: %v", err)
 	}
-	if _, err := wt.Commit("init", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
-	}); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	head, err := sr.Head()
-	if err != nil {
-		t.Fatalf("head: %v", err)
-	}
-	if err := sr.Storer.SetReference(plumbing.NewHashReference(
-		plumbing.NewBranchReferenceName("main"), head.Hash(),
-	)); err != nil {
-		t.Fatalf("set main: %v", err)
-	}
-	if err := sr.Push(&gogit.PushOptions{
-		RemoteName: "origin",
-		RefSpecs:   []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"},
-	}); err != nil {
-		t.Fatalf("push: %v", err)
-	}
-	rr, err := gogit.PlainOpen(remote)
-	if err != nil {
-		t.Fatalf("open remote: %v", err)
-	}
-	if err := rr.Storer.SetReference(plumbing.NewSymbolicReference(
-		plumbing.HEAD, plumbing.NewBranchReferenceName("main"),
-	)); err != nil {
-		t.Fatalf("set remote HEAD: %v", err)
-	}
+	commitSeedMain(t, sr, wt)
+	pushSeedAndSetHEAD(t, sr, remote, []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"})
 	return remote
 }
 

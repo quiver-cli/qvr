@@ -97,41 +97,14 @@ func runImport(cmd *cobra.Command, args []string) error {
 	if perr != nil {
 		return perr
 	}
-	if len(parseErrs) > 0 && printer.Format != output.FormatJSON {
-		for _, pe := range parseErrs {
-			printer.Error(fmt.Sprintf("import %s: %s", manifestPath, pe.Error()))
-		}
-	}
+	reportManifestParseErrors(manifestPath, parseErrs)
 	if len(entries) == 0 {
-		if printer.Format == output.FormatJSON {
-			env := importEnvelope{}
-			for _, pe := range parseErrs {
-				env.Errors = append(env.Errors, pe.Error())
-			}
-			if len(parseErrs) > 0 {
-				env.Error = "manifest has no parseable entries"
-			}
-			if jerr := printer.JSON(env); jerr != nil {
-				return jerr
-			}
-			if len(parseErrs) > 0 {
-				return errJSONHandled
-			}
-			return nil
-		}
-		if len(parseErrs) > 0 {
-			return errTextHandled
-		}
-		printer.Info("manifest is empty; nothing to import")
-		return nil
+		return handleEmptyManifest(parseErrs)
 	}
 
-	defaultTargets := importTargets
-	if len(defaultTargets) == 0 {
-		defaultTargets = config.ParseDefaultTargets(cfg.DefaultTarget)
-		if len(defaultTargets) == 0 {
-			return fmt.Errorf("no --target specified and default_target is unset")
-		}
+	defaultTargets, derr := resolveImportDefaultTargets(cfg)
+	if derr != nil {
+		return derr
 	}
 
 	projectRoot, err := os.Getwd()
@@ -154,148 +127,12 @@ func runImport(cmd *cobra.Command, args []string) error {
 	urlToAlias, phaseResults, phase1HadError := resolveRegistries(ctx, mgr, entries)
 
 	var lineResults []importLineResult
-	var firstErr error
 	// Carry every phase-1 failure into the line results so the JSON envelope
 	// reports them; the printer already surfaced them in resolveRegistries.
-	for _, pr := range phaseResults {
-		if pr.Error != "" && firstErr == nil {
-			firstErr = errors.New(pr.Error)
-		}
-	}
+	firstErr := firstPhaseError(phaseResults)
 
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
-		for _, entry := range entries {
-			lr := importLineResult{
-				Line:    entry.Line,
-				Skill:   entry.Skill,
-				RepoURL: entry.RepoURL,
-			}
-			pr, ok := urlToAlias[entry.RepoURL]
-			if !ok || pr.alias == "" {
-				lr.Error = "registry resolution failed (see prior error)"
-				lineResults = append(lineResults, lr)
-				if firstErr == nil {
-					firstErr = errors.New(lr.Error)
-				}
-				continue
-			}
-			if pr.added {
-				lr.RegistryAdded = pr.alias
-			} else {
-				lr.RegistryReused = pr.alias
-			}
-
-			// Build the skill reference. The installer accepts "name@ref"
-			// strings; we synthesise it from the manifest's version (or
-			// commit, when --frozen and the entry carries a --commit pin).
-			ref := entry.Version
-			if importFrozen && entry.Commit != "" {
-				ref = entry.Commit
-			}
-			skillRef := entry.Skill
-			if ref != "" {
-				skillRef = entry.Skill + "@" + ref
-			}
-
-			// Per-line --target= overrides the importer-level default;
-			// CLI --target=… overrides both. The CLI override is already
-			// folded into defaultTargets above.
-			targets := defaultTargets
-			if len(importTargets) == 0 && len(entry.Targets) > 0 {
-				targets = entry.Targets
-			}
-
-			result, ierr := installer.Install(skill.InstallRequest{
-				Skill:                    skillRef,
-				Targets:                  targets,
-				Global:                   importGlobal,
-				ProjectRoot:              projectRoot,
-				LockPath:                 lockPath,
-				Force:                    importForce,
-				Frozen:                   importFrozen && entry.Commit != "",
-				Registry:                 pr.alias,
-				As:                       entry.Alias,
-				RequireSigned:            cfg.Security.RequireSigned,
-				TrustedAuthors:           trustedAuthorsForRegistry(cfg, pr.alias),
-				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
-			})
-			if ierr != nil {
-				if errors.Is(ierr, skill.ErrSkillNotFound) {
-					ierr = fmt.Errorf("registry %s does not publish skill %q", pr.alias, entry.Skill)
-				}
-				printer.Error(fmt.Sprintf("import %s: %v", entry.Skill, ierr))
-				lr.Error = ierr.Error()
-				lineResults = append(lineResults, lr)
-				if firstErr == nil {
-					firstErr = ierr
-				}
-				continue
-			}
-
-			// Reuse the standard scan gate so import is symmetric with `qvr add`
-			// for security defaults. Blocked installs are rolled back the same
-			// way add does.
-			gate, gerr := ScanAndGate(ctx, skillDirFor(result, lockPath), cfg, scanGateOptions{
-				Disabled: importNoScan,
-				Action:   "import",
-				Subject:  result.Name,
-				Quiet:    true,
-			})
-			if gerr != nil {
-				printer.Warning(fmt.Sprintf("import %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", result.Name, gerr, result.Name))
-				lr.Install = result
-				lineResults = append(lineResults, lr)
-				continue
-			}
-			if gate.Blocked {
-				removeErr := installer.Remove(result.Name, skill.InstallRequest{
-					ProjectRoot: projectRoot,
-					Global:      importGlobal,
-					LockPath:    lockPath,
-				})
-				if removeErr != nil {
-					printer.Error(fmt.Sprintf("import %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
-				}
-				blockErr := &blockedScanError{Subject: result.Name, Threshold: gate.Threshold, Result: gate.Result}
-				lr.Error = blockErr.Error()
-				lineResults = append(lineResults, lr)
-				if firstErr == nil {
-					firstErr = blockErr
-				}
-				continue
-			}
-			if recErr := recordScanResult(lockPath, result.Name, gate); recErr != nil {
-				printer.Warning(fmt.Sprintf("import %s: scan recorded only in memory (%v)", result.Name, recErr))
-			}
-
-			lr.Install = result
-			lineResults = append(lineResults, lr)
-			if printer.Format != output.FormatJSON {
-				for _, w := range result.Warnings {
-					printer.Warning(w)
-				}
-				if pr.added {
-					printer.Success(fmt.Sprintf("Registered registry %s ← %s", pr.alias, entry.RepoURL))
-				}
-				printer.Success(fmt.Sprintf("Imported %s@%s → %v", result.Name, result.Version, result.Targets))
-			}
-		}
-		// Write-through to qvr.toml for every imported skill — same projection as
-		// `qvr add`. Re-read the lock the installs just wrote; the lock is
-		// authoritative, so a qvr.toml failure warns rather than failing import.
-		if !importGlobal {
-			var installed []*skill.InstallResult
-			for _, lr := range lineResults {
-				if lr.Install != nil {
-					installed = append(installed, lr.Install)
-				}
-			}
-			if lock, lerr := model.ReadLockFile(lockPath); lerr == nil {
-				if perr := syncProjectFileFromLock(model.DefaultProjectPath(projectRoot), lock, installed); perr != nil {
-					printer.Warning(fmt.Sprintf("imported into qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
-				}
-			}
-		}
+		lineResults, firstErr = installImportEntries(ctx, entries, urlToAlias, defaultTargets, installer, cfg, projectRoot, lockPath, firstErr)
 		return nil
 	})
 	if lockErr != nil {
@@ -308,30 +145,287 @@ func runImport(cmd *cobra.Command, args []string) error {
 	}
 
 	if printer.Format == output.FormatJSON {
-		env := importEnvelope{Lines: lineResults}
-		for _, pe := range parseErrs {
-			env.Errors = append(env.Errors, pe.Error())
-		}
-		if firstErr != nil {
-			env.Error = firstErr.Error()
-		}
-		if jerr := printer.JSON(env); jerr != nil {
-			return jerr
-		}
-		if firstErr != nil || phase1HadError {
-			return errJSONHandled
-		}
-		return nil
+		return emitImportJSON(lineResults, parseErrs, firstErr, phase1HadError)
 	}
 	if firstErr != nil || len(parseErrs) > 0 || phase1HadError {
 		return errTextHandled
 	}
+	printImportHint(lineResults)
+	return nil
+}
+
+// reportManifestParseErrors surfaces each manifest parse error to the printer in
+// text mode (JSON mode folds them into the envelope instead).
+func reportManifestParseErrors(manifestPath string, parseErrs []manifest.ParseError) {
+	if len(parseErrs) > 0 && printer.Format != output.FormatJSON {
+		for _, pe := range parseErrs {
+			printer.Error(fmt.Sprintf("import %s: %s", manifestPath, pe.Error()))
+		}
+	}
+}
+
+// installImportEntries runs the under-lock install loop for every manifest entry
+// and projects the results back into qvr.toml. It returns the per-line results
+// and the first failure encountered (seeded with priorErr, typically a phase-1
+// registry error). Runs inside WithLock so installs and the qvr.toml write-back
+// share one lock window.
+func installImportEntries(ctx context.Context, entries []manifest.Entry, urlToAlias map[string]phaseResolution, defaultTargets []string, installer *skill.Installer, cfg *config.Config, projectRoot, lockPath string, priorErr error) ([]importLineResult, error) {
+	var lineResults []importLineResult
+	firstErr := priorErr
+	for _, entry := range entries {
+		lr, lerr := importOneEntry(ctx, entry, urlToAlias, defaultTargets, installer, cfg, projectRoot, lockPath)
+		lineResults = append(lineResults, lr)
+		if lerr != nil && firstErr == nil {
+			firstErr = lerr
+		}
+	}
+	// Write-through to qvr.toml for every imported skill — same projection as
+	// `qvr add`. Re-read the lock the installs just wrote; the lock is
+	// authoritative, so a qvr.toml failure warns rather than failing import.
+	if !importGlobal {
+		writeImportedProjectFile(projectRoot, lockPath, lineResults)
+	}
+	return lineResults, firstErr
+}
+
+// printImportHint emits the post-import next-step hint when at least one skill
+// imported cleanly, steering project vs global installs to the right verb.
+func printImportHint(lineResults []importLineResult) {
 	if successCount(lineResults) > 0 {
 		if importGlobal {
 			printer.Info("Hint: `qvr list --global` shows what's installed in the ambient lane")
 		} else {
 			printer.Info("Hint: commit qvr.lock so teammates reproduce the same skills (`git add qvr.lock`)")
 		}
+	}
+}
+
+// resolveImportDefaultTargets picks the importer-level default target set: the
+// --target flag when given, otherwise the machine-local default_target. Returns
+// an error when neither is set.
+func resolveImportDefaultTargets(cfg *config.Config) ([]string, error) {
+	defaultTargets := importTargets
+	if len(defaultTargets) == 0 {
+		defaultTargets = config.ParseDefaultTargets(cfg.DefaultTarget)
+		if len(defaultTargets) == 0 {
+			return nil, fmt.Errorf("no --target specified and default_target is unset")
+		}
+	}
+	return defaultTargets, nil
+}
+
+// firstPhaseError returns the first phase-1 registry-resolution failure as an
+// error (nil when every URL resolved), seeding runImport's firstErr so the
+// JSON envelope and exit code reflect registration failures.
+func firstPhaseError(phaseResults []phaseResolution) error {
+	for _, pr := range phaseResults {
+		if pr.Error != "" {
+			return errors.New(pr.Error)
+		}
+	}
+	return nil
+}
+
+// handleEmptyManifest renders the no-entries outcome for both JSON and text
+// modes: parse errors flip the exit non-zero (errJSONHandled / errTextHandled),
+// while a genuinely empty manifest is a clean no-op.
+func handleEmptyManifest(parseErrs []manifest.ParseError) error {
+	if printer.Format == output.FormatJSON {
+		env := importEnvelope{}
+		for _, pe := range parseErrs {
+			env.Errors = append(env.Errors, pe.Error())
+		}
+		if len(parseErrs) > 0 {
+			env.Error = "manifest has no parseable entries"
+		}
+		if jerr := printer.JSON(env); jerr != nil {
+			return jerr
+		}
+		if len(parseErrs) > 0 {
+			return errJSONHandled
+		}
+		return nil
+	}
+	if len(parseErrs) > 0 {
+		return errTextHandled
+	}
+	printer.Info("manifest is empty; nothing to import")
+	return nil
+}
+
+// importOneEntry installs a single manifest entry under the lock: resolve the
+// pre-registered registry alias, install the skill, run the scan gate (rolling
+// back a blocked install like `qvr add`), and record the result. It returns the
+// per-line outcome plus the error (if any) the caller should surface as the
+// command's first failure; a scan-failure-but-install-kept yields a nil error.
+func importOneEntry(ctx context.Context, entry manifest.Entry, urlToAlias map[string]phaseResolution, defaultTargets []string, installer *skill.Installer, cfg *config.Config, projectRoot, lockPath string) (importLineResult, error) {
+	lr := importLineResult{
+		Line:    entry.Line,
+		Skill:   entry.Skill,
+		RepoURL: entry.RepoURL,
+	}
+	pr, ok := urlToAlias[entry.RepoURL]
+	if !ok || pr.alias == "" {
+		lr.Error = "registry resolution failed (see prior error)"
+		return lr, errors.New(lr.Error)
+	}
+	if pr.added {
+		lr.RegistryAdded = pr.alias
+	} else {
+		lr.RegistryReused = pr.alias
+	}
+
+	result, ierr := installImportSkill(entry, pr, defaultTargets, installer, cfg, projectRoot, lockPath)
+	if ierr != nil {
+		printer.Error(fmt.Sprintf("import %s: %v", entry.Skill, ierr))
+		lr.Error = ierr.Error()
+		return lr, ierr
+	}
+
+	printSuccess, blockErr := gateImportedSkill(ctx, result, installer, cfg, projectRoot, lockPath, &lr)
+	if blockErr != nil {
+		return lr, blockErr
+	}
+	if !printSuccess {
+		// Scan failed but install kept — gateImportedSkill already warned and
+		// set lr.Install; skip the normal success rendering.
+		return lr, nil
+	}
+
+	if printer.Format != output.FormatJSON {
+		for _, w := range result.Warnings {
+			printer.Warning(w)
+		}
+		if pr.added {
+			printer.Success(fmt.Sprintf("Registered registry %s ← %s", pr.alias, entry.RepoURL))
+		}
+		printer.Success(fmt.Sprintf("Imported %s@%s → %v", result.Name, result.Version, result.Targets))
+	}
+	return lr, nil
+}
+
+// installImportSkill synthesises the "name@ref" skill reference and target set
+// for one manifest entry and runs the installer. A not-found error is rewritten
+// into a clearer "registry does not publish skill" message; the caller renders
+// it. The returned result is nil on error.
+func installImportSkill(entry manifest.Entry, pr phaseResolution, defaultTargets []string, installer *skill.Installer, cfg *config.Config, projectRoot, lockPath string) (*skill.InstallResult, error) {
+	// Build the skill reference. The installer accepts "name@ref"
+	// strings; we synthesise it from the manifest's version (or
+	// commit, when --frozen and the entry carries a --commit pin).
+	ref := entry.Version
+	if importFrozen && entry.Commit != "" {
+		ref = entry.Commit
+	}
+	skillRef := entry.Skill
+	if ref != "" {
+		skillRef = entry.Skill + "@" + ref
+	}
+
+	// Per-line --target= overrides the importer-level default;
+	// CLI --target=… overrides both. The CLI override is already
+	// folded into defaultTargets above.
+	targets := defaultTargets
+	if len(importTargets) == 0 && len(entry.Targets) > 0 {
+		targets = entry.Targets
+	}
+
+	result, ierr := installer.Install(skill.InstallRequest{
+		Skill:                    skillRef,
+		Targets:                  targets,
+		Global:                   importGlobal,
+		ProjectRoot:              projectRoot,
+		LockPath:                 lockPath,
+		Force:                    importForce,
+		Frozen:                   importFrozen && entry.Commit != "",
+		Registry:                 pr.alias,
+		As:                       entry.Alias,
+		RequireSigned:            cfg.Security.RequireSigned,
+		TrustedAuthors:           trustedAuthorsForRegistry(cfg, pr.alias),
+		TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
+	})
+	if ierr != nil {
+		if errors.Is(ierr, skill.ErrSkillNotFound) {
+			ierr = fmt.Errorf("registry %s does not publish skill %q", pr.alias, entry.Skill)
+		}
+		return nil, ierr
+	}
+	return result, nil
+}
+
+// gateImportedSkill runs the scan gate over a freshly imported skill, rolling
+// back a blocked install (like `qvr add`) and recording the scan result. It
+// sets lr.Install whenever the install is kept and returns printSuccess=true
+// only on a clean pass (the caller then renders the success lines). A scan that
+// errored keeps the install but returns printSuccess=false; a blocked scan rolls
+// the install back and returns a non-nil blockedScanError.
+func gateImportedSkill(ctx context.Context, result *skill.InstallResult, installer *skill.Installer, cfg *config.Config, projectRoot, lockPath string, lr *importLineResult) (printSuccess bool, err error) {
+	// Reuse the standard scan gate so import is symmetric with `qvr add`
+	// for security defaults. Blocked installs are rolled back the same
+	// way add does.
+	gate, gerr := ScanAndGate(ctx, skillDirFor(result, lockPath), cfg, scanGateOptions{
+		Disabled: importNoScan,
+		Action:   "import",
+		Subject:  result.Name,
+		Quiet:    true,
+	})
+	if gerr != nil {
+		printer.Warning(fmt.Sprintf("import %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", result.Name, gerr, result.Name))
+		lr.Install = result
+		return false, nil
+	}
+	if gate.Blocked {
+		removeErr := installer.Remove(result.Name, skill.InstallRequest{
+			ProjectRoot: projectRoot,
+			Global:      importGlobal,
+			LockPath:    lockPath,
+		})
+		if removeErr != nil {
+			printer.Error(fmt.Sprintf("import %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
+		}
+		blockErr := &blockedScanError{Subject: result.Name, Threshold: gate.Threshold, Result: gate.Result}
+		lr.Error = blockErr.Error()
+		return false, blockErr
+	}
+	if recErr := recordScanResult(lockPath, result.Name, gate); recErr != nil {
+		printer.Warning(fmt.Sprintf("import %s: scan recorded only in memory (%v)", result.Name, recErr))
+	}
+	lr.Install = result
+	return true, nil
+}
+
+// writeImportedProjectFile projects every imported skill back into qvr.toml,
+// re-reading the lock the installs just wrote. The lock is authoritative, so a
+// qvr.toml failure warns rather than failing import.
+func writeImportedProjectFile(projectRoot, lockPath string, lineResults []importLineResult) {
+	var installed []*skill.InstallResult
+	for _, lr := range lineResults {
+		if lr.Install != nil {
+			installed = append(installed, lr.Install)
+		}
+	}
+	if lock, lerr := model.ReadLockFile(lockPath); lerr == nil {
+		if perr := syncProjectFileFromLock(model.DefaultProjectPath(projectRoot), lock, installed); perr != nil {
+			printer.Warning(fmt.Sprintf("imported into qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+		}
+	}
+}
+
+// emitImportJSON renders the import envelope and applies the exit-code contract:
+// a per-line failure or any phase-1 registry error flips the exit non-zero via
+// errJSONHandled so the stream stays a single JSON document.
+func emitImportJSON(lineResults []importLineResult, parseErrs []manifest.ParseError, firstErr error, phase1HadError bool) error {
+	env := importEnvelope{Lines: lineResults}
+	for _, pe := range parseErrs {
+		env.Errors = append(env.Errors, pe.Error())
+	}
+	if firstErr != nil {
+		env.Error = firstErr.Error()
+	}
+	if jerr := printer.JSON(env); jerr != nil {
+		return jerr
+	}
+	if firstErr != nil || phase1HadError {
+		return errJSONHandled
 	}
 	return nil
 }
@@ -398,75 +492,69 @@ func resolveRegistries(ctx context.Context, mgr *registry.Manager, entries []man
 	var results []phaseResolution
 	hadError := false
 	for _, r := range ordered {
-		clean, _, err := git.SanitizeURL(r.url)
-		if err != nil {
-			printer.Error(fmt.Sprintf("import: %s: %v", r.url, err))
-			pr := phaseResolution{Error: err.Error()}
-			urlToAlias[r.url] = pr
-			results = append(results, pr)
-			hadError = true
-			continue
-		}
-		// If the URL is already registered (regardless of the local name the
-		// manifest asked for), reuse the existing registration silently.
-		// Renaming an existing registry just to honor a manifest's preference
-		// would break every other lock entry that already references it.
-		if existing, ok := existingByURL[clean]; ok {
-			pr := phaseResolution{alias: existing, added: false}
-			urlToAlias[r.url] = pr
-			results = append(results, pr)
-			continue
-		}
-		// Pick a local name: the manifest's --registry-alias when set,
-		// otherwise the standard URL-inferred shape.
-		name := strings.TrimSpace(r.alias)
-		if name == "" {
-			name = registry.InferRegistryName(clean)
-			if name == "" {
-				msg := fmt.Sprintf("could not infer a registry name from %q — add --registry-alias= to the manifest line", r.url)
-				printer.Error("import: " + msg)
-				pr := phaseResolution{Error: msg}
-				urlToAlias[r.url] = pr
-				results = append(results, pr)
-				hadError = true
-				continue
-			}
-		}
-		// Manifest-supplied aliases might collide with an unrelated existing
-		// registry (different URL, same local name). In that case fall through
-		// to a URL-inferred name so we never overwrite a user's pinned source.
-		if _, taken := cfg.Registries[name]; taken {
-			alt := registry.InferRegistryName(clean)
-			if alt != "" && alt != name {
-				printer.Warning(fmt.Sprintf("import: registry alias %q is taken; using inferred name %q for %s", name, alt, r.url))
-				name = alt
-			}
-		}
-		reg, addErr := mgr.Add(ctx, name, clean)
-		if addErr != nil {
-			if errors.Is(addErr, registry.ErrRegistryExists) {
-				// Another goroutine / re-entrant call beat us; fall back to
-				// reusing whatever is already there.
-				existingByURL[clean] = name
-				pr := phaseResolution{alias: name, added: false}
-				urlToAlias[r.url] = pr
-				results = append(results, pr)
-				continue
-			}
-			printer.Error(fmt.Sprintf("import: add registry %s: %v", r.url, addErr))
-			pr := phaseResolution{Error: addErr.Error()}
-			urlToAlias[r.url] = pr
-			results = append(results, pr)
-			hadError = true
-			continue
-		}
-		// Cache the URL→alias mapping for any later entries sharing this URL.
-		existingByURL[clean] = reg.Name
-		pr := phaseResolution{alias: reg.Name, added: true}
+		pr := resolveOneRegistry(ctx, mgr, cfg, existingByURL, r.url, r.alias)
 		urlToAlias[r.url] = pr
 		results = append(results, pr)
+		if pr.Error != "" {
+			hadError = true
+		}
 	}
 	return urlToAlias, results, hadError
+}
+
+// resolveOneRegistry resolves a single manifest URL to a registry alias,
+// reusing an already-registered URL, inferring or honoring a requested alias,
+// and registering via mgr.Add otherwise. existingByURL is updated in place so
+// later entries sharing the URL reuse the registration. A failure is reported
+// to the printer and returned as a phaseResolution carrying its Error.
+func resolveOneRegistry(ctx context.Context, mgr *registry.Manager, cfg *config.Config, existingByURL map[string]string, url, requestedAlias string) phaseResolution {
+	clean, _, err := git.SanitizeURL(url)
+	if err != nil {
+		printer.Error(fmt.Sprintf("import: %s: %v", url, err))
+		return phaseResolution{Error: err.Error()}
+	}
+	// If the URL is already registered (regardless of the local name the
+	// manifest asked for), reuse the existing registration silently.
+	// Renaming an existing registry just to honor a manifest's preference
+	// would break every other lock entry that already references it.
+	if existing, ok := existingByURL[clean]; ok {
+		return phaseResolution{alias: existing, added: false}
+	}
+	// Pick a local name: the manifest's --registry-alias when set,
+	// otherwise the standard URL-inferred shape.
+	name := strings.TrimSpace(requestedAlias)
+	if name == "" {
+		name = registry.InferRegistryName(clean)
+		if name == "" {
+			msg := fmt.Sprintf("could not infer a registry name from %q — add --registry-alias= to the manifest line", url)
+			printer.Error("import: " + msg)
+			return phaseResolution{Error: msg}
+		}
+	}
+	// Manifest-supplied aliases might collide with an unrelated existing
+	// registry (different URL, same local name). In that case fall through
+	// to a URL-inferred name so we never overwrite a user's pinned source.
+	if _, taken := cfg.Registries[name]; taken {
+		alt := registry.InferRegistryName(clean)
+		if alt != "" && alt != name {
+			printer.Warning(fmt.Sprintf("import: registry alias %q is taken; using inferred name %q for %s", name, alt, url))
+			name = alt
+		}
+	}
+	reg, addErr := mgr.Add(ctx, name, clean)
+	if addErr != nil {
+		if errors.Is(addErr, registry.ErrRegistryExists) {
+			// Another goroutine / re-entrant call beat us; fall back to
+			// reusing whatever is already there.
+			existingByURL[clean] = name
+			return phaseResolution{alias: name, added: false}
+		}
+		printer.Error(fmt.Sprintf("import: add registry %s: %v", url, addErr))
+		return phaseResolution{Error: addErr.Error()}
+	}
+	// Cache the URL→alias mapping for any later entries sharing this URL.
+	existingByURL[clean] = reg.Name
+	return phaseResolution{alias: reg.Name, added: true}
 }
 
 func successCount(lines []importLineResult) int {

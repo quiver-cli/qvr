@@ -250,35 +250,52 @@ func renderInfoText(info *skillInfo) {
 	if info.Registry != "" {
 		fmt.Fprintf(w, "Registry:    %s\n", info.Registry)
 	}
-	// Linked skills have no worktree, commit, or branch — `qvr link` wires a
-	// direct symlink to the source directory. Render a LinkTarget row for
-	// those, suppress the empty Branch/Commit/Worktree rows entirely.
+	renderInfoVersionRows(w, info)
+	renderInfoSourceRows(w, info)
+	if info.License != "" {
+		fmt.Fprintf(w, "License:     %s\n", info.License)
+	}
+	if info.Compatibility != "" {
+		fmt.Fprintf(w, "Compat:      %s\n", info.Compatibility)
+	}
+	if info.AllowedTools != "" {
+		fmt.Fprintf(w, "Tools:       %s\n", info.AllowedTools)
+	}
+	renderInfoMetadata(w, info)
+	renderInfoTargets(w, info)
+	renderInfoFiles(w, info)
+	renderVerificationSection(w, info.Verification)
+}
+
+// renderInfoVersionRows prints the link-target or ref/commit/worktree block.
+// Linked skills have no worktree, commit, or branch — `qvr link` wires a direct
+// symlink to the source directory — so only a LinkTarget row is rendered for
+// them and the empty git rows are suppressed.
+func renderInfoVersionRows(w io.Writer, info *skillInfo) {
 	if info.Source == "link" {
 		if info.LinkTarget != "" {
 			fmt.Fprintf(w, "LinkTarget:  %s\n", info.LinkTarget)
 		}
-	} else {
-		if info.Ref != "" {
-			fmt.Fprintf(w, "Ref:         %s\n", info.Ref)
-		}
-		if info.Commit != "" {
-			fmt.Fprintf(w, "Commit:      %s\n", info.Commit)
-		}
-		if info.CommitDrift != "" {
-			fmt.Fprintf(w, "  ✗ worktree HEAD is %s (lockfile commit field is out of date — see #73)\n", info.CommitDrift)
-		}
-		if info.Worktree != "" {
-			fmt.Fprintf(w, "Worktree:    %s\n", info.Worktree)
-		}
+		return
 	}
-	// Source row precedence (issue #117 follow-up): mode trumps the raw
-	// Source URL. A `qvr edit`-ejected entry keeps the upstream URL in
-	// Source so the publish/sync/lock-verify paths can still reach it,
-	// but for a human reading `qvr info` the URL is misleading — the
-	// canonical-of-truth is now the eject dir. Show "edit" instead and
-	// move the upstream URL to a separate Upstream row so the
-	// provenance is still on the card. EditPath gets its own row too so
-	// users see where the dir lives without grepping JSON.
+	if info.Ref != "" {
+		fmt.Fprintf(w, "Ref:         %s\n", info.Ref)
+	}
+	if info.Commit != "" {
+		fmt.Fprintf(w, "Commit:      %s\n", info.Commit)
+	}
+	if info.CommitDrift != "" {
+		fmt.Fprintf(w, "  ✗ worktree HEAD is %s (lockfile commit field is out of date — see #73)\n", info.CommitDrift)
+	}
+	if info.Worktree != "" {
+		fmt.Fprintf(w, "Worktree:    %s\n", info.Worktree)
+	}
+}
+
+// renderInfoSourceRows prints the Source block with #117 mode precedence: an
+// edit-ejected entry shows Source: edit plus EditPath/Upstream rows; otherwise
+// the raw Source URL.
+func renderInfoSourceRows(w io.Writer, info *skillInfo) {
 	switch {
 	case info.Mode == "edit":
 		fmt.Fprintf(w, "Source:      edit\n")
@@ -295,57 +312,57 @@ func renderInfoText(info *skillInfo) {
 	case info.Source != "":
 		fmt.Fprintf(w, "Source:      %s\n", info.Source)
 	}
-	if info.License != "" {
-		fmt.Fprintf(w, "License:     %s\n", info.License)
-	}
-	if info.Compatibility != "" {
-		fmt.Fprintf(w, "Compat:      %s\n", info.Compatibility)
-	}
-	if info.AllowedTools != "" {
-		fmt.Fprintf(w, "Tools:       %s\n", info.AllowedTools)
-	}
+}
 
-	if len(info.Metadata) > 0 {
-		keys := make([]string, 0, len(info.Metadata))
-		for k := range info.Metadata {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		fmt.Fprintln(w, "Metadata:")
-		for _, k := range keys {
-			fmt.Fprintf(w, "  %s: %s\n", k, info.Metadata[k])
-		}
+// renderInfoMetadata prints the sorted metadata key/value block.
+func renderInfoMetadata(w io.Writer, info *skillInfo) {
+	if len(info.Metadata) == 0 {
+		return
 	}
-
-	// Text view iterates TargetDetails (the link-verified shape); JSON
-	// consumers get both the plain `targets` array (issue #116) and
-	// the richer `targetDetails` block.
-	if len(info.TargetDetails) > 0 {
-		fmt.Fprintln(w, "Targets:")
-		for _, t := range info.TargetDetails {
-			marker := "✗"
-			detail := t.Error
-			if t.OK {
-				marker = "✓"
-				detail = t.Path
-			}
-			if detail == "" {
-				detail = t.Path
-			}
-			fmt.Fprintf(w, "  %s %-9s %s\n", marker, t.Target, detail)
-		}
+	keys := make([]string, 0, len(info.Metadata))
+	for k := range info.Metadata {
+		keys = append(keys, k)
 	}
-
-	if len(info.Files) > 0 {
-		fmt.Fprintln(w, "Files:")
-		for _, f := range info.Files {
-			depth := strings.Count(f, "/")
-			indent := strings.Repeat("  ", depth)
-			fmt.Fprintf(w, "  %s%s\n", indent, filepath.Base(f))
-		}
+	sort.Strings(keys)
+	fmt.Fprintln(w, "Metadata:")
+	for _, k := range keys {
+		fmt.Fprintf(w, "  %s: %s\n", k, info.Metadata[k])
 	}
+}
 
-	renderVerificationSection(w, info.Verification)
+// renderInfoTargets prints the per-target link-verification block. Text view
+// iterates TargetDetails (the link-verified shape); JSON consumers get both the
+// plain `targets` array (#116) and the richer `targetDetails` block.
+func renderInfoTargets(w io.Writer, info *skillInfo) {
+	if len(info.TargetDetails) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Targets:")
+	for _, t := range info.TargetDetails {
+		marker := "✗"
+		detail := t.Error
+		if t.OK {
+			marker = "✓"
+			detail = t.Path
+		}
+		if detail == "" {
+			detail = t.Path
+		}
+		fmt.Fprintf(w, "  %s %-9s %s\n", marker, t.Target, detail)
+	}
+}
+
+// renderInfoFiles prints the bundled file tree, indented by path depth.
+func renderInfoFiles(w io.Writer, info *skillInfo) {
+	if len(info.Files) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Files:")
+	for _, f := range info.Files {
+		depth := strings.Count(f, "/")
+		indent := strings.Repeat("  ", depth)
+		fmt.Fprintf(w, "  %s%s\n", indent, filepath.Base(f))
+	}
 }
 
 // renderVerificationSection prints the supply-chain signals block in text

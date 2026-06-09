@@ -47,7 +47,7 @@ type SarifDriver struct {
 type SarifRule struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name,omitempty"`
-	ShortDescription SarifText      `json:"shortDescription,omitempty"`
+	ShortDescription SarifText      `json:"shortDescription"`
 	HelpURI          string         `json:"helpUri,omitempty"`
 	Properties       map[string]any `json:"properties,omitempty"`
 }

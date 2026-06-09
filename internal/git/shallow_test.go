@@ -171,7 +171,7 @@ func allRefs(t *testing.T, bare string) []string {
 		t.Fatalf("for-each-ref: %v\n%s", err, out)
 	}
 	var refs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
 			refs = append(refs, line)
 		}

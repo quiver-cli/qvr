@@ -128,31 +128,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if addAs != "" && len(args) != 1 {
 		return fmt.Errorf("--as can only be used with a single skill argument (got %d)", len(args))
 	}
-	// --as "" reaches the installer as an empty string indistinguishable
-	// from "flag not passed", so the installer silently installs under the
-	// canonical name. From the user's perspective they explicitly asked
-	// for an alias and got none — a footgun for `qvr add foo --as "$x"`
-	// when $x is empty. Detect the explicit empty here and route through
-	// the same invalid-name error that other malformed --as values produce.
-	// Issue #103.
-	if cmd.Flags().Changed("as") && addAs == "" {
-		err := fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", addAs)
-		// Issue #121: route through the same printer/envelope path the
-		// rest of add uses. Pre-fix `--as ""` returned the bare error,
-		// so text mode rendered `Error: …` (Execute's default envelope)
-		// while every other add failure rendered `✗ add …: …`. JSON mode
-		// emitted `{"error": "..."}` here vs the legacy
-		// `{"installed": [], "error": "..."}` elsewhere — two distinct
-		// shapes from the same command.
-		if printer.Format == output.FormatJSON {
-			payload := buildAddJSONEnvelope(nil, nil, err)
-			if jerr := printer.JSON(payload); jerr != nil {
-				return jerr
-			}
-			return errJSONHandled
-		}
-		printer.Error(fmt.Sprintf("add: %v", err))
-		return errTextHandled
+	if err := validateAddAsEmpty(cmd); err != nil {
+		return err
 	}
 
 	projectRoot, err := os.Getwd()
@@ -203,163 +180,218 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// #206: materialize all skills' content dirs concurrently before the lock
-	// window. This is the expensive, independent part of an install; fanning it
-	// out across goroutines turns N serial materializations into one parallel
-	// pass. The serial Install loop below then reuses each pre-built dir. It's a
-	// pure optimization — Install still does the work for anything not pre-built.
-	if len(items) > 1 {
-		batch := make([]skill.InstallRequest, 0, len(items))
-		for _, item := range items {
-			batch = append(batch, skill.InstallRequest{
-				Skill:       item.skillRef,
-				Targets:     targets,
-				Global:      addGlobal,
-				ProjectRoot: projectRoot,
-				LockPath:    lockPath,
-				Force:       addForce,
-				Frozen:      addFrozen,
-				Registry:    item.registry,
-				SkillPath:   item.skillPath,
-				As:          addAs,
-				// Mirror the serial loop's gating so the pre-pass resolves and
-				// warms identically — in particular RequireSigned drives the
-				// fresh-provenance decision (a require_signed install must NOT be
-				// served a cached signature), and Force matches the conflict-check
-				// behavior so a --force re-add resolves the same in both passes.
-				RequireSigned:            cfg.Security.RequireSigned,
-				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
-				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
-			})
-		}
-		installer.PrematerializeBatch(batch)
-	}
+	prematerializeAddItems(installer, cfg, items, targets, projectRoot, lockPath)
 
-	var results []*skill.InstallResult
-	var blocked []blockedSkillJSON
-	var firstErr error
+	var st addInstallState
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
-		// Read the project lock ONCE for the whole batch and thread it through
-		// every install/remove/scan-record below, writing it a single time after
-		// the loop. The serial path used to ReadLockFile + Write the full lock per
-		// skill (and again per scan record) — O(N²) lockfile churn that dominated
-		// the warm multi-skill install. The whole loop runs single-threaded inside
-		// this WithLock window, so the in-memory lock is the only writer.
-		lock, err := model.ReadLockFile(lockPath)
-		if err != nil {
-			return fmt.Errorf("read lock file: %w", err)
-		}
-		for _, item := range items {
-			ref := item.skillRef
-			result, err := installer.InstallInto(skill.InstallRequest{
-				Skill:                    ref,
-				Targets:                  targets,
-				Global:                   addGlobal,
-				ProjectRoot:              projectRoot,
-				LockPath:                 lockPath,
-				Force:                    addForce,
-				Frozen:                   addFrozen,
-				Registry:                 item.registry,
-				SkillPath:                item.skillPath,
-				As:                       addAs,
-				RequireSigned:            cfg.Security.RequireSigned,
-				TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
-				TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
-			}, lock)
-			if err != nil {
-				// Skill not found is the headline error — point at `qvr registry add`
-				// so the user knows the next step. Everything else falls through with
-				// the wrapped error.
-				if errors.Is(err, skill.ErrSkillNotFound) {
-					err = fmt.Errorf("no registered source contains a skill named %q — register one with `qvr registry add <url>`", ref)
-				}
-				printer.Error(fmt.Sprintf("add %s: %v", ref, err))
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-
-			// Security gate. Scan the freshly-installed worktree and roll back
-			// the install if findings meet or exceed the configured threshold.
-			// Done inside the WithLock window so a blocked install also
-			// reverts the lock entry atomically.
-			gate, gerr := ScanAndGate(cmd.Context(), skillDirFor(result, lockPath), cfg, scanGateOptions{
-				Disabled: addNoScan,
-				Action:   "add",
-				Subject:  result.Name,
-				// Quiet: collapse benign-finding noise to a one-line banner.
-				// Blocked installs still get the full detail.
-				Quiet: true,
-			})
-			if gerr != nil {
-				printer.Warning(fmt.Sprintf("add %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", result.Name, gerr, result.Name))
-				results = append(results, result)
-				continue
-			}
-			if gate.Blocked {
-				removeErr := installer.RemoveFrom(result.Name, skill.InstallRequest{
-					ProjectRoot: projectRoot,
-					Global:      addGlobal,
-					LockPath:    lockPath,
-				}, lock)
-				if removeErr != nil {
-					printer.Error(fmt.Sprintf("add %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
-				}
-				blockErr := &blockedScanError{Subject: result.Name, Threshold: gate.Threshold, Result: gate.Result}
-				blocked = append(blocked, blockedSkillFromErr(blockErr))
-				if firstErr == nil {
-					firstErr = blockErr
-				}
-				continue
-			}
-			// Persist the (allowed) scan result onto the lock entry so
-			// downstream tools can inspect it without re-running the scan.
-			// A write failure here is non-fatal — the install itself
-			// succeeded and the user can re-record via `qvr scan`.
-			if recErr := recordScanResultInLock(lock, result.Name, gate); recErr != nil {
-				printer.Warning(fmt.Sprintf("add %s: scan recorded only in memory (%v)", result.Name, recErr))
-			}
-			results = append(results, result)
-			// Issue #66: print the success marker inside the loop so
-			// per-skill output (scan warnings, then ✓ Added) reads in
-			// order. Previously every ✓ printed in a trailing loop
-			// after all failures, making partial-failure batches look
-			// like total failures on a CI scroll-by.
-			if printer.Format != output.FormatJSON {
-				// Surface installer-side advisories (e.g. multi-registry
-				// ambiguity pick) before the ✓ so the user sees the
-				// caveat associated with the install it qualifies
-				// (issue #101).
-				for _, w := range result.Warnings {
-					printer.Warning(w)
-				}
-				printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
-			}
-		}
-		// Persist the whole batch's lock mutations once. Partial successes are
-		// kept (matching the prior per-skill-write behavior); blocked installs
-		// already removed their entry from the in-memory lock above, so they're
-		// simply absent from this write.
-		if err := lock.Write(); err != nil {
-			return fmt.Errorf("write lock file: %w", err)
-		}
-		// Write-through to qvr.toml (declarative intent). The lock is the
-		// authoritative resolved state, so a qvr.toml failure warns rather than
-		// failing the add. Global installs have no project file. A single
-		// read+write outside the per-skill loop keeps the batch O(N).
-		if !addGlobal {
-			if perr := syncProjectFileFromLock(projPath, lock, results); perr != nil {
-				printer.Warning(fmt.Sprintf("recorded in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
-			}
-		}
-		return nil
+		return runAddInstallLoop(cmd, cfg, installer, items, targets, projectRoot, lockPath, projPath, &st)
 	})
 	if lockErr != nil {
 		return lockErr
 	}
 
-	return emitAddResults(results, blocked, firstErr, projectRoot, lockPath)
+	return emitAddResults(st.results, st.blocked, st.firstErr, projectRoot, lockPath)
+}
+
+// validateAddAsEmpty rejects an explicit empty `--as ""`, which would otherwise
+// reach the installer indistinguishable from "flag not passed" and silently
+// install under the canonical name (issue #103). It routes the rejection through
+// the same printer/envelope path the rest of add uses (issue #121).
+func validateAddAsEmpty(cmd *cobra.Command) error {
+	if !cmd.Flags().Changed("as") || addAs != "" {
+		return nil
+	}
+	err := fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", addAs)
+	// Issue #121: route through the same printer/envelope path the
+	// rest of add uses. Pre-fix `--as ""` returned the bare error,
+	// so text mode rendered `Error: …` (Execute's default envelope)
+	// while every other add failure rendered `✗ add …: …`. JSON mode
+	// emitted `{"error": "..."}` here vs the legacy
+	// `{"installed": [], "error": "..."}` elsewhere — two distinct
+	// shapes from the same command.
+	if printer.Format == output.FormatJSON {
+		payload := buildAddJSONEnvelope(nil, nil, err)
+		if jerr := printer.JSON(payload); jerr != nil {
+			return jerr
+		}
+		return errJSONHandled
+	}
+	printer.Error(fmt.Sprintf("add: %v", err))
+	return errTextHandled
+}
+
+// prematerializeAddItems warms every skill's content dir concurrently before the
+// lock window (#206) when more than one item is being installed — the expensive,
+// independent part of an install. The serial Install loop then reuses each
+// pre-built dir; it's a pure optimization, so the request gating must mirror the
+// serial loop (RequireSigned/Force) for the pre-pass to resolve identically.
+func prematerializeAddItems(installer *skill.Installer, cfg *config.Config, items []addItem, targets []string, projectRoot, lockPath string) {
+	if len(items) <= 1 {
+		return
+	}
+	batch := make([]skill.InstallRequest, 0, len(items))
+	for _, item := range items {
+		batch = append(batch, skill.InstallRequest{
+			Skill:       item.skillRef,
+			Targets:     targets,
+			Global:      addGlobal,
+			ProjectRoot: projectRoot,
+			LockPath:    lockPath,
+			Force:       addForce,
+			Frozen:      addFrozen,
+			Registry:    item.registry,
+			SkillPath:   item.skillPath,
+			As:          addAs,
+			// Mirror the serial loop's gating so the pre-pass resolves and
+			// warms identically — in particular RequireSigned drives the
+			// fresh-provenance decision (a require_signed install must NOT be
+			// served a cached signature), and Force matches the conflict-check
+			// behavior so a --force re-add resolves the same in both passes.
+			RequireSigned:            cfg.Security.RequireSigned,
+			TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
+			TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
+		})
+	}
+	installer.PrematerializeBatch(batch)
+}
+
+// addInstallState accumulates the batch install outcome across the WithLock
+// window for runAdd to emit afterwards.
+type addInstallState struct {
+	results  []*skill.InstallResult
+	blocked  []blockedSkillJSON
+	firstErr error
+}
+
+// runAddInstallLoop is the under-lock batch-install body of `qvr add`: read the
+// project lock once, install + scan-gate each item (rolling back blocked ones),
+// then persist the lock and project file once. Threading a single in-memory lock
+// through the whole batch keeps it O(N) rather than O(N²) (#206). Outcomes land
+// on st for the caller to render.
+func runAddInstallLoop(cmd *cobra.Command, cfg *config.Config, installer *skill.Installer, items []addItem, targets []string, projectRoot, lockPath, projPath string, st *addInstallState) error {
+	// Read the project lock ONCE for the whole batch and thread it through
+	// every install/remove/scan-record below, writing it a single time after
+	// the loop. The serial path used to ReadLockFile + Write the full lock per
+	// skill (and again per scan record) — O(N²) lockfile churn that dominated
+	// the warm multi-skill install. The whole loop runs single-threaded inside
+	// this WithLock window, so the in-memory lock is the only writer.
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lock file: %w", err)
+	}
+	for _, item := range items {
+		addInstallItem(cmd, cfg, installer, item, targets, projectRoot, lockPath, lock, st)
+	}
+	// Persist the whole batch's lock mutations once. Partial successes are
+	// kept (matching the prior per-skill-write behavior); blocked installs
+	// already removed their entry from the in-memory lock above, so they're
+	// simply absent from this write.
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("write lock file: %w", err)
+	}
+	// Write-through to qvr.toml (declarative intent). The lock is the
+	// authoritative resolved state, so a qvr.toml failure warns rather than
+	// failing the add. Global installs have no project file. A single
+	// read+write outside the per-skill loop keeps the batch O(N).
+	if !addGlobal {
+		if perr := syncProjectFileFromLock(projPath, lock, st.results); perr != nil {
+			printer.Warning(fmt.Sprintf("recorded in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+		}
+	}
+	return nil
+}
+
+// addInstallItem installs one batch item into the shared in-memory lock, runs
+// the scan gate (rolling back a blocked install atomically), records the scan
+// result, and prints the per-skill ✓/✗ output in order (#66). Outcomes (result,
+// blocked, firstErr) accumulate on st.
+func addInstallItem(cmd *cobra.Command, cfg *config.Config, installer *skill.Installer, item addItem, targets []string, projectRoot, lockPath string, lock *model.LockFile, st *addInstallState) {
+	ref := item.skillRef
+	result, err := installer.InstallInto(skill.InstallRequest{
+		Skill:                    ref,
+		Targets:                  targets,
+		Global:                   addGlobal,
+		ProjectRoot:              projectRoot,
+		LockPath:                 lockPath,
+		Force:                    addForce,
+		Frozen:                   addFrozen,
+		Registry:                 item.registry,
+		SkillPath:                item.skillPath,
+		As:                       addAs,
+		RequireSigned:            cfg.Security.RequireSigned,
+		TrustedAuthors:           trustedAuthorsForRegistry(cfg, item.registry),
+		TrustedAuthorsByRegistry: trustedAuthorsByRegistry(cfg),
+	}, lock)
+	if err != nil {
+		// Skill not found is the headline error — point at `qvr registry add`
+		// so the user knows the next step. Everything else falls through with
+		// the wrapped error.
+		if errors.Is(err, skill.ErrSkillNotFound) {
+			err = fmt.Errorf("no registered source contains a skill named %q — register one with `qvr registry add <url>`", ref)
+		}
+		printer.Error(fmt.Sprintf("add %s: %v", ref, err))
+		if st.firstErr == nil {
+			st.firstErr = err
+		}
+		return
+	}
+
+	// Security gate. Scan the freshly-installed worktree and roll back
+	// the install if findings meet or exceed the configured threshold.
+	// Done inside the WithLock window so a blocked install also
+	// reverts the lock entry atomically.
+	gate, gerr := ScanAndGate(cmd.Context(), skillDirForEntry(result, lock), cfg, scanGateOptions{
+		Disabled: addNoScan,
+		Action:   "add",
+		Subject:  result.Name,
+		// Quiet: collapse benign-finding noise to a one-line banner.
+		// Blocked installs still get the full detail.
+		Quiet: true,
+	})
+	if gerr != nil {
+		printer.Warning(fmt.Sprintf("add %s: scan failed (%v); install kept — rerun `qvr scan %s` to retry", result.Name, gerr, result.Name))
+		st.results = append(st.results, result)
+		return
+	}
+	if gate.Blocked {
+		removeErr := installer.RemoveFrom(result.Name, skill.InstallRequest{
+			ProjectRoot: projectRoot,
+			Global:      addGlobal,
+			LockPath:    lockPath,
+		}, lock)
+		if removeErr != nil {
+			printer.Error(fmt.Sprintf("add %s: scan blocked, rollback also failed (%v); run `qvr remove %s --force` to clean up", result.Name, removeErr, result.Name))
+		}
+		blockErr := &blockedScanError{Subject: result.Name, Threshold: gate.Threshold, Result: gate.Result}
+		st.blocked = append(st.blocked, blockedSkillFromErr(blockErr))
+		if st.firstErr == nil {
+			st.firstErr = blockErr
+		}
+		return
+	}
+	// Persist the (allowed) scan result onto the lock entry so
+	// downstream tools can inspect it without re-running the scan.
+	// A write failure here is non-fatal — the install itself
+	// succeeded and the user can re-record via `qvr scan`.
+	if recErr := recordScanResultInLock(lock, result.Name, gate); recErr != nil {
+		printer.Warning(fmt.Sprintf("add %s: scan recorded only in memory (%v)", result.Name, recErr))
+	}
+	st.results = append(st.results, result)
+	// Issue #66: print the success marker inside the loop so
+	// per-skill output (scan warnings, then ✓ Added) reads in
+	// order. Previously every ✓ printed in a trailing loop
+	// after all failures, making partial-failure batches look
+	// like total failures on a CI scroll-by.
+	if printer.Format != output.FormatJSON {
+		// Surface installer-side advisories (e.g. multi-registry
+		// ambiguity pick) before the ✓ so the user sees the
+		// caveat associated with the install it qualifies
+		// (issue #101).
+		for _, w := range result.Warnings {
+			printer.Warning(w)
+		}
+		printer.Success(fmt.Sprintf("Added %s@%s → %v", result.Name, result.Version, result.Targets))
+	}
 }
 
 // setProjectFileSkillRef upserts a coordinate→ref into qvr.toml, writing only
@@ -869,6 +901,26 @@ type addItem struct {
 	skillPath string
 }
 
+// firstDuplicateLocalName returns the first skill name that appears more than
+// once across the batch's items, or "" when every name is distinct. The local
+// name is the skillRef with any `@ref` stripped (skill names never contain '@'),
+// matching the lock key the installer would write — so the same name from two
+// registries collides too, which is correct since the lock is keyed by name.
+func firstDuplicateLocalName(items []addItem) string {
+	seen := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		name, _, _ := strings.Cut(it.skillRef, "@")
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			return name
+		}
+		seen[name] = struct{}{}
+	}
+	return ""
+}
+
 // resolveAddItems turns the raw `qvr add` positional args into install targets.
 // A plain skill name (optionally `@ref`) passes through scoped to the global
 // --registry flag. An arg shaped like a remote clone path
@@ -905,6 +957,18 @@ func resolveAddItems(ctx context.Context, mgr *registry.Manager, args []string) 
 			skillRef = skillName + "@" + ref
 		}
 		items = append(items, addItem{skillRef: skillRef, registry: regName, skillPath: skillPath})
+	}
+	// Reject a batch that names the same skill twice (e.g. `qvr add tdd tdd@v2`,
+	// or the same name from two registries). The under-lock install loop defers
+	// lock.Write to the end of the batch, so the per-install ref-conflict check —
+	// which re-reads the on-disk lock — can't see an entry a sibling item just
+	// added in memory; the second install would silently overwrite the first.
+	// --force opts into in-place overwrite, so it bypasses this guard. (--all
+	// resolves through resolveAllItems, which already yields unique names.)
+	if !addForce {
+		if dup := firstDuplicateLocalName(items); dup != "" {
+			return nil, fmt.Errorf("skill %q named more than once in this add — install it once (pass --force to overwrite, or run separate `qvr add` commands)", dup)
+		}
 	}
 	return items, nil
 }
@@ -1003,30 +1067,9 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, skillPath, ref strin
 	}
 
 	// Split off the authority (kept verbatim) and the org/repo[/...] path.
-	scheme := "https"
-	authority := ""
-	rest := raw
-	switch {
-	case strings.Contains(rest, "://"):
-		i := strings.Index(rest, "://")
-		scheme = rest[:i]
-		rest = rest[i+3:]
-		slash := strings.Index(rest, "/")
-		if slash < 0 {
-			return "", "", "", "", false
-		}
-		authority, rest = rest[:slash], rest[slash+1:]
-	case isSCPStyleSpec(rest):
-		// scp-style [user@]host:org/repo/...
-		colon := strings.Index(rest, ":")
-		authority, rest = rest[:colon], rest[colon+1:]
-		scheme = "scp"
-	default:
-		slash := strings.Index(rest, "/")
-		if slash < 0 {
-			return "", "", "", "", false
-		}
-		authority, rest = rest[:slash], rest[slash+1:]
+	scheme, authority, rest, ok := splitRemoteSpecAuthority(raw)
+	if !ok {
+		return "", "", "", "", false
 	}
 
 	// The host (authority minus user@ and :port) must look like one — guards a
@@ -1035,12 +1078,7 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, skillPath, ref strin
 		return "", "", "", "", false
 	}
 
-	var segs []string
-	for _, p := range strings.Split(strings.Trim(rest, "/"), "/") {
-		if p != "" {
-			segs = append(segs, p)
-		}
-	}
+	segs := splitNonEmptyPathSegments(rest)
 	if len(segs) < 2 {
 		return "", "", "", "", false // need at least org/repo
 	}
@@ -1071,6 +1109,50 @@ func parseRemoteSkillSpec(arg string) (cloneURL, skillName, skillPath, ref strin
 		cloneURL = fmt.Sprintf("%s://%s/%s/%s.git", scheme, authority, org, repo)
 	}
 	return cloneURL, skillName, skillPath, ref, true
+}
+
+// splitNonEmptyPathSegments splits a "/"-delimited path into its non-empty
+// segments (collapsing leading/trailing/duplicate slashes).
+func splitNonEmptyPathSegments(path string) []string {
+	var segs []string
+	for p := range strings.SplitSeq(strings.Trim(path, "/"), "/") {
+		if p != "" {
+			segs = append(segs, p)
+		}
+	}
+	return segs
+}
+
+// splitRemoteSpecAuthority peels the scheme + authority off a remote skill spec,
+// returning the scheme ("https" default, "scp" for scp-style SSH), the verbatim
+// authority (user+host+port), and the remaining org/repo[/...] path. ok=false
+// when the spec has no path component after the authority.
+func splitRemoteSpecAuthority(raw string) (scheme, authority, rest string, ok bool) {
+	scheme = "https"
+	rest = raw
+	switch {
+	case strings.Contains(rest, "://"):
+		i := strings.Index(rest, "://")
+		scheme = rest[:i]
+		rest = rest[i+3:]
+		slash := strings.Index(rest, "/")
+		if slash < 0 {
+			return "", "", "", false
+		}
+		authority, rest = rest[:slash], rest[slash+1:]
+	case isSCPStyleSpec(rest):
+		// scp-style [user@]host:org/repo/...
+		colon := strings.Index(rest, ":")
+		authority, rest = rest[:colon], rest[colon+1:]
+		scheme = "scp"
+	default:
+		slash := strings.Index(rest, "/")
+		if slash < 0 {
+			return "", "", "", false
+		}
+		authority, rest = rest[:slash], rest[slash+1:]
+	}
+	return scheme, authority, rest, true
 }
 
 // isSCPStyleSpec reports whether s is the scp-style SSH shorthand
@@ -1151,6 +1233,19 @@ func skillDirFor(result *skill.InstallResult, lockPath string) string {
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		return result.Worktree
+	}
+	return skillDirForEntry(result, lock)
+}
+
+// skillDirForEntry is skillDirFor against an already-loaded in-memory lock. The
+// batch add loop (runAddInstallLoop) defers lock.Write to the end of the batch,
+// so the on-disk qvr.lock is stale mid-loop — re-reading it would miss the entry
+// the just-completed install added in memory and fall back to the worktree root,
+// scanning the wrong directory for a nested (layout-A) skill. Resolve the subpath
+// from the in-memory entry instead.
+func skillDirForEntry(result *skill.InstallResult, lock *model.LockFile) string {
+	if result == nil || result.Worktree == "" {
+		return ""
 	}
 	entry, err := lock.Get(result.Name)
 	if err != nil {

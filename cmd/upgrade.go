@@ -108,15 +108,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 
 	// --check: report the gap and stop before downloading anything.
 	if upgradeCheck {
-		if printer.Format == output.FormatJSON {
-			return printer.JSON(res)
-		}
-		if isDev {
-			printer.Info(fmt.Sprintf("dev build (%s) — latest release is %s; run `qvr upgrade` to install it", current, target))
-		} else {
-			printer.Info(fmt.Sprintf("update available: %s → %s (run `qvr upgrade` to install)", current, target))
-		}
-		return nil
+		return reportUpgradeCheck(res, current, target, isDev)
 	}
 
 	// Confirm before mutating the on-disk binary (reuses the cache-prune gate).
@@ -131,6 +123,12 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	return downloadAndReplace(ctx, up, res, target, asset, current, isDev)
+}
+
+// downloadAndReplace fetches the target release binary into a temp dir, swaps it
+// atomically over the running executable, and reports success (JSON or text).
+func downloadAndReplace(ctx context.Context, up *selfupdate.Updater, res upgradeResult, target, asset, current string, isDev bool) error {
 	exe, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("locate running binary: %w", err)
@@ -159,6 +157,21 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	printer.Success(fmt.Sprintf("upgraded %s → %s", describeCurrent(current, isDev), target))
 	printer.Info(fmt.Sprintf("  installed: %s", exe))
 	printer.Info("  the embedded dashboard (`qvr ui`) is now current too")
+	return nil
+}
+
+// reportUpgradeCheck implements `qvr upgrade --check`: report the version gap
+// (JSON payload or a human line distinguishing a dev build from a release) and
+// return without downloading anything.
+func reportUpgradeCheck(res upgradeResult, current, target string, isDev bool) error {
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(res)
+	}
+	if isDev {
+		printer.Info(fmt.Sprintf("dev build (%s) — latest release is %s; run `qvr upgrade` to install it", current, target))
+	} else {
+		printer.Info(fmt.Sprintf("update available: %s → %s (run `qvr upgrade` to install)", current, target))
+	}
 	return nil
 }
 

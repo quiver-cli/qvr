@@ -120,12 +120,12 @@ func scrubbedEnv(env []string) []string {
 	seenPrompt := false
 	seenAskpass := false
 	for _, e := range env {
-		eq := strings.IndexByte(e, '=')
-		if eq < 0 {
+		before, _, ok := strings.Cut(e, "=")
+		if !ok {
 			out = append(out, e)
 			continue
 		}
-		key := e[:eq]
+		key := before
 		if _, bad := poisoned[key]; bad {
 			continue
 		}

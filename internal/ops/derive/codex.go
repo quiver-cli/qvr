@@ -108,43 +108,13 @@ func (codexDeriver) Derive(rows []*ops.RawTrace) ([]Span, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	sessionID := rows[0].SessionID.String()
-
-	var spans []Span
-	var cur *turn
-	turnIdx := 0
-	model := "" // most recent model seen (session_meta / turn_context)
-	// valid is the authoritative set of skill names Codex injected via
-	// <skills_instructions> for this session. Empty until that block is seen;
-	// while empty, skill-path detection falls back to accepting any
-	// well-formed skills/<name> segment (a still-native signal).
-	valid := map[string]bool{}
-
-	openTurn := func(ts int64) {
-		turnIdx++
-		tid := traceID(sessionID, "turn", strconv.Itoa(turnIdx))
-		cur = &turn{
-			index:     turnIdx,
-			startMs:   ts,
-			endMs:     ts,
-			model:     model,
-			traceID:   tid,
-			llmSpanID: spanID(tid, "llm"),
-			pending:   map[string]int{},
-		}
-	}
-	flush := func() {
-		if cur == nil {
-			return
-		}
-		spans = append(spans, cur.llmSpan(sessionID))
-		spans = append(spans, cur.tools...)
-		cur = nil
-	}
-	ensure := func(ts int64) {
-		if cur == nil {
-			openTurn(ts)
-		}
+	st := &codexState{
+		sessionID: rows[0].SessionID.String(),
+		// valid is the authoritative set of skill names Codex injected via
+		// <skills_instructions> for this session. Empty until that block is seen;
+		// while empty, skill-path detection falls back to accepting any
+		// well-formed skills/<name> segment (a still-native signal).
+		valid: map[string]bool{},
 	}
 
 	for _, r := range rows {
@@ -163,82 +133,140 @@ func (codexDeriver) Derive(rows []*ops.RawTrace) ([]Span, error) {
 
 		switch ln.Type {
 		case "session_meta", "turn_context":
-			// The turn's model. session_meta usually only has model_provider;
-			// turn_context carries the concrete model id.
-			if p.Model != "" {
-				model = p.Model
-				if cur != nil {
-					cur.model = model
-				}
-			}
-
+			st.handleModel(p)
 		case "event_msg":
-			switch p.Type {
-			case "task_started":
-				flush()
-				openTurn(ts)
-			case "user_message":
-				ensure(ts)
-				if cur.prompt == "" {
-					cur.prompt = p.Message
-				}
-			case "agent_message":
-				ensure(ts)
-				if p.Message != "" {
-					cur.appendOutput(p.Message)
-				}
-				cur.bump(ts)
-			case "token_count":
-				if cur != nil && p.Info != nil {
-					cur.inTokens += p.Info.Last.InputTokens
-					cur.outTokens += p.Info.Last.OutputTokens
-				}
-			case "task_complete":
-				ensure(ts)
-				if cur.output == "" && p.LastAgentMessage != "" {
-					cur.appendOutput(p.LastAgentMessage)
-				}
-				cur.bump(ts)
-				flush()
-			}
-
+			st.handleEventMsg(p, ts)
 		case "response_item":
-			switch p.Type {
-			case "message":
-				blocks := decodeCodexBlocks(p.Content)
-				// Any message (usually the developer one) may carry the
-				// <skills_instructions> registry; learn the skill names from it.
-				for _, b := range blocks {
-					if strings.Contains(b.Text, skillsInstructionsTag) {
-						for name := range parseCodexSkills(b.Text) {
-							valid[name] = true
-						}
-					}
-				}
-				// Only assistant output is the turn's text. User/developer
-				// messages here are injected context, not the prompt.
-				if p.Role == "assistant" {
-					ensure(ts)
-					for _, b := range blocks {
-						if b.Text != "" {
-							cur.appendOutput(b.Text)
-						}
-					}
-					cur.bump(ts)
-				}
-			case "function_call":
-				ensure(ts)
-				cur.addCodexTool(p, ts, sessionID, valid)
-				cur.bump(ts)
-			case "function_call_output":
-				if cur != nil {
-					cur.applyCodexResult(p, ts)
+			st.handleResponseItem(p, ts)
+		}
+	}
+	st.flush()
+	return st.spans, nil
+}
+
+// codexState carries the mutable walk state while Derive folds rollout records
+// into spans: the accumulating spans, the open turn (if any), the running turn
+// index, the most recent model seen, and the learned skill-name set.
+type codexState struct {
+	sessionID string
+	spans     []Span
+	cur       *turn
+	turnIdx   int
+	model     string          // most recent model seen (session_meta / turn_context)
+	valid     map[string]bool // skill names injected via <skills_instructions>
+}
+
+// openTurn starts a fresh turn at ts using the most recent model.
+func (st *codexState) openTurn(ts int64) {
+	st.turnIdx++
+	tid := traceID(st.sessionID, "turn", strconv.Itoa(st.turnIdx))
+	st.cur = &turn{
+		index:     st.turnIdx,
+		startMs:   ts,
+		endMs:     ts,
+		model:     st.model,
+		traceID:   tid,
+		llmSpanID: spanID(tid, "llm"),
+		pending:   map[string]int{},
+	}
+}
+
+// flush emits the open turn's LLM + tool spans and clears it.
+func (st *codexState) flush() {
+	if st.cur == nil {
+		return
+	}
+	st.spans = append(st.spans, st.cur.llmSpan(st.sessionID))
+	st.spans = append(st.spans, st.cur.tools...)
+	st.cur = nil
+}
+
+// ensure opens a turn at ts when none is currently open.
+func (st *codexState) ensure(ts int64) {
+	if st.cur == nil {
+		st.openTurn(ts)
+	}
+}
+
+// handleModel records the turn's model. session_meta usually only has
+// model_provider; turn_context carries the concrete model id.
+func (st *codexState) handleModel(p codexPayload) {
+	if p.Model != "" {
+		st.model = p.Model
+		if st.cur != nil {
+			st.cur.model = st.model
+		}
+	}
+}
+
+// handleEventMsg processes an event_msg envelope: turn open/close, the clean
+// prompt, accumulated usage, and the final assistant text.
+func (st *codexState) handleEventMsg(p codexPayload, ts int64) {
+	switch p.Type {
+	case "task_started":
+		st.flush()
+		st.openTurn(ts)
+	case "user_message":
+		st.ensure(ts)
+		if st.cur.prompt == "" {
+			st.cur.prompt = p.Message
+		}
+	case "agent_message":
+		st.ensure(ts)
+		if p.Message != "" {
+			st.cur.appendOutput(p.Message)
+		}
+		st.cur.bump(ts)
+	case "token_count":
+		if st.cur != nil && p.Info != nil {
+			st.cur.inTokens += p.Info.Last.InputTokens
+			st.cur.outTokens += p.Info.Last.OutputTokens
+		}
+	case "task_complete":
+		st.ensure(ts)
+		if st.cur.output == "" && p.LastAgentMessage != "" {
+			st.cur.appendOutput(p.LastAgentMessage)
+		}
+		st.cur.bump(ts)
+		st.flush()
+	}
+}
+
+// handleResponseItem processes a response_item envelope: assistant output text,
+// the injected <skills_instructions> registry, tool calls, and their results.
+func (st *codexState) handleResponseItem(p codexPayload, ts int64) {
+	switch p.Type {
+	case "message":
+		blocks := decodeCodexBlocks(p.Content)
+		// Any message (usually the developer one) may carry the
+		// <skills_instructions> registry; learn the skill names from it.
+		for _, b := range blocks {
+			if strings.Contains(b.Text, skillsInstructionsTag) {
+				for name := range parseCodexSkills(b.Text) {
+					st.valid[name] = true
 				}
 			}
 		}
+		// Only assistant output is the turn's text. User/developer
+		// messages here are injected context, not the prompt.
+		if p.Role == "assistant" {
+			st.ensure(ts)
+			for _, b := range blocks {
+				if b.Text != "" {
+					st.cur.appendOutput(b.Text)
+				}
+			}
+			st.cur.bump(ts)
+		}
+	case "function_call":
+		st.ensure(ts)
+		st.cur.addCodexTool(p, ts, st.sessionID, st.valid)
+		st.cur.bump(ts)
+	case "function_call_output":
+		if st.cur != nil {
+			st.cur.applyCodexResult(p, ts)
+		}
 	}
-	flush()
-	return spans, nil
 }
 
 // appendOutput accumulates assistant text, newline-separated.
@@ -417,14 +445,14 @@ func codexCommand(args map[string]any) string {
 }
 
 func joinFields(parts []string) string {
-	out := ""
+	var out strings.Builder
 	for i, p := range parts {
 		if i > 0 {
-			out += " "
+			out.WriteString(" ")
 		}
-		out += p
+		out.WriteString(p)
 	}
-	return out
+	return out.String()
 }
 
 func decodeCodexBlocks(raw json.RawMessage) []codexBlock {

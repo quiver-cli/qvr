@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -74,10 +75,8 @@ func validateDuration(v string) (string, error) {
 func validateEnum(valid []string) func(string) (string, error) {
 	return func(v string) (string, error) {
 		got := strings.ToLower(strings.TrimSpace(v))
-		for _, ok := range valid {
-			if got == ok {
-				return got, nil
-			}
+		if slices.Contains(valid, got) {
+			return got, nil
 		}
 		sort.Strings(valid)
 		return "", fmt.Errorf("invalid value %q; valid: %s", v, strings.Join(valid, ", "))
@@ -160,21 +159,6 @@ func configRead(cfg *config.Config, key string) string {
 		return cfg.DefaultRegistry
 	case "github_token":
 		return cfg.GithubToken
-	case "security.scan_on_install":
-		if cfg.Security.ScanOnInstall {
-			return "true"
-		}
-		return "false"
-	case "security.require_scan":
-		if cfg.Security.RequireScan {
-			return "true"
-		}
-		return "false"
-	case "security.require_signed":
-		if cfg.Security.RequireSigned {
-			return "true"
-		}
-		return "false"
 	case "security.block_severity":
 		return cfg.Security.BlockSeverity
 	case "output.format":
@@ -183,22 +167,36 @@ func configRead(cfg *config.Config, key string) string {
 		return cfg.Output.Color
 	case "cache.index_ttl":
 		return cfg.Cache.IndexTTL
-	case "ops.enabled":
-		if cfg.Ops.Enabled {
-			return "true"
-		}
-		return "false"
 	case "ops.db_path":
 		return cfg.Ops.DBPath
-	case "prefetch.enabled":
-		if cfg.Prefetch.Enabled {
-			return "true"
-		}
-		return "false"
 	case "prefetch.min_interval":
 		return cfg.Prefetch.MinInterval
 	}
-	return ""
+	return configReadBool(cfg, key)
+}
+
+// configReadBool returns the "true"/"false" string for the boolean config keys,
+// or "" if key is not one of them.
+func configReadBool(cfg *config.Config, key string) string {
+	var b bool
+	switch key {
+	case "security.scan_on_install":
+		b = cfg.Security.ScanOnInstall
+	case "security.require_scan":
+		b = cfg.Security.RequireScan
+	case "security.require_signed":
+		b = cfg.Security.RequireSigned
+	case "ops.enabled":
+		b = cfg.Ops.Enabled
+	case "prefetch.enabled":
+		b = cfg.Prefetch.Enabled
+	default:
+		return ""
+	}
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func configWrite(cfg *config.Config, key, value string) error {

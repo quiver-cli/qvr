@@ -49,18 +49,19 @@ func testEnv(t *testing.T) string {
 	return home
 }
 
-// seedRemote creates a bare remote repo pre-seeded with the given skills on
-// branch main, plus any extra branches pointing at the same HEAD. Returns
-// the remote (bare repo) path.
-func seedRemote(t *testing.T, skills map[string]string, branches ...string) string {
+// newSeedRepo creates a bare remote and a non-bare seed clone wired to it via
+// origin, returning the bare path, seed repo, and its worktree. Shared by the
+// seedRemote* fixtures, which differ only in what they commit and which refs
+// they push.
+func newSeedRepo(t *testing.T) (remote string, sr *gogit.Repository, wt *gogit.Worktree) {
 	t.Helper()
-	remote := filepath.Join(t.TempDir(), "remote.git")
+	remote = filepath.Join(t.TempDir(), "remote.git")
 	if _, err := gogit.PlainInit(remote, true); err != nil {
 		t.Fatalf("init remote: %v", err)
 	}
-
 	seed := t.TempDir()
-	sr, err := gogit.PlainInit(seed, false)
+	var err error
+	sr, err = gogit.PlainInit(seed, false)
 	if err != nil {
 		t.Fatalf("init seed: %v", err)
 	}
@@ -70,10 +71,17 @@ func seedRemote(t *testing.T, skills map[string]string, branches ...string) stri
 	}); err != nil {
 		t.Fatalf("create remote: %v", err)
 	}
-	wt, err := sr.Worktree()
+	wt, err = sr.Worktree()
 	if err != nil {
 		t.Fatalf("worktree: %v", err)
 	}
+	return remote, sr, wt
+}
+
+// writeSeedSkills writes each skill under skills/<name>/SKILL.md in seed and
+// stages it. seed is the worktree root path.
+func writeSeedSkills(t *testing.T, seed string, wt *gogit.Worktree, skills map[string]string) {
+	t.Helper()
 	for name, content := range skills {
 		skillDir := filepath.Join(seed, "skills", name)
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -86,10 +94,15 @@ func seedRemote(t *testing.T, skills map[string]string, branches ...string) stri
 			t.Fatalf("add: %v", err)
 		}
 	}
-	_, err = wt.Commit("init", &gogit.CommitOptions{
+}
+
+// commitSeedMain commits the staged seed content as "init" and pins main to the
+// new HEAD, returning the seed repo's HEAD hash.
+func commitSeedMain(t *testing.T, sr *gogit.Repository, wt *gogit.Worktree) plumbing.Hash {
+	t.Helper()
+	if _, err := wt.Commit("init", &gogit.CommitOptions{
 		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	head, err := sr.Head()
@@ -101,19 +114,16 @@ func seedRemote(t *testing.T, skills map[string]string, branches ...string) stri
 	)); err != nil {
 		t.Fatalf("set main: %v", err)
 	}
-	refs := []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"}
-	for _, b := range branches {
-		if err := sr.Storer.SetReference(plumbing.NewHashReference(
-			plumbing.NewBranchReferenceName(b), head.Hash(),
-		)); err != nil {
-			t.Fatalf("set branch %s: %v", b, err)
-		}
-		refs = append(refs, gogitcfg.RefSpec("refs/heads/"+b+":refs/heads/"+b))
-	}
+	return head.Hash()
+}
+
+// pushSeedAndSetHEAD pushes the given refspecs to origin and points the bare
+// remote's HEAD symref at main.
+func pushSeedAndSetHEAD(t *testing.T, sr *gogit.Repository, remote string, refs []gogitcfg.RefSpec) {
+	t.Helper()
 	if err := sr.Push(&gogit.PushOptions{RemoteName: "origin", RefSpecs: refs}); err != nil {
 		t.Fatalf("push seed: %v", err)
 	}
-
 	rr, err := gogit.PlainOpen(remote)
 	if err != nil {
 		t.Fatalf("open remote: %v", err)
@@ -123,6 +133,28 @@ func seedRemote(t *testing.T, skills map[string]string, branches ...string) stri
 	)); err != nil {
 		t.Fatalf("set remote HEAD: %v", err)
 	}
+}
+
+// seedRemote creates a bare remote repo pre-seeded with the given skills on
+// branch main, plus any extra branches pointing at the same HEAD. Returns
+// the remote (bare repo) path.
+func seedRemote(t *testing.T, skills map[string]string, branches ...string) string {
+	t.Helper()
+	remote, sr, wt := newSeedRepo(t)
+	seed := wt.Filesystem.Root()
+	writeSeedSkills(t, seed, wt, skills)
+	headHash := commitSeedMain(t, sr, wt)
+
+	refs := []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"}
+	for _, b := range branches {
+		if err := sr.Storer.SetReference(plumbing.NewHashReference(
+			plumbing.NewBranchReferenceName(b), headHash,
+		)); err != nil {
+			t.Fatalf("set branch %s: %v", b, err)
+		}
+		refs = append(refs, gogitcfg.RefSpec("refs/heads/"+b+":refs/heads/"+b))
+	}
+	pushSeedAndSetHEAD(t, sr, remote, refs)
 	return remote
 }
 
@@ -133,26 +165,8 @@ func seedRemote(t *testing.T, skills map[string]string, branches ...string) stri
 // freeze → verify without spurious subtreeHash drift.
 func seedRemoteWithExecScript(t *testing.T, name, skillBody, scriptName, scriptBody string) string {
 	t.Helper()
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if _, err := gogit.PlainInit(remote, true); err != nil {
-		t.Fatalf("init remote: %v", err)
-	}
-
-	seed := t.TempDir()
-	sr, err := gogit.PlainInit(seed, false)
-	if err != nil {
-		t.Fatalf("init seed: %v", err)
-	}
-	if _, err := sr.CreateRemote(&gogitcfg.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remote},
-	}); err != nil {
-		t.Fatalf("create remote: %v", err)
-	}
-	wt, err := sr.Worktree()
-	if err != nil {
-		t.Fatalf("worktree: %v", err)
-	}
+	remote, sr, wt := newSeedRepo(t)
+	seed := wt.Filesystem.Root()
 
 	skillDir := filepath.Join(seed, "skills", name)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -172,35 +186,8 @@ func seedRemoteWithExecScript(t *testing.T, name, skillBody, scriptName, scriptB
 	if _, err := wt.Add(filepath.Join("skills", name, scriptName)); err != nil {
 		t.Fatalf("add script: %v", err)
 	}
-	if _, err := wt.Commit("init", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
-	}); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	head, err := sr.Head()
-	if err != nil {
-		t.Fatalf("head: %v", err)
-	}
-	if err := sr.Storer.SetReference(plumbing.NewHashReference(
-		plumbing.NewBranchReferenceName("main"), head.Hash(),
-	)); err != nil {
-		t.Fatalf("set main: %v", err)
-	}
-	if err := sr.Push(&gogit.PushOptions{
-		RemoteName: "origin",
-		RefSpecs:   []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"},
-	}); err != nil {
-		t.Fatalf("push seed: %v", err)
-	}
-	rr, err := gogit.PlainOpen(remote)
-	if err != nil {
-		t.Fatalf("open remote: %v", err)
-	}
-	if err := rr.Storer.SetReference(plumbing.NewSymbolicReference(
-		plumbing.HEAD, plumbing.NewBranchReferenceName("main"),
-	)); err != nil {
-		t.Fatalf("set remote HEAD: %v", err)
-	}
+	commitSeedMain(t, sr, wt)
+	pushSeedAndSetHEAD(t, sr, remote, []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"})
 	return remote
 }
 
@@ -210,74 +197,21 @@ func seedRemoteWithExecScript(t *testing.T, name, skillBody, scriptName, scriptB
 // testing install resolution and upgrade flows.
 func seedRemoteWithTags(t *testing.T, skills map[string]string, tags ...string) string {
 	t.Helper()
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if _, err := gogit.PlainInit(remote, true); err != nil {
-		t.Fatalf("init remote: %v", err)
-	}
+	remote, sr, wt := newSeedRepo(t)
+	seed := wt.Filesystem.Root()
+	writeSeedSkills(t, seed, wt, skills)
+	headHash := commitSeedMain(t, sr, wt)
 
-	seed := t.TempDir()
-	sr, err := gogit.PlainInit(seed, false)
-	if err != nil {
-		t.Fatalf("init seed: %v", err)
-	}
-	if _, err := sr.CreateRemote(&gogitcfg.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remote},
-	}); err != nil {
-		t.Fatalf("create remote: %v", err)
-	}
-	wt, err := sr.Worktree()
-	if err != nil {
-		t.Fatalf("worktree: %v", err)
-	}
-	for name, content := range skills {
-		skillDir := filepath.Join(seed, "skills", name)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		if _, err := wt.Add(filepath.Join("skills", name, "SKILL.md")); err != nil {
-			t.Fatalf("add: %v", err)
-		}
-	}
-	_, err = wt.Commit("init", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "t@t", When: time.Now()},
-	})
-	if err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	head, err := sr.Head()
-	if err != nil {
-		t.Fatalf("head: %v", err)
-	}
-	if err := sr.Storer.SetReference(plumbing.NewHashReference(
-		plumbing.NewBranchReferenceName("main"), head.Hash(),
-	)); err != nil {
-		t.Fatalf("set main: %v", err)
-	}
 	refs := []gogitcfg.RefSpec{"refs/heads/main:refs/heads/main"}
 	for _, tag := range tags {
 		if err := sr.Storer.SetReference(plumbing.NewHashReference(
-			plumbing.NewTagReferenceName(tag), head.Hash(),
+			plumbing.NewTagReferenceName(tag), headHash,
 		)); err != nil {
 			t.Fatalf("set tag %s: %v", tag, err)
 		}
 		refs = append(refs, gogitcfg.RefSpec("refs/tags/"+tag+":refs/tags/"+tag))
 	}
-	if err := sr.Push(&gogit.PushOptions{RemoteName: "origin", RefSpecs: refs}); err != nil {
-		t.Fatalf("push seed: %v", err)
-	}
-	rr, err := gogit.PlainOpen(remote)
-	if err != nil {
-		t.Fatalf("open remote: %v", err)
-	}
-	if err := rr.Storer.SetReference(plumbing.NewSymbolicReference(
-		plumbing.HEAD, plumbing.NewBranchReferenceName("main"),
-	)); err != nil {
-		t.Fatalf("set remote HEAD: %v", err)
-	}
+	pushSeedAndSetHEAD(t, sr, remote, refs)
 	return remote
 }
 

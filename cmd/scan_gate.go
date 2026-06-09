@@ -223,7 +223,16 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 	if blocked {
 		display = security.Filter(res.Findings, threshold)
 	}
-	for _, f := range display {
+	renderScanFindingLines(display)
+	if blocked {
+		fmt.Fprintln(printer.Err, "  Pass --no-scan to override, or `qvr config set security.block_severity <higher>` to relax the gate.")
+	}
+}
+
+// renderScanFindingLines prints one stderr block per finding: severity/check/
+// message, optional file:line location, and remediation hint.
+func renderScanFindingLines(findings []security.Finding) {
+	for _, f := range findings {
 		loc := f.File
 		if f.Line > 0 {
 			loc = loc + ":" + strconv.Itoa(f.Line)
@@ -237,9 +246,6 @@ func renderGateFindings(opts scanGateOptions, res *security.ScanResult, threshol
 		if f.Remediation != "" {
 			fmt.Fprintf(printer.Err, "    → %s\n", f.Remediation)
 		}
-	}
-	if blocked {
-		fmt.Fprintln(printer.Err, "  Pass --no-scan to override, or `qvr config set security.block_severity <higher>` to relax the gate.")
 	}
 }
 

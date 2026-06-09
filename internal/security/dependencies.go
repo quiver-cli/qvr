@@ -256,13 +256,7 @@ func editDistance(a, b string) int {
 }
 
 func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
+	m := min(c, min(b, a))
 	return m
 }
 
@@ -294,11 +288,8 @@ func versionParts(s string) ([]string, string) {
 }
 
 func compareCore(a, b []string) int {
-	n := len(a)
-	if len(b) > n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
+	n := max(len(b), len(a))
+	for i := range n {
 		var ai, bi string
 		if i < len(a) {
 			ai = a[i]
@@ -343,32 +334,10 @@ func comparePreRelease(a, b string) int {
 	}
 	ai := strings.Split(a, ".")
 	bi := strings.Split(b, ".")
-	n := len(ai)
-	if len(bi) < n {
-		n = len(bi)
-	}
-	for i := 0; i < n; i++ {
-		na, okA := atoiSafe(ai[i])
-		nb, okB := atoiSafe(bi[i])
-		switch {
-		case okA && okB:
-			if na != nb {
-				if na < nb {
-					return -1
-				}
-				return 1
-			}
-		case okA:
-			return -1
-		case okB:
-			return 1
-		default:
-			if ai[i] != bi[i] {
-				if ai[i] < bi[i] {
-					return -1
-				}
-				return 1
-			}
+	n := min(len(bi), len(ai))
+	for i := range n {
+		if cmp := comparePreReleaseIdent(ai[i], bi[i]); cmp != 0 {
+			return cmp
 		}
 	}
 	if len(ai) == len(bi) {
@@ -378,6 +347,36 @@ func comparePreRelease(a, b string) int {
 		return -1
 	}
 	return 1
+}
+
+// comparePreReleaseIdent compares a single dot-separated pre-release
+// identifier pair per SemVer §11: numeric identifiers compare
+// numerically and always rank below alphanumeric ones. Returns 0 when the
+// identifiers are equal.
+func comparePreReleaseIdent(a, b string) int {
+	na, okA := atoiSafe(a)
+	nb, okB := atoiSafe(b)
+	switch {
+	case okA && okB:
+		if na != nb {
+			if na < nb {
+				return -1
+			}
+			return 1
+		}
+	case okA:
+		return -1
+	case okB:
+		return 1
+	default:
+		if a != b {
+			if a < b {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 func atoiSafe(s string) (int, bool) {

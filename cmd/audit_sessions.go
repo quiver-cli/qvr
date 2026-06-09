@@ -76,6 +76,11 @@ func runAuditSessions(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list sessions: %w", err)
 	}
 
+	return renderSessions(sessions)
+}
+
+// renderSessions emits the session list as JSON or a newest-first table.
+func renderSessions(sessions []*store.RawSession) error {
 	if outputFormat == "json" {
 		if len(sessions) == 0 {
 			return printer.JSON([]any{})

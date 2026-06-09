@@ -69,44 +69,7 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 	installers := ops.ListInstallers()
 	statuses := make([]agentStatus, 0, len(installers))
 	for _, inst := range installers {
-		as := agentStatus{Agent: inst.Name(), DisplayName: inst.DisplayName()}
-
-		if det, dErr := inst.Detect(); dErr == nil {
-			as.Detected = det.Detected
-			as.ConfigPath = det.ConfigPath
-			as.Version = det.Version
-		}
-		if st, sErr := inst.Status(); sErr == nil {
-			as.Installed = st.Installed
-			as.Valid = st.Valid
-			as.Issues = st.Issues
-		}
-		// Whether captured raw traces for this agent can be projected into
-		// spans. Without a deriver the agent is raw-only: hooks fire and rows
-		// land, but `qvr audit logs`/`spans` and the UI timeline stay empty, so
-		// "installed+valid" alone overstates how observable it is (#143).
-		_, as.Derives = derive.Get(inst.Name())
-		if s != nil {
-			if ts, lErr := s.LatestRawAt(cmd.Context(), inst.Name()); lErr == nil && ts != nil {
-				as.LastEvent = ts.Local().Format(time.RFC3339)
-			}
-			if n, cErr := s.CountRawSessions(cmd.Context(), nil, inst.Name()); cErr == nil {
-				as.Sessions = n
-			}
-			if n, cErr := s.CountRawTraces(cmd.Context(), nil, inst.Name()); cErr == nil {
-				as.Recorded = n
-			}
-			if n, cErr := s.CountSelfAuditErrors(cmd.Context(), inst.Name()); cErr == nil {
-				as.Errors = n
-			}
-		}
-		// Flag raw-only agents that are actually capturing: the user sees rows
-		// pile up but no derived views, so name the cause instead of letting
-		// INSTALLED=yes imply full observability.
-		if as.Installed && !as.Derives && as.Recorded > 0 {
-			as.Issues = append(as.Issues, "raw-only: no span deriver — logs/spans/UI timeline stay empty")
-		}
-		statuses = append(statuses, as)
+		statuses = append(statuses, collectAgentStatus(cmd, s, inst))
 	}
 
 	if outputFormat == "json" {
@@ -140,6 +103,49 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 	}
 	printer.Table(headers, rows)
 	return nil
+}
+
+// collectAgentStatus assembles the per-agent status row from the installer's
+// detect/status probes plus the (optional) store's recorded-trace counters.
+func collectAgentStatus(cmd *cobra.Command, s store.Store, inst ops.HookInstaller) agentStatus {
+	as := agentStatus{Agent: inst.Name(), DisplayName: inst.DisplayName()}
+
+	if det, dErr := inst.Detect(); dErr == nil {
+		as.Detected = det.Detected
+		as.ConfigPath = det.ConfigPath
+		as.Version = det.Version
+	}
+	if st, sErr := inst.Status(); sErr == nil {
+		as.Installed = st.Installed
+		as.Valid = st.Valid
+		as.Issues = st.Issues
+	}
+	// Whether captured raw traces for this agent can be projected into
+	// spans. Without a deriver the agent is raw-only: hooks fire and rows
+	// land, but `qvr audit logs`/`spans` and the UI timeline stay empty, so
+	// "installed+valid" alone overstates how observable it is (#143).
+	_, as.Derives = derive.Get(inst.Name())
+	if s != nil {
+		if ts, lErr := s.LatestRawAt(cmd.Context(), inst.Name()); lErr == nil && ts != nil {
+			as.LastEvent = ts.Local().Format(time.RFC3339)
+		}
+		if n, cErr := s.CountRawSessions(cmd.Context(), nil, inst.Name()); cErr == nil {
+			as.Sessions = n
+		}
+		if n, cErr := s.CountRawTraces(cmd.Context(), nil, inst.Name()); cErr == nil {
+			as.Recorded = n
+		}
+		if n, cErr := s.CountSelfAuditErrors(cmd.Context(), inst.Name()); cErr == nil {
+			as.Errors = n
+		}
+	}
+	// Flag raw-only agents that are actually capturing: the user sees rows
+	// pile up but no derived views, so name the cause instead of letting
+	// INSTALLED=yes imply full observability.
+	if as.Installed && !as.Derives && as.Recorded > 0 {
+		as.Issues = append(as.Issues, "raw-only: no span deriver — logs/spans/UI timeline stay empty")
+	}
+	return as
 }
 
 func yesNo(b bool) string {

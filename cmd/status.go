@@ -57,6 +57,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	results, err := collectStatuses(syncer, entries, projectRoot)
+	if err != nil {
+		return err
+	}
+
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(results)
+	}
+	renderStatusTable(results)
+	return nil
+}
+
+// collectStatuses gathers the local sync status for each entry, short-circuiting
+// disabled entries to a synthetic "disabled" row without touching git.
+func collectStatuses(syncer *skill.Syncer, entries []*model.LockEntry, projectRoot string) ([]*skill.SyncStatus, error) {
 	var results []*skill.SyncStatus
 	for _, e := range entries {
 		if e.Disabled {
@@ -70,14 +85,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		s, err := syncer.Status(e, projectRoot)
 		if err != nil {
-			return fmt.Errorf("status %s: %w", e.Name, err)
+			return nil, fmt.Errorf("status %s: %w", e.Name, err)
 		}
 		results = append(results, s)
 	}
+	return results, nil
+}
 
-	if printer.Format == output.FormatJSON {
-		return printer.JSON(results)
-	}
+// renderStatusTable prints the per-skill status table, deriving the STATE column
+// from the disabled/broken/dirty/message signals.
+func renderStatusTable(results []*skill.SyncStatus) {
 	headers := []string{"SKILL", "BRANCH", "COMMIT", "STATE", "AHEAD", "BEHIND"}
 	var rows [][]string
 	for _, s := range results {
@@ -101,5 +118,4 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		})
 	}
 	printer.Table(headers, rows)
-	return nil
 }

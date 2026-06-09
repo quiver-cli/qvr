@@ -69,30 +69,8 @@ func VerifySingleEntry(entry *model.LockEntry, projectRoot string) VerifyEntryRe
 		return res
 	}
 
-	// Path resolution: mode:edit entries live at <projectRoot>/<EditPath>
-	// with a real .git/; shared entries live in the bare-clone worktree.
-	var subtreeDir, repoDir string
-	if entry.IsEdit() {
-		repoDir = ResolveSkillRepoPath(entry, projectRoot)
-		subtreeDir = repoDir
-	} else {
-		worktreePath := EntryWorktreePath(entry)
-		if worktreePath == "" {
-			res.Status = VerifyStatusMissing
-			res.Message = "worktree path is empty"
-			return res
-		}
-		repoDir = worktreePath
-		subtreeDir = filepath.Join(worktreePath, entry.Path)
-	}
-	if repoDir == "" || subtreeDir == "" {
-		res.Status = VerifyStatusMissing
-		res.Message = "no on-disk path for entry"
-		return res
-	}
-	if _, err := os.Stat(repoDir); err != nil {
-		res.Status = VerifyStatusMissing
-		res.Message = fmt.Sprintf("repo not found: %v", err)
+	subtreeDir, ok := resolveVerifyPaths(entry, projectRoot, &res)
+	if !ok {
 		return res
 	}
 
@@ -108,35 +86,7 @@ func VerifySingleEntry(entry *model.LockEntry, projectRoot string) VerifyEntryRe
 	}
 	res.SubtreeHash = diskHash
 
-	var drift []VerifyDriftItem
-	if entry.SubtreeHash != "" && entry.SubtreeHash != diskHash {
-		drift = append(drift, VerifyDriftItem{
-			Field:    "subtreeHash",
-			Expected: entry.SubtreeHash,
-			Actual:   diskHash,
-		})
-	}
-
-	// Commit cross-check (issue #73): compare entry.Commit against repo HEAD.
-	// Skipped when entry.Commit is empty (older v5 entries pre-date the field).
-	// HEAD-read errors are tolerated for shared entries on degraded repos —
-	// failing to open a git dir is not the same as detecting tamper.
-	//
-	// Distinguish two cases: (a) HEAD descends from entry.Commit (the user
-	// committed legitimately on top of the lockfile-recorded base — issue #99,
-	// no drift report) versus (b) entry.Commit isn't reachable from HEAD at
-	// all (#74 tamper case, real drift).
-	if entry.Commit != "" {
-		if head, herr := ResolveEntryHeadCommit(entry, projectRoot); herr == nil && head != "" && head != entry.Commit {
-			if ancestor, _ := EntryCommitIsAncestorOfHead(entry, projectRoot); !ancestor {
-				drift = append(drift, VerifyDriftItem{
-					Field:    "commit",
-					Expected: entry.Commit,
-					Actual:   head,
-				})
-			}
-		}
-	}
+	drift := detectVerifyDrift(entry, projectRoot, diskHash)
 
 	if entry.SubtreeHash == "" && len(drift) == 0 {
 		res.Status = VerifyStatusUnverified
@@ -150,4 +100,69 @@ func VerifySingleEntry(entry *model.LockEntry, projectRoot string) VerifyEntryRe
 	}
 	res.Status = VerifyStatusOK
 	return res
+}
+
+// resolveVerifyPaths resolves the on-disk subtree dir to hash. mode:edit entries
+// live at <projectRoot>/<EditPath> with a real .git/; shared entries live in the
+// bare-clone worktree. On a missing path it records the failure status/message
+// on res and returns ok=false so the caller returns early.
+func resolveVerifyPaths(entry *model.LockEntry, projectRoot string, res *VerifyEntryResult) (subtreeDir string, ok bool) {
+	var repoDir string
+	if entry.IsEdit() {
+		repoDir = ResolveSkillRepoPath(entry, projectRoot)
+		subtreeDir = repoDir
+	} else {
+		worktreePath := EntryWorktreePath(entry)
+		if worktreePath == "" {
+			res.Status = VerifyStatusMissing
+			res.Message = "worktree path is empty"
+			return "", false
+		}
+		repoDir = worktreePath
+		subtreeDir = filepath.Join(worktreePath, entry.Path)
+	}
+	if repoDir == "" || subtreeDir == "" {
+		res.Status = VerifyStatusMissing
+		res.Message = "no on-disk path for entry"
+		return "", false
+	}
+	if _, err := os.Stat(repoDir); err != nil {
+		res.Status = VerifyStatusMissing
+		res.Message = fmt.Sprintf("repo not found: %v", err)
+		return "", false
+	}
+	return subtreeDir, true
+}
+
+// detectVerifyDrift compares the recorded SubtreeHash and Commit against the
+// on-disk diskHash and repo HEAD, returning any drift items.
+//
+// Commit cross-check (issue #73): compare entry.Commit against repo HEAD.
+// Skipped when entry.Commit is empty (older v5 entries pre-date the field).
+// HEAD-read errors are tolerated for shared entries on degraded repos — failing
+// to open a git dir is not the same as detecting tamper. Distinguish two cases:
+// (a) HEAD descends from entry.Commit (the user committed legitimately on top of
+// the lockfile-recorded base — issue #99, no drift) versus (b) entry.Commit
+// isn't reachable from HEAD at all (#74 tamper case, real drift).
+func detectVerifyDrift(entry *model.LockEntry, projectRoot, diskHash string) []VerifyDriftItem {
+	var drift []VerifyDriftItem
+	if entry.SubtreeHash != "" && entry.SubtreeHash != diskHash {
+		drift = append(drift, VerifyDriftItem{
+			Field:    "subtreeHash",
+			Expected: entry.SubtreeHash,
+			Actual:   diskHash,
+		})
+	}
+	if entry.Commit != "" {
+		if head, herr := ResolveEntryHeadCommit(entry, projectRoot); herr == nil && head != "" && head != entry.Commit {
+			if ancestor, _ := EntryCommitIsAncestorOfHead(entry, projectRoot); !ancestor {
+				drift = append(drift, VerifyDriftItem{
+					Field:    "commit",
+					Expected: entry.Commit,
+					Actual:   head,
+				})
+			}
+		}
+	}
+	return drift
 }

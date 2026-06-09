@@ -7,6 +7,7 @@ import (
 
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
+	"github.com/astra-sh/qvr/internal/ops/store"
 	"github.com/spf13/cobra"
 )
 
@@ -74,44 +75,14 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
-	type ingested struct {
-		Path      string `json:"path"`
-		Agent     string `json:"agent"`
-		SessionID string `json:"session_id"`
-		Lines     int    `json:"lines"`
-		Spans     int    `json:"spans"`
-		Error     string `json:"error,omitempty"`
-	}
-	results := make([]ingested, 0, len(files))
+	results := make([]ingestedResult, 0, len(files))
 	var failed int
 
 	for _, path := range files {
-		agent := ingestAgent
-		if agent == "" {
-			agent = rawtrace.SniffAgent(path)
-		}
-		rec := ingested{Path: path, Agent: agent}
-		if agent == "" {
-			rec.Error = "could not sniff agent — pass --agent"
+		rec := ingestOneFile(cmd, s, path)
+		if rec.Error != "" {
 			failed++
-			results = append(results, rec)
-			continue
 		}
-		res, ierr := rawtrace.Ingest(cmd.Context(), s, rawtrace.IngestParams{
-			Agent:      agent,
-			Path:       path,
-			SessionID:  ingestSession,
-			WorkingDir: ingestCwd,
-		})
-		if ierr != nil {
-			rec.Error = ierr.Error()
-			failed++
-			results = append(results, rec)
-			continue
-		}
-		rec.SessionID = res.SessionID.String()
-		rec.Lines = res.LinesStored
-		rec.Spans = res.SpansStored
 		results = append(results, rec)
 	}
 
@@ -122,6 +93,53 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 		return ingestExit(failed, len(results))
 	}
 
+	renderIngestTable(results)
+	if failed == 0 {
+		printer.Success(fmt.Sprintf("ingested %d session(s) — view with 'qvr ui' or 'qvr audit spans --session <id>'", len(results)))
+	}
+	return ingestExit(failed, len(results))
+}
+
+// ingestedResult is one per-file outcome row of `qvr audit ingest`.
+type ingestedResult struct {
+	Path      string `json:"path"`
+	Agent     string `json:"agent"`
+	SessionID string `json:"session_id"`
+	Lines     int    `json:"lines"`
+	Spans     int    `json:"spans"`
+	Error     string `json:"error,omitempty"`
+}
+
+// ingestOneFile sniffs the agent (unless forced) and ingests a single
+// transcript, returning the outcome row (with Error set on failure).
+func ingestOneFile(cmd *cobra.Command, s store.Store, path string) ingestedResult {
+	agent := ingestAgent
+	if agent == "" {
+		agent = rawtrace.SniffAgent(path)
+	}
+	rec := ingestedResult{Path: path, Agent: agent}
+	if agent == "" {
+		rec.Error = "could not sniff agent — pass --agent"
+		return rec
+	}
+	res, ierr := rawtrace.Ingest(cmd.Context(), s, rawtrace.IngestParams{
+		Agent:      agent,
+		Path:       path,
+		SessionID:  ingestSession,
+		WorkingDir: ingestCwd,
+	})
+	if ierr != nil {
+		rec.Error = ierr.Error()
+		return rec
+	}
+	rec.SessionID = res.SessionID.String()
+	rec.Lines = res.LinesStored
+	rec.Spans = res.SpansStored
+	return rec
+}
+
+// renderIngestTable prints the per-file ingest results as a table.
+func renderIngestTable(results []ingestedResult) {
 	headers := []string{"AGENT", "LINES", "SPANS", "SESSION ID", "SOURCE"}
 	rows := make([][]string, 0, len(results))
 	for _, r := range results {
@@ -133,10 +151,6 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 		rows = append(rows, []string{r.Agent, fmt.Sprintf("%d", r.Lines), fmt.Sprintf("%d", r.Spans), r.SessionID, src})
 	}
 	printer.Table(headers, rows)
-	if failed == 0 {
-		printer.Success(fmt.Sprintf("ingested %d session(s) — view with 'qvr ui' or 'qvr audit spans --session <id>'", len(results)))
-	}
-	return ingestExit(failed, len(results))
 }
 
 // ingestExit returns a non-nil error (non-zero exit) when every file failed, so

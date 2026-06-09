@@ -81,25 +81,9 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, canonicalTarget)
 	}
 
-	// Path layout depends on scope (issue #82):
-	//   --global    → canonical lives at <home>/<t.GlobalDir>/<name>; EditPath
-	//                 is recorded as an absolute path so it resolves the same
-	//                 regardless of cwd at later qvr invocations.
-	//   project     → canonical lives at <projectRoot>/<t.LocalDir>/<name>;
-	//                 EditPath is a project-relative path so the lockfile
-	//                 remains portable across clones of the project.
-	var canonicalAbs, editPathForLock string
-	if req.Global {
-		expanded, expErr := expandHome(t.GlobalDir)
-		if expErr != nil {
-			return nil, fmt.Errorf("expand global dir: %w", expErr)
-		}
-		canonicalAbs = filepath.Join(expanded, e.Name)
-		editPathForLock = canonicalAbs
-	} else {
-		canonicalRel := filepath.Join(t.LocalDir, e.Name)
-		canonicalAbs = filepath.Join(req.ProjectRoot, canonicalRel)
-		editPathForLock = canonicalRel
+	canonicalAbs, editPathForLock, err := ejectCanonicalPaths(t, e, req)
+	if err != nil {
+		return nil, err
 	}
 
 	// Idempotent no-op when the entry already records this exact eject.
@@ -114,16 +98,41 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 		return nil, fmt.Errorf("%w (current canonical: %s)", ErrAlreadyEditing, e.EditPath)
 	}
 
+	if err := materializeEjectDir(e, req, canonicalAbs); err != nil {
+		return nil, err
+	}
+
+	siblingLinks, err := repointSiblingTargets(e, req, canonicalTarget, canonicalAbs)
+	if err != nil {
+		return nil, err
+	}
+
+	finalizeEjectedEntry(e, editPathForLock, canonicalAbs)
+
+	return &EjectResult{
+		Skill:           e.Name,
+		CanonicalTarget: canonicalTarget,
+		EditPath:        editPathForLock,
+		SiblingLinks:    siblingLinks,
+	}, nil
+}
+
+// materializeEjectDir resolves the shared-worktree source, copies the skill
+// subtree into a staging sibling dir, restores write bits (the immutable→editable
+// hinge), inits a fresh git history, then atomically renames the staging dir onto
+// the canonical slot — refusing to clobber a real (non-symlink) dir there. The
+// staging-then-rename avoids leaving half-copied state if any step fails midway.
+func materializeEjectDir(e *model.LockEntry, req EjectRequest, canonicalAbs string) error {
 	// Resolve the shared worktree source: where we'll copy the skill files
 	// from. Falls back to LoadFromPath when the worktree isn't on disk so a
 	// user who deleted ~/.quiver/worktrees/ before invoking edit gets a clean
 	// error instead of an empty copy.
 	sourceDir := EffectiveTarget(e, req.ProjectRoot)
 	if sourceDir == "" {
-		return nil, fmt.Errorf("eject %s: no source worktree to copy from — run `qvr sync` first", e.Name)
+		return fmt.Errorf("eject %s: no source worktree to copy from — run `qvr sync` first", e.Name)
 	}
 	if _, err := os.Stat(filepath.Join(sourceDir, "SKILL.md")); err != nil {
-		return nil, fmt.Errorf("eject %s: source %s does not contain SKILL.md: %w", e.Name, sourceDir, err)
+		return fmt.Errorf("eject %s: source %s does not contain SKILL.md: %w", e.Name, sourceDir, err)
 	}
 
 	// Stage to a sibling tmp dir, then rename onto canonical. Avoids leaving
@@ -132,7 +141,7 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 	_ = os.RemoveAll(stagingDir)
 	if err := copyDir(sourceDir, stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return nil, fmt.Errorf("copy skill tree: %w", err)
+		return fmt.Errorf("copy skill tree: %w", err)
 	}
 	// The shared worktree is frozen read-only and copyDir preserves source
 	// modes, so the freshly-copied edit tree would be read-only. Restore write
@@ -141,7 +150,7 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 	setSubtreeWritable(stagingDir)
 	if err := initEjectRepo(stagingDir, e, req.Author, req.AuthorEmail); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return nil, fmt.Errorf("init edit repo: %w", err)
+		return fmt.Errorf("init edit repo: %w", err)
 	}
 
 	// Remove the existing canonical symlink (or no-op if it isn't there) so
@@ -151,30 +160,55 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 	if existing, err := os.Lstat(canonicalAbs); err == nil {
 		if existing.Mode()&os.ModeSymlink == 0 {
 			_ = os.RemoveAll(stagingDir)
-			return nil, fmt.Errorf("eject %s: %s exists and is not a symlink — refuse to overwrite", e.Name, canonicalAbs)
+			return fmt.Errorf("eject %s: %s exists and is not a symlink — refuse to overwrite", e.Name, canonicalAbs)
 		}
 		if err := os.Remove(canonicalAbs); err != nil {
 			_ = os.RemoveAll(stagingDir)
-			return nil, fmt.Errorf("remove canonical symlink: %w", err)
+			return fmt.Errorf("remove canonical symlink: %w", err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(canonicalAbs), 0o755); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return nil, fmt.Errorf("create canonical parent: %w", err)
+		return fmt.Errorf("create canonical parent: %w", err)
 	}
 	if err := os.Rename(stagingDir, canonicalAbs); err != nil {
 		_ = os.RemoveAll(stagingDir)
-		return nil, fmt.Errorf("finalize edit dir: %w", err)
+		return fmt.Errorf("finalize edit dir: %w", err)
 	}
+	return nil
+}
 
-	// Repoint sibling targets at the canonical via relative symlinks.
-	// CreateSymlink would write absolute paths; for sibling links we want
-	// them relative so the lockfile-as-checked-in property survives a
-	// `git clone` to a different absolute project location.
-	//
-	// Sibling targets pick their dir from the same scope as the canonical:
-	// --global ejects place sibling symlinks under each sibling's GlobalDir
-	// (e.g. ~/.cursor/rules/<name>), project ejects under each LocalDir.
+// ejectCanonicalPaths computes the canonical eject dir and the EditPath recorded
+// in the lock, scoped per issue #82:
+//
+//	--global    → canonical lives at <home>/<t.GlobalDir>/<name>; EditPath is an
+//	              absolute path so it resolves the same regardless of cwd at
+//	              later qvr invocations.
+//	project     → canonical lives at <projectRoot>/<t.LocalDir>/<name>; EditPath
+//	              is a project-relative path so the lockfile stays portable
+//	              across clones of the project.
+func ejectCanonicalPaths(t model.Target, e *model.LockEntry, req EjectRequest) (canonicalAbs, editPathForLock string, err error) {
+	if req.Global {
+		expanded, expErr := expandHome(t.GlobalDir)
+		if expErr != nil {
+			return "", "", fmt.Errorf("expand global dir: %w", expErr)
+		}
+		canonicalAbs = filepath.Join(expanded, e.Name)
+		return canonicalAbs, canonicalAbs, nil
+	}
+	canonicalRel := filepath.Join(t.LocalDir, e.Name)
+	canonicalAbs = filepath.Join(req.ProjectRoot, canonicalRel)
+	return canonicalAbs, canonicalRel, nil
+}
+
+// repointSiblingTargets repoints every non-canonical target at the canonical
+// edit dir via relative symlinks. CreateSymlink would write absolute paths; for
+// sibling links we want them relative so the lockfile-as-checked-in property
+// survives a `git clone` to a different absolute project location. Sibling
+// targets pick their dir from the same scope as the canonical: --global places
+// sibling symlinks under each sibling's GlobalDir (e.g. ~/.cursor/rules/<name>),
+// project under each LocalDir. Returns the created sibling link paths.
+func repointSiblingTargets(e *model.LockEntry, req EjectRequest, canonicalTarget, canonicalAbs string) ([]string, error) {
 	var siblingLinks []string
 	for _, target := range e.Targets {
 		if target == canonicalTarget {
@@ -217,33 +251,26 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 		}
 		siblingLinks = append(siblingLinks, siblingAbs)
 	}
+	return siblingLinks, nil
+}
 
-	// Mutate the entry on success.
+// finalizeEjectedEntry mutates the entry on success: flips it to mode:edit,
+// records the EditPath, preserves the upstream source, and re-seals SubtreeHash
+// and Commit against the freshly-materialised edit dir so drift detection has a
+// current baseline (issues #80, #73/#74). HashSubtreeFromDisk excludes .git/ so
+// the hash matches what `qvr lock verify` later recomputes.
+func finalizeEjectedEntry(e *model.LockEntry, editPathForLock, canonicalAbs string) {
 	e.Mode = model.ModeEdit
 	e.EditPath = editPathForLock
 	if e.SourceUpstream == "" {
 		e.SourceUpstream = e.Source
 	}
-	// Refresh subtree hash against the newly materialised dir so drift
-	// detection has a current baseline. HashSubtreeFromDisk now excludes
-	// .git/ so the hash matches what `qvr lock verify` later recomputes
-	// (issue #80). Also re-seal entry.Commit to the new edit-repo HEAD —
-	// the eject created a fresh git history, so the upstream commit no
-	// longer applies, and leaving it would surface as drift on the next
-	// verify (issue #73 / #74).
 	if h, err := canonical.HashSubtreeFromDisk(canonicalAbs); err == nil {
 		e.SubtreeHash = h
 	}
 	if head, hErr := readRepoHead(canonicalAbs); hErr == nil && head != "" {
 		e.Commit = head
 	}
-
-	return &EjectResult{
-		Skill:           e.Name,
-		CanonicalTarget: canonicalTarget,
-		EditPath:        editPathForLock,
-		SiblingLinks:    siblingLinks,
-	}, nil
 }
 
 // readRepoHead is a small helper for the eject path — go-git's PlainOpen +

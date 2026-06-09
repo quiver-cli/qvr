@@ -167,13 +167,11 @@ func TestApply_ConcurrentSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			_, err := Apply(context.Background(), db)
 			errs <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

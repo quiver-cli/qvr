@@ -44,41 +44,20 @@ func TestSharedWorktree_SwitchInOneProjectPreservesAnother(t *testing.T) {
 	}
 
 	// Project A pins v1.0.0.
-	resultA, err := inst.Install(skill.InstallRequest{
-		Skill:       "code-review@v1.0.0",
-		Targets:     []string{"claude"},
-		ProjectRoot: projectA,
-	})
-	if err != nil {
-		t.Fatalf("A install: %v", err)
-	}
+	resultA := installSharedAt(t, inst, "code-review@v1.0.0", projectA, false)
 	if _, err := os.Stat(resultA.Worktree); err != nil {
 		t.Fatalf("A worktree should exist: %v", err)
 	}
 
 	// Project B pins the same ref — should share the same SHA-keyed worktree.
-	resultB, err := inst.Install(skill.InstallRequest{
-		Skill:       "code-review@v1.0.0",
-		Targets:     []string{"claude"},
-		ProjectRoot: projectB,
-	})
-	if err != nil {
-		t.Fatalf("B install: %v", err)
-	}
+	resultB := installSharedAt(t, inst, "code-review@v1.0.0", projectB, false)
 	if resultA.Worktree != resultB.Worktree {
 		t.Errorf("shared SHA should share worktree: A=%s B=%s", resultA.Worktree, resultB.Worktree)
 	}
 
 	// Project B switches off to v2.0.0 via the install path that switch/upgrade
 	// now use under the hood (Force=true install at the new ref).
-	if _, err := inst.Install(skill.InstallRequest{
-		Skill:       "code-review@v2.0.0",
-		Targets:     []string{"claude"},
-		ProjectRoot: projectB,
-		Force:       true,
-	}); err != nil {
-		t.Fatalf("B upgrade: %v", err)
-	}
+	installSharedAt(t, inst, "code-review@v2.0.0", projectB, true)
 
 	// Project A's worktree must still exist on disk and remain readable.
 	if _, err := os.Stat(resultA.Worktree); err != nil {
@@ -103,16 +82,39 @@ func TestSharedWorktree_SwitchInOneProjectPreservesAnother(t *testing.T) {
 
 	// A's symlink target still resolves to A's worktree (not B's new one).
 	linkA := filepath.Join(projectA, ".claude/skills/code-review")
-	target, err := os.Readlink(linkA)
+	assertSymlinkUnder(t, linkA, resultA.Worktree)
+}
+
+// installSharedAt installs ref into projectRoot for the claude target (forced
+// when force is set) and returns the install result, failing the test on error.
+func installSharedAt(t *testing.T, inst *skill.Installer, ref, projectRoot string, force bool) *skill.InstallResult {
+	t.Helper()
+	res, err := inst.Install(skill.InstallRequest{
+		Skill:       ref,
+		Targets:     []string{"claude"},
+		ProjectRoot: projectRoot,
+		Force:       force,
+	})
 	if err != nil {
-		t.Fatalf("readlink A: %v", err)
+		t.Fatalf("install %s into %s: %v", ref, projectRoot, err)
 	}
-	resolved, _ := filepath.EvalSymlinks(linkA)
+	return res
+}
+
+// assertSymlinkUnder fails if linkPath doesn't resolve to (or point at, via its
+// raw target) a path under wantPrefix.
+func assertSymlinkUnder(t *testing.T, linkPath, wantPrefix string) {
+	t.Helper()
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", linkPath, err)
+	}
+	resolved, _ := filepath.EvalSymlinks(linkPath)
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(linkA), target)
+		target = filepath.Join(filepath.Dir(linkPath), target)
 	}
-	if !strings.HasPrefix(resolved, resultA.Worktree) && !strings.HasPrefix(target, resultA.Worktree) {
-		t.Errorf("A symlink no longer points into A's worktree: target=%s resolved=%s want under %s",
-			target, resolved, resultA.Worktree)
+	if !strings.HasPrefix(resolved, wantPrefix) && !strings.HasPrefix(target, wantPrefix) {
+		t.Errorf("symlink no longer points under expected worktree: target=%s resolved=%s want under %s",
+			target, resolved, wantPrefix)
 	}
 }

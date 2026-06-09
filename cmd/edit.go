@@ -68,62 +68,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		idempotent   bool
 	)
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
-		lock, err := model.ReadLockFile(lockPath)
-		if err != nil {
-			return fmt.Errorf("read lock: %w", err)
-		}
-		entry, err := lock.Get(name)
-		if err != nil {
-			if errors.Is(err, model.ErrLockSkillMissing) && installedGlobally(projectRoot, name) {
-				return fmt.Errorf("%s is installed globally, not in this project — qvr edit only ejects project-local skills. "+
-					"To change it: `qvr add %s` here, edit & `qvr publish`, then re-add it globally with `qvr add %s --global`", name, name, name)
-			}
-			return err
-		}
-		// Surface a friendlier error than EjectToTarget's generic refusal —
-		// users editing a link install are usually unaware that the link is
-		// already locally owned.
-		if entry.IsLink() {
-			return fmt.Errorf("%s is a link install at %s — edit the source path directly", name, entry.Source)
-		}
-		// Already ejected: no-op, return current state.
-		if entry.IsEdit() {
-			idempotent = true
-			updatedEntry = entry
-			return nil
-		}
-
-		// Capture the qvr.toml coordinate while the entry is still shared-mode —
-		// EjectToTarget flips it to Mode=edit (coordinate becomes ""), and an
-		// ejected skill is lock-only, so we drop its declarative entry below.
-		coord := model.SkillCoordinate(entry)
-
-		r, err := skill.EjectToTarget(skill.EjectRequest{
-			Entry:       entry,
-			ProjectRoot: projectRoot,
-			Global:      false,
-			Author:      editAuthor,
-			AuthorEmail: editEmail,
-		})
-		if err != nil {
-			return fmt.Errorf("edit %s: %w", name, err)
-		}
-		// EjectToTarget mutated entry; persist.
-		lock.Put(entry)
-		if err := lock.Write(); err != nil {
-			return fmt.Errorf("write lock: %w", err)
-		}
-		// Write-through: an ejected skill is reproduced from the lock (Mode=edit),
-		// so it leaves qvr.toml's registry-sourced [skills] table.
-		if coord != "" {
-			if perr := dropProjectFileSkills(projPath, []string{coord}); perr != nil {
-				printer.Warning(fmt.Sprintf("ejected in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
-			}
-		}
-		result = r
-		updatedEntry = entry
-		latestLock = lock
-		return nil
+		return ejectUnderLock(name, projectRoot, lockPath, projPath, &result, &updatedEntry, &latestLock, &idempotent)
 	})
 	if lockErr != nil {
 		return lockErr
@@ -152,6 +97,69 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if len(result.SiblingLinks) > 0 {
 		printer.Info(fmt.Sprintf("  repointed %d sibling target symlink(s)", len(result.SiblingLinks)))
 	}
+	return nil
+}
+
+// ejectUnderLock performs the lock-held portion of runEdit: read the entry,
+// reject link/global skills, and (unless already ejected) eject the skill into
+// a real project dir, persisting the lock and dropping its qvr.toml coordinate.
+// Results flow back through the out-pointers.
+func ejectUnderLock(name, projectRoot, lockPath, projPath string, result **skill.EjectResult, updatedEntry **model.LockEntry, latestLock **model.LockFile, idempotent *bool) error {
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lock: %w", err)
+	}
+	entry, err := lock.Get(name)
+	if err != nil {
+		if errors.Is(err, model.ErrLockSkillMissing) && installedGlobally(projectRoot, name) {
+			return fmt.Errorf("%s is installed globally, not in this project — qvr edit only ejects project-local skills. "+
+				"To change it: `qvr add %s` here, edit & `qvr publish`, then re-add it globally with `qvr add %s --global`", name, name, name)
+		}
+		return err
+	}
+	// Surface a friendlier error than EjectToTarget's generic refusal —
+	// users editing a link install are usually unaware that the link is
+	// already locally owned.
+	if entry.IsLink() {
+		return fmt.Errorf("%s is a link install at %s — edit the source path directly", name, entry.Source)
+	}
+	// Already ejected: no-op, return current state.
+	if entry.IsEdit() {
+		*idempotent = true
+		*updatedEntry = entry
+		return nil
+	}
+
+	// Capture the qvr.toml coordinate while the entry is still shared-mode —
+	// EjectToTarget flips it to Mode=edit (coordinate becomes ""), and an
+	// ejected skill is lock-only, so we drop its declarative entry below.
+	coord := model.SkillCoordinate(entry)
+
+	r, err := skill.EjectToTarget(skill.EjectRequest{
+		Entry:       entry,
+		ProjectRoot: projectRoot,
+		Global:      false,
+		Author:      editAuthor,
+		AuthorEmail: editEmail,
+	})
+	if err != nil {
+		return fmt.Errorf("edit %s: %w", name, err)
+	}
+	// EjectToTarget mutated entry; persist.
+	lock.Put(entry)
+	if err := lock.Write(); err != nil {
+		return fmt.Errorf("write lock: %w", err)
+	}
+	// Write-through: an ejected skill is reproduced from the lock (Mode=edit),
+	// so it leaves qvr.toml's registry-sourced [skills] table.
+	if coord != "" {
+		if perr := dropProjectFileSkills(projPath, []string{coord}); perr != nil {
+			printer.Warning(fmt.Sprintf("ejected in qvr.lock but failed to update qvr.toml (%v); run `qvr sync` to reconcile", perr))
+		}
+	}
+	*result = r
+	*updatedEntry = entry
+	*latestLock = lock
 	return nil
 }
 

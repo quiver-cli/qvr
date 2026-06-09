@@ -222,87 +222,14 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 	name := plan.name
 	localName := plan.localName
 	version := plan.version
-	explicitVersion := plan.explicitVersion
 	loc := plan.loc
 	resolvedSHA := plan.resolvedSHA
 	finalPath := plan.finalPath
-	stagingPath := plan.stagingPath
-	rootCoexists := plan.rootCoexists
-	frozenRef := plan.frozenRef
 	ambiguityWarning := plan.ambiguityWarning
 
-	var materializedCommit string
-	if _, err := os.Stat(finalPath); err == nil {
-		// Content dir already exists — reuse it. This makes `qvr install`
-		// idempotent across multiple agent targets (install once, add cursor
-		// target, rerun install), and lets two projects on the same SHA share
-		// one materialized dir. Both legacy `.git`-bearing worktrees and new
-		// worktree-free content dirs are valid here; downstream identity is
-		// computed from the bare repo at the commit, not from this dir.
-	} else {
-		// Materialize the skill subtree DIRECTLY from the bare repo's git
-		// objects — no `git worktree`, no git subprocess. The bytes + modes
-		// written are chosen so the disk hash agrees with the bare-commit hash
-		// (see internal/skill/materialize.go). Scope mirrors the prior sparse
-		// patterns: a root skill coexisting with siblings gets SKILL.md +
-		// recognized content dirs; a non-root skill its subtree; a lone root
-		// the whole repo.
-		//
-		// Clear any stale staging dir from a prior crash before writing. This
-		// lives here (not in resolveInstall) so resolveInstall stays a pure
-		// function safe to memoize across the pre-pass and the serial loop.
-		_ = os.RemoveAll(stagingPath)
-		mat := &Materializer{Blob: in.Blob}
-		sha, err := mat.MaterializeSubtree(loc.RepoPath, resolvedSHA, loc.Entry.Path, rootCoexists, stagingPath)
-		if err != nil {
-			_ = os.RemoveAll(stagingPath)
-			// The skill's subtree isn't present at this commit — typically it
-			// was added to the repo after that commit. Surface the actionable
-			// "pick a ref where the skill exists" message (#178).
-			if errors.Is(err, ErrSubtreeAbsent) {
-				return nil, fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
-					ErrSkillAbsentAtRef, name, loc.Entry.Path, version, registry.ShortSHA(resolvedSHA), name)
-			}
-			// A latest-only registry (default-branch clone) has no tags or other
-			// branches, so an explicitly-pinned version simply isn't on disk.
-			// Point the user at --full instead of dumping a raw error. Only when
-			// the user actually pinned a version and the registry isn't a full
-			// clone — a missing ref in a full clone is a genuine "no such ref".
-			if explicitVersion && !git.IsFullClone(loc.RepoPath) {
-				return nil, fmt.Errorf("%w: %q not found in registry %q — it was cloned latest-only (default branch). Re-add with all versions: `qvr registry add %s --full`, then retry",
-					ErrVersionNotAvailable, version, loc.RegistryName, loc.RegistryURL)
-			}
-			return nil, fmt.Errorf("materialize skill: %w", err)
-		}
-		materializedCommit = sha
-		// The subtree materialized, but if the skill's own SKILL.md isn't in the
-		// written tree the skill simply doesn't exist at this commit. Catch that
-		// with a user-facing message rather than a raw `stat skill dir` failure
-		// over the internal `.staging` path (#178).
-		if _, statErr := os.Stat(filepath.Join(stagingPath, loc.Entry.Path, "SKILL.md")); errors.Is(statErr, os.ErrNotExist) {
-			_ = os.RemoveAll(stagingPath)
-			return nil, fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
-				ErrSkillAbsentAtRef, name, loc.Entry.Path, version, registry.ShortSHA(resolvedSHA), name)
-		}
-		if err := lintStagedSkill(stagingPath, loc.Entry.Path); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			return nil, err
-		}
-		if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			return nil, fmt.Errorf("create worktrees dir: %w", err)
-		}
-		if err := os.Rename(stagingPath, finalPath); err != nil {
-			// Race: another process may have created finalPath between our
-			// initial Stat and the Rename. If finalPath now exists, drop our
-			// staged copy and reuse the winning one.
-			if _, statErr := os.Stat(finalPath); statErr == nil {
-				_ = os.RemoveAll(stagingPath)
-			} else {
-				_ = os.RemoveAll(stagingPath)
-				return nil, fmt.Errorf("finalize worktree: %w", err)
-			}
-		}
+	materializedCommit, err := in.materializeIfNeeded(plan)
+	if err != nil {
+		return nil, err
 	}
 
 	skillDir := filepath.Join(finalPath, loc.Entry.Path)
@@ -325,39 +252,9 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 	// verified status, and a skill that declares signed_by needs a current
 	// signer. The author and the "invalid signature" tampering signal are
 	// content-determined and stable, so they're safe to serve from cache.
-	signedBy := DeclaredSignedBy(skillDir)
-	freshProvenance := req.RequireSigned || signedBy != ""
-	provenance, commitAuthor := in.resolveProvenanceAndAuthor(loc.RepoPath, version, resolvedSHA, loc.Entry.Path, freshProvenance)
-	if provenance != nil && provenance.SignatureStatus == model.SignatureStatusInvalid {
-		return nil, fmt.Errorf("%w: %s@%s carries an invalid git signature on %q — refusing to install",
-			ErrInvalidSignature, name, registry.ShortSHA(resolvedSHA), version)
-	}
-	if req.RequireSigned && (provenance == nil || provenance.SignatureStatus != model.SignatureStatusVerified) {
-		return nil, fmt.Errorf("%w: %s@%s is unsigned; disable security.require_signed or install a signed tag/commit",
-			ErrSignatureRequired, name, registry.ShortSHA(resolvedSHA))
-	}
-	// signed_by declaration: a skill can name (in metadata.signed_by) the
-	// identity that must have signed its ref. When a verified signature is
-	// present its signer must match the declaration — a mismatch means the ref
-	// was re-signed by someone other than the declared signer and blocks the
-	// install. An absent/unverifiable signature leaves the declaration
-	// unverifiable; require_signed (above) gates that case when policy demands
-	// it, so here we act only on a present-but-wrong signer. Matching reuses the
-	// email-aware author matcher so `signed_by: alice@example.com` matches a
-	// signer reported as `Alice <alice@example.com>`. Issue #167.
-	if signedBy != "" &&
-		provenance != nil && provenance.SignatureStatus == model.SignatureStatusVerified &&
-		!AuthorMatchesPin(provenance.Signer, signedBy) {
-		return nil, fmt.Errorf("%w: %s@%s declares signed_by %q but its verified signature is by %q",
-			ErrSignedByMismatch, name, registry.ShortSHA(resolvedSHA), signedBy, provenance.Signer)
-	}
-	trustedAuthors := req.TrustedAuthors
-	if len(trustedAuthors) == 0 && req.TrustedAuthorsByRegistry != nil {
-		trustedAuthors = req.TrustedAuthorsByRegistry[loc.RegistryName]
-	}
-	if len(trustedAuthors) > 0 && !AuthorAllowed(commitAuthor, trustedAuthors) {
-		return nil, fmt.Errorf("untrusted commit author: %s@%s was authored by %q, not one of %s",
-			name, registry.ShortSHA(resolvedSHA), commitAuthor, strings.Join(trustedAuthors, ", "))
+	provenance, commitAuthor, err := in.gateInstallTrust(req, plan, skillDir)
+	if err != nil {
+		return nil, err
 	}
 
 	// Freeze the verified bytes: write-protect the installed skill subtree so
@@ -377,6 +274,193 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 		setSubtreeReadOnly(skillDir)
 	}
 
+	if err := in.linkInstallTargets(req, plan, skillDir); err != nil {
+		return nil, err
+	}
+
+	commit := in.resolveInstallCommit(materializedCommit, resolvedSHA, version, finalPath)
+
+	targets, entry, err := in.buildLockEntry(req, plan, lock, commit, commitAuthor, provenance)
+	if err != nil {
+		return nil, err
+	}
+	lock.Put(entry)
+
+	result := &InstallResult{
+		Name:     localName,
+		Registry: loc.RegistryName,
+		Version:  version,
+		Worktree: finalPath,
+		Targets:  targets,
+		Commit:   commit,
+	}
+	if req.As != "" {
+		result.Canonical = name
+	}
+	if ambiguityWarning != "" {
+		result.Warnings = append(result.Warnings, ambiguityWarning)
+	}
+	return result, nil
+}
+
+// resolveInstallCommit picks the commit SHA to record. The materialized commit
+// is the SHA the materializer resolved — no HEAD to read on a worktree-free dir.
+// On the reuse path (finalPath already on disk) it falls back to resolvedSHA,
+// and for a reused legacy worktree whose resolvedSHA degraded to a ref label it
+// reads the dir HEAD.
+func (in *Installer) resolveInstallCommit(materializedCommit, resolvedSHA, version, finalPath string) string {
+	commit := materializedCommit
+	if commit == "" {
+		commit = resolvedSHA
+		if HasGitDir(finalPath) && (commit == "" || commit == version) {
+			if c, cerr := in.resolveCommit(finalPath); cerr == nil && c != "" {
+				commit = c
+			}
+		}
+	}
+	return commit
+}
+
+// materializeIfNeeded reuses an existing content dir at plan.finalPath or
+// materializes the skill subtree DIRECTLY from the bare repo's git objects (no
+// `git worktree`, no git subprocess) into the staging dir and atomically renames
+// it into place. Returns the materialized commit SHA ("" on the reuse path).
+//
+// When finalPath already exists it is reused — this makes `qvr install`
+// idempotent across multiple agent targets (install once, add cursor target,
+// rerun install), and lets two projects on the same SHA share one materialized
+// dir. Both legacy `.git`-bearing worktrees and new worktree-free content dirs
+// are valid here; downstream identity is computed from the bare repo at the
+// commit, not from this dir.
+func (in *Installer) materializeIfNeeded(plan *installPlan) (string, error) {
+	loc := plan.loc
+	finalPath := plan.finalPath
+	stagingPath := plan.stagingPath
+	if _, err := os.Stat(finalPath); err == nil {
+		return "", nil
+	}
+	// Materialize the skill subtree DIRECTLY from the bare repo's git
+	// objects — no `git worktree`, no git subprocess. The bytes + modes
+	// written are chosen so the disk hash agrees with the bare-commit hash
+	// (see internal/skill/materialize.go). Scope mirrors the prior sparse
+	// patterns: a root skill coexisting with siblings gets SKILL.md +
+	// recognized content dirs; a non-root skill its subtree; a lone root
+	// the whole repo.
+	//
+	// Clear any stale staging dir from a prior crash before writing. This
+	// lives here (not in resolveInstall) so resolveInstall stays a pure
+	// function safe to memoize across the pre-pass and the serial loop.
+	_ = os.RemoveAll(stagingPath)
+	mat := &Materializer{Blob: in.Blob}
+	sha, err := mat.MaterializeSubtree(loc.RepoPath, plan.resolvedSHA, loc.Entry.Path, plan.rootCoexists, stagingPath)
+	if err != nil {
+		_ = os.RemoveAll(stagingPath)
+		// The skill's subtree isn't present at this commit — typically it
+		// was added to the repo after that commit. Surface the actionable
+		// "pick a ref where the skill exists" message (#178).
+		if errors.Is(err, ErrSubtreeAbsent) {
+			return "", fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
+				ErrSkillAbsentAtRef, plan.name, loc.Entry.Path, plan.version, registry.ShortSHA(plan.resolvedSHA), plan.name)
+		}
+		// A latest-only registry (default-branch clone) has no tags or other
+		// branches, so an explicitly-pinned version simply isn't on disk.
+		// Point the user at --full instead of dumping a raw error. Only when
+		// the user actually pinned a version and the registry isn't a full
+		// clone — a missing ref in a full clone is a genuine "no such ref".
+		if plan.explicitVersion && !git.IsFullClone(loc.RepoPath) {
+			return "", fmt.Errorf("%w: %q not found in registry %q — it was cloned latest-only (default branch). Re-add with all versions: `qvr registry add %s --full`, then retry",
+				ErrVersionNotAvailable, plan.version, loc.RegistryName, loc.RegistryURL)
+		}
+		return "", fmt.Errorf("materialize skill: %w", err)
+	}
+	// The subtree materialized, but if the skill's own SKILL.md isn't in the
+	// written tree the skill simply doesn't exist at this commit. Catch that
+	// with a user-facing message rather than a raw `stat skill dir` failure
+	// over the internal `.staging` path (#178).
+	if _, statErr := os.Stat(filepath.Join(stagingPath, loc.Entry.Path, "SKILL.md")); errors.Is(statErr, os.ErrNotExist) {
+		_ = os.RemoveAll(stagingPath)
+		return "", fmt.Errorf("%w: skill %q (%s) does not exist at %s (%s) — the skill was likely added to the repo after that commit; run `qvr version list %s` to find a ref where it exists",
+			ErrSkillAbsentAtRef, plan.name, loc.Entry.Path, plan.version, registry.ShortSHA(plan.resolvedSHA), plan.name)
+	}
+	if err := lintStagedSkill(stagingPath, loc.Entry.Path); err != nil {
+		_ = os.RemoveAll(stagingPath)
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		_ = os.RemoveAll(stagingPath)
+		return "", fmt.Errorf("create worktrees dir: %w", err)
+	}
+	if err := os.Rename(stagingPath, finalPath); err != nil {
+		// Race: another process may have created finalPath between our
+		// initial Stat and the Rename. If finalPath now exists, drop our
+		// staged copy and reuse the winning one.
+		if _, statErr := os.Stat(finalPath); statErr == nil {
+			_ = os.RemoveAll(stagingPath)
+		} else {
+			_ = os.RemoveAll(stagingPath)
+			return "", fmt.Errorf("finalize worktree: %w", err)
+		}
+	}
+	return sha, nil
+}
+
+// gateInstallTrust resolves git-native provenance plus the commit author for the
+// skill at skillDir and enforces the v1 trust surface: an invalid signature, a
+// require_signed policy with no verified signature, a signed_by declaration whose
+// verified signer mismatches, and an untrusted commit author each block the
+// install before any symlink or lock side effects. Returns the provenance record
+// (may be nil) and the commit author on success.
+func (in *Installer) gateInstallTrust(req InstallRequest, plan *installPlan, skillDir string) (*model.ProvenanceRef, string, error) {
+	loc := plan.loc
+	name := plan.name
+	version := plan.version
+	resolvedSHA := plan.resolvedSHA
+	signedBy := DeclaredSignedBy(skillDir)
+	freshProvenance := req.RequireSigned || signedBy != ""
+	provenance, commitAuthor := in.resolveProvenanceAndAuthor(loc.RepoPath, version, resolvedSHA, loc.Entry.Path, freshProvenance)
+	if provenance != nil && provenance.SignatureStatus == model.SignatureStatusInvalid {
+		return nil, "", fmt.Errorf("%w: %s@%s carries an invalid git signature on %q — refusing to install",
+			ErrInvalidSignature, name, registry.ShortSHA(resolvedSHA), version)
+	}
+	if req.RequireSigned && (provenance == nil || provenance.SignatureStatus != model.SignatureStatusVerified) {
+		return nil, "", fmt.Errorf("%w: %s@%s is unsigned; disable security.require_signed or install a signed tag/commit",
+			ErrSignatureRequired, name, registry.ShortSHA(resolvedSHA))
+	}
+	// signed_by declaration: a skill can name (in metadata.signed_by) the
+	// identity that must have signed its ref. When a verified signature is
+	// present its signer must match the declaration — a mismatch means the ref
+	// was re-signed by someone other than the declared signer and blocks the
+	// install. An absent/unverifiable signature leaves the declaration
+	// unverifiable; require_signed (above) gates that case when policy demands
+	// it, so here we act only on a present-but-wrong signer. Matching reuses the
+	// email-aware author matcher so `signed_by: alice@example.com` matches a
+	// signer reported as `Alice <alice@example.com>`. Issue #167.
+	if signedBy != "" &&
+		provenance != nil && provenance.SignatureStatus == model.SignatureStatusVerified &&
+		!AuthorMatchesPin(provenance.Signer, signedBy) {
+		return nil, "", fmt.Errorf("%w: %s@%s declares signed_by %q but its verified signature is by %q",
+			ErrSignedByMismatch, name, registry.ShortSHA(resolvedSHA), signedBy, provenance.Signer)
+	}
+	trustedAuthors := req.TrustedAuthors
+	if len(trustedAuthors) == 0 && req.TrustedAuthorsByRegistry != nil {
+		trustedAuthors = req.TrustedAuthorsByRegistry[loc.RegistryName]
+	}
+	if len(trustedAuthors) > 0 && !AuthorAllowed(commitAuthor, trustedAuthors) {
+		return nil, "", fmt.Errorf("untrusted commit author: %s@%s was authored by %q, not one of %s",
+			name, registry.ShortSHA(resolvedSHA), commitAuthor, strings.Join(trustedAuthors, ", "))
+	}
+	return provenance, commitAuthor, nil
+}
+
+// linkInstallTargets resolves the agent-facing link target (a clean subtree, or
+// a sanitized agent view for a legacy root-layout worktree with a live .git/ —
+// issue #154) and creates a symlink for every requested target, rolling back any
+// links created so far if one fails.
+func (in *Installer) linkInstallTargets(req InstallRequest, plan *installPlan, skillDir string) error {
+	loc := plan.loc
+	finalPath := plan.finalPath
+	localName := plan.localName
+
 	// The agent-facing symlink points at the skill content. A worktree-free
 	// content dir has no .git/, so a root-layout skill can be linked directly —
 	// the dir is already clean. Only a LEGACY worktree dir (still on disk from a
@@ -387,7 +471,7 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 	if IsRootLayoutPath(loc.Entry.Path) && HasGitDir(finalPath) {
 		view, verr := buildAgentViewAt(finalPath)
 		if verr != nil {
-			return nil, fmt.Errorf("agent view: %w", verr)
+			return fmt.Errorf("agent view: %w", verr)
 		}
 		linkTarget = view
 	}
@@ -399,28 +483,29 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 		linkPath, err := ResolveTargetPath(t, localName, req.ProjectRoot, req.Global)
 		if err != nil {
 			rollbackLinks(created)
-			return nil, err
+			return err
 		}
 		if err := CreateSymlink(linkPath, linkTarget); err != nil {
 			rollbackLinks(created)
-			return nil, fmt.Errorf("symlink %s: %w", t, err)
+			return fmt.Errorf("symlink %s: %w", t, err)
 		}
 		created = append(created, linkPath)
 	}
+	return nil
+}
 
-	// The materialized commit is the SHA the materializer resolved — no HEAD to
-	// read on a worktree-free dir. On the reuse path (finalPath already on disk)
-	// fall back to resolvedSHA, and for a reused legacy worktree whose
-	// resolvedSHA degraded to a ref label, read the dir HEAD.
-	commit := materializedCommit
-	if commit == "" {
-		commit = resolvedSHA
-		if HasGitDir(finalPath) && (commit == "" || commit == version) {
-			if c, cerr := in.resolveCommit(finalPath); cerr == nil && c != "" {
-				commit = c
-			}
-		}
-	}
+// buildLockEntry assembles the in-memory lock entry for the install: it merges
+// targets with any existing entry (preserving a prior Verification on a
+// same-commit no-op — issue #77), resolves the subtree identity, folds in the
+// freshly-computed provenance, and enforces the --frozen drift check. Returns
+// the merged targets and the entry to Put.
+func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock *model.LockFile, commit, commitAuthor string, provenance *model.ProvenanceRef) ([]string, *model.LockEntry, error) {
+	loc := plan.loc
+	localName := plan.localName
+	version := plan.version
+	rootCoexists := plan.rootCoexists
+	frozenRef := plan.frozenRef
+	name := plan.name
 
 	// Update the in-memory lock last — if a later step fails, everything else is
 	// still usable and a subsequent install will reconcile state. The caller
@@ -499,28 +584,12 @@ func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*Ins
 	// rewriting history.
 	if req.Frozen && frozenRef != nil && frozenRef.SubtreeHash != "" {
 		if entry.SubtreeHash != frozenRef.SubtreeHash {
-			return nil, fmt.Errorf("--frozen: subtree hash drift for %s (expected %s, got %s)",
+			return nil, nil, fmt.Errorf("--frozen: subtree hash drift for %s (expected %s, got %s)",
 				localName, frozenRef.SubtreeHash, entry.SubtreeHash)
 		}
 	}
 
-	lock.Put(entry)
-
-	result := &InstallResult{
-		Name:     localName,
-		Registry: loc.RegistryName,
-		Version:  version,
-		Worktree: finalPath,
-		Targets:  targets,
-		Commit:   commit,
-	}
-	if req.As != "" {
-		result.Canonical = name
-	}
-	if ambiguityWarning != "" {
-		result.Warnings = append(result.Warnings, ambiguityWarning)
-	}
-	return result, nil
+	return targets, entry, nil
 }
 
 // resolveSkill picks the SkillLocation for a (name, version, registry) tuple
@@ -585,11 +654,17 @@ func (in *Installer) resolveSkill(name, version, registryName, skillPath string)
 		return picked, warning, nil
 	}
 
-	// Collect every registry whose bare clone contains the requested ref
-	// rather than short-circuiting on the first match. Mirrors the bare-name
-	// ambiguity shape: 1 → silent pick, 2+ → warn + alphabetical pick.
-	// Before this, `qvr add skill@v1` with two registries both holding v1
-	// silently picked alphabetical with no warning (issue #106).
+	return in.resolveAmbiguousByRef(name, version, locs)
+}
+
+// resolveAmbiguousByRef disambiguates a multi-registry name pinned to a version
+// by collecting every registry whose bare clone contains the requested ref
+// rather than short-circuiting on the first match. Mirrors the bare-name
+// ambiguity shape: 0 → ErrAmbiguousRef with per-registry version summaries,
+// 1 → silent pick, 2+ → warn + alphabetical pick. Before this, `qvr add
+// skill@v1` with two registries both holding v1 silently picked alphabetical
+// with no warning (issue #106).
+func (in *Installer) resolveAmbiguousByRef(name, version string, locs []*registry.SkillLocation) (*registry.SkillLocation, string, error) {
 	var matched []*registry.SkillLocation
 	for _, l := range locs {
 		// Match via resolveSkillRef so a per-skill-namespaced version
@@ -710,6 +785,28 @@ func (in *Installer) RemoveFrom(name string, req InstallRequest, lock *model.Loc
 	// Pass 1: drop target symlinks (and the canonical edit dir, when in
 	// edit mode). Bail without touching the lock if any step fails so the
 	// user can recover rather than be left with an orphan lock entry.
+	if err := removeTargetLinks(name, entry, req, entryGlobal, canonicalEditAbs); err != nil {
+		return err
+	}
+
+	// Pass 2: drop the shared worktree for non-edit, non-link entries.
+	if err := in.removeSharedWorktree(name, entry, req, lock); err != nil {
+		return err
+	}
+
+	// Only now drop the lock entry. Symmetric with Install, which mutates
+	// the lock last. The caller persists it.
+	if err := lock.Remove(name); err != nil && !errors.Is(err, model.ErrLockSkillMissing) {
+		return fmt.Errorf("remove %s: drop lock entry: %w", name, err)
+	}
+	return nil
+}
+
+// removeTargetLinks drops every target symlink for the entry, and for a
+// mode:edit canonical target rm -rf's the eject dir (siblings are symlinks
+// pointing at canonical and use RemoveSymlink). Bails on the first failure so
+// the caller can leave the lock untouched for recovery.
+func removeTargetLinks(name string, entry *model.LockEntry, req InstallRequest, entryGlobal bool, canonicalEditAbs string) error {
 	for _, t := range entry.Targets {
 		linkPath, err := ResolveTargetPath(t, name, req.ProjectRoot, entryGlobal)
 		if err != nil {
@@ -731,28 +828,26 @@ func (in *Installer) RemoveFrom(name string, req InstallRequest, lock *model.Loc
 			return fmt.Errorf("remove %s: %w", name, err)
 		}
 	}
+	return nil
+}
 
-	// Pass 2: drop the shared worktree for non-edit, non-link entries — but ONLY
-	// if no one else still references it. Worktrees are global and content-keyed
-	// (`<registry>/<skill>/<sha>`), so the same skill@sha installed in another
-	// project (or twice in this one via `--as`) shares one on-disk worktree.
-	// Deleting it on a single project's `qvr remove` / `lock --from-toml` teardown
-	// would break every sibling that still points at it (data loss #232).
-	// Mode:edit entries never had a shared worktree to clean; link installs point
-	// at user-owned dirs we don't touch.
-	if !entry.IsLink() && !entry.IsEdit() {
-		worktreePath := EntryWorktreePath(entry)
-		if worktreePath != "" && !worktreeStillReferenced(lock, name, worktreePath, req) {
-			if err := in.Worktree.Remove(worktreePath); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
-				return fmt.Errorf("remove %s: drop worktree: %w", name, err)
-			}
-		}
+// removeSharedWorktree drops the shared worktree for non-edit, non-link entries —
+// but ONLY if no one else still references it. Worktrees are global and
+// content-keyed (`<registry>/<skill>/<sha>`), so the same skill@sha installed in
+// another project (or twice in this one via `--as`) shares one on-disk worktree.
+// Deleting it on a single project's `qvr remove` / `lock --from-toml` teardown
+// would break every sibling that still points at it (data loss #232). Mode:edit
+// entries never had a shared worktree to clean; link installs point at
+// user-owned dirs we don't touch.
+func (in *Installer) removeSharedWorktree(name string, entry *model.LockEntry, req InstallRequest, lock *model.LockFile) error {
+	if entry.IsLink() || entry.IsEdit() {
+		return nil
 	}
-
-	// Only now drop the lock entry. Symmetric with Install, which mutates
-	// the lock last. The caller persists it.
-	if err := lock.Remove(name); err != nil && !errors.Is(err, model.ErrLockSkillMissing) {
-		return fmt.Errorf("remove %s: drop lock entry: %w", name, err)
+	worktreePath := EntryWorktreePath(entry)
+	if worktreePath != "" && !worktreeStillReferenced(lock, name, worktreePath, req) {
+		if err := in.Worktree.Remove(worktreePath); err != nil && !errors.Is(err, git.ErrWorktreeNotFound) {
+			return fmt.Errorf("remove %s: drop worktree: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -840,40 +935,12 @@ func (in *Installer) InstallLocal(localPath string, req InstallRequest) (*Instal
 	if err != nil {
 		return nil, fmt.Errorf("read lock file: %w", err)
 	}
-	if existing, err := lock.Get(name); err == nil && !req.Force {
-		if !existing.IsLocal() || existing.Source != abs {
-			sourceLabel := existing.Source
-			if sourceLabel == "" {
-				sourceLabel = "registry"
-			}
-			return nil, fmt.Errorf("skill %q already installed from %s; pass --force to replace",
-				name, sourceLabel)
-		}
+	if err := checkLocalConflict(lock, name, abs, req.Force); err != nil {
+		return nil, err
 	}
 
-	// Materialize the immutable copy if it isn't already on disk. Stage in a
-	// sibling dir and atomically rename so a crashed copy never leaves a
-	// half-written worktree behind. copyDir skips .git/ and preserves exec bits.
-	if _, statErr := os.Stat(finalPath); statErr != nil {
-		stagingPath := fmt.Sprintf("%s.staging.%d", finalPath, os.Getpid())
-		_ = os.RemoveAll(stagingPath)
-		if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-			return nil, fmt.Errorf("create worktrees dir: %w", err)
-		}
-		if err := copyDir(abs, stagingPath); err != nil {
-			_ = os.RemoveAll(stagingPath)
-			return nil, fmt.Errorf("copy local skill: %w", err)
-		}
-		if err := os.Rename(stagingPath, finalPath); err != nil {
-			// Lost the race to a concurrent install of the same content: the
-			// winning dir is byte-identical (same hash), so drop our staged copy.
-			if _, e := os.Stat(finalPath); e == nil {
-				_ = os.RemoveAll(stagingPath)
-			} else {
-				_ = os.RemoveAll(stagingPath)
-				return nil, fmt.Errorf("finalize local worktree: %w", err)
-			}
-		}
+	if err := materializeLocalCopy(abs, finalPath); err != nil {
+		return nil, err
 	}
 	// Freeze: same immutability contract as a shared install (see immutable.go)
 	// — files read-only, directories writable so `rm -rf`/`qvr cache clean` and
@@ -919,6 +986,53 @@ func (in *Installer) InstallLocal(localPath string, req InstallRequest) (*Instal
 		Commit:   commitKey,
 		Targets:  req.Targets,
 	}, nil
+}
+
+// checkLocalConflict refuses to silently replace an existing entry of the same
+// name pointing at a different source. Idempotent when the source matches;
+// --force needed to re-point. Mirrors the remote-install conflict rule.
+func checkLocalConflict(lock *model.LockFile, name, abs string, force bool) error {
+	if existing, err := lock.Get(name); err == nil && !force {
+		if !existing.IsLocal() || existing.Source != abs {
+			sourceLabel := existing.Source
+			if sourceLabel == "" {
+				sourceLabel = "registry"
+			}
+			return fmt.Errorf("skill %q already installed from %s; pass --force to replace",
+				name, sourceLabel)
+		}
+	}
+	return nil
+}
+
+// materializeLocalCopy copies the local skill folder into the immutable worktree
+// at finalPath if it isn't already on disk. It stages in a sibling dir and
+// atomically renames so a crashed copy never leaves a half-written worktree
+// behind. copyDir skips .git/ and preserves exec bits.
+func materializeLocalCopy(abs, finalPath string) error {
+	if _, statErr := os.Stat(finalPath); statErr == nil {
+		return nil
+	}
+	stagingPath := fmt.Sprintf("%s.staging.%d", finalPath, os.Getpid())
+	_ = os.RemoveAll(stagingPath)
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		return fmt.Errorf("create worktrees dir: %w", err)
+	}
+	if err := copyDir(abs, stagingPath); err != nil {
+		_ = os.RemoveAll(stagingPath)
+		return fmt.Errorf("copy local skill: %w", err)
+	}
+	if err := os.Rename(stagingPath, finalPath); err != nil {
+		// Lost the race to a concurrent install of the same content: the
+		// winning dir is byte-identical (same hash), so drop our staged copy.
+		if _, e := os.Stat(finalPath); e == nil {
+			_ = os.RemoveAll(stagingPath)
+		} else {
+			_ = os.RemoveAll(stagingPath)
+			return fmt.Errorf("finalize local worktree: %w", err)
+		}
+	}
+	return nil
 }
 
 func (in *Installer) resolveCommit(worktreePath string) (string, error) {
@@ -1207,112 +1321,37 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 	// "latest-only registry can't reach this version → use --full" diagnostic:
 	// a missing ref is only "go fetch all versions" when the user asked for one.
 	explicitVersion := version != ""
-	if len(req.Targets) == 0 {
-		return nil, fmt.Errorf("at least one --target is required")
-	}
-	for _, t := range req.Targets {
-		if _, ok := model.LookupTarget(t); !ok {
-			return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, t)
-		}
+	if err := validateInstallTargets(req.Targets); err != nil {
+		return nil, err
 	}
 
-	// --frozen lock peek: the lockfile is authoritative for a frozen
-	// install, so use it to pre-fill request fields the user didn't
-	// supply. Two effects:
-	//   1. Alias support (#102): when the user runs `qvr add --frozen
-	//      <alias>` and the lock records <alias> as an alias entry
-	//      (entry.Canonical != ""), swap the registry lookup to the
-	//      canonical name and preserve the alias via req.As. Without
-	//      this the lookup treats the alias as a registry skill name and
-	//      fails ErrSkillNotFound, even though the lock is self-describing.
-	//      RestoreAll already does this swap explicitly when iterating
-	//      entries; here we handle the caller-supplied-name path.
-	//   2. Registry scoping (#105): pre-fill req.Registry from
-	//      entry.Registry so resolveSkill is scoped to the source that
-	//      was pinned at install time. Without this the resolver walks
-	//      every configured registry and may emit a stale ambiguity
-	//      warning even though the lockfile already chose.
 	if req.Frozen {
-		lp := req.LockPath
-		if lp == "" {
-			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-		}
-		// --frozen is lock-authoritative, so a missing/unreadable lock is a
-		// hard error BEFORE we resolve anything. Checked here (not just at the
-		// drift gate below) so the user gets the contract string "requires a
-		// readable lock file" regardless of whether the skill name happens to
-		// resolve in a registry. ReadLockFile returns an empty lock — not an
-		// error — for a non-existent file (that's the expected pre-first-install
-		// state), so we stat explicitly to tell "no lock at all" (this error)
-		// apart from "lock exists but lacks the entry" (the "skill not present"
-		// error at the drift gate). AC-FROZEN-2 / #132.
-		if _, statErr := os.Stat(lp); statErr != nil {
-			return nil, fmt.Errorf("--frozen requires a readable lock file: %w", statErr)
-		}
-		existingLock, lerr := model.ReadLockFile(lp)
-		if lerr != nil {
-			return nil, fmt.Errorf("--frozen requires a readable lock file: %w", lerr)
-		}
-		if existing, gerr := existingLock.Get(name); gerr == nil {
-			if req.As == "" && existing.Canonical != "" {
-				req.As = name
-				name = existing.Canonical
-			}
-			if req.Registry == "" && existing.Registry != "" {
-				req.Registry = existing.Registry
-			}
+		var ferr error
+		if name, ferr = in.prefillFromFrozenLock(req, name); ferr != nil {
+			return nil, ferr
 		}
 	}
 
-	// localName is what we record in the lock and use for symlink
-	// filenames; canonical `name` still drives registry lookup and the
-	// worktree path so aliases at the same SHA share one worktree.
-	localName := name
-	if req.As != "" {
-		if !nameRegex.MatchString(req.As) || strings.Contains(req.As, "--") {
-			return nil, fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", req.As)
-		}
-		localName = req.As
+	localName, err := resolveLocalName(req, name)
+	if err != nil {
+		return nil, err
 	}
 
 	loc, ambiguityWarning, err := in.resolveSkill(name, version, req.Registry, req.SkillPath)
 	if err != nil {
 		return nil, err
 	}
-	if version == "" {
-		version = resolveDefaultRef(loc, in.Git)
-	} else if !req.Frozen {
-		// Map an explicit per-skill version to its namespaced tag when the
-		// registry namespaces versions per skill (#152): `qvr add alpha@v0.1.0`
-		// transparently resolves to the tag `alpha/v0.1.0` if that's how it was
-		// published. Falls through unchanged for branches, SHAs, and bare
-		// single-skill tags.
-		if eff, ok := resolveSkillRef(in.Git, loc.RepoPath, loc.Entry.Name, version); ok {
-			version = eff
-		}
-	}
+	version = in.resolveInstallVersion(req, loc, version)
 
 	// --frozen pins to the lockfile: the entry must exist and its recorded
 	// Branch/SubtreeHash become the install target. Captured here so the
 	// drift check at the end can re-read the same recorded values.
 	var frozenRef *model.LockEntry
 	if req.Frozen {
-		lp := req.LockPath
-		if lp == "" {
-			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+		var ferr error
+		if frozenRef, version, ferr = in.pinToFrozenLock(req, localName, version); ferr != nil {
+			return nil, ferr
 		}
-		existingLock, lerr := model.ReadLockFile(lp)
-		if lerr != nil {
-			return nil, fmt.Errorf("--frozen requires a readable lock file: %w", lerr)
-		}
-		existing, gerr := existingLock.Get(localName)
-		if gerr != nil {
-			return nil, fmt.Errorf("--frozen: skill %q not present in lock file", localName)
-		}
-		if existing.Ref != "" {
-			version = existing.Ref
-		}
-		frozenRef = existing
 	}
 
 	// Conflict check: silently swapping the lock entry to a different ref
@@ -1329,15 +1368,8 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 	// same alias, not the canonical name — the whole point of --as is
 	// coexistence.
 	if !req.Force {
-		lp := req.LockPath
-		if lp == "" {
-			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-		}
-		if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
-			if existing, gerr := existingLock.Get(localName); gerr == nil && existing.Ref != "" && existing.Ref != version {
-				return nil, fmt.Errorf("%s already installed at %s (from %s); pass --force to overwrite, or `qvr remove %s --force && qvr add %s@%s` to reinstall (if the source is changing too — `qvr switch` only moves the ref within the same source)",
-					localName, existing.Ref, existing.Source, localName, localName, version)
-			}
+		if err := in.checkRefConflict(req, localName, version); err != nil {
+			return nil, err
 		}
 	}
 
@@ -1370,23 +1402,7 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 	// memoizable (resolveInstallMemo). resolveInstall must remain a pure function
 	// of its inputs for the pre-pass and the serial loop to share one result.
 
-	// Decide the content scope. Normally taken from the freshly-resolved index
-	// entry, but a reproducible restore (`qvr sync` via PinCommit) materializes
-	// the LOCKED commit while the index reflects HEAD — so honor the scope
-	// recorded in the lock at original install time, which can't drift if
-	// upstream later changed the sibling layout. See model.SkillScopePaths.
-	rootCoexists := loc.Entry.RootCoexists
-	if req.PinCommit != "" {
-		lp := req.LockPath
-		if lp == "" {
-			lp = model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
-		}
-		if el, lerr := model.ReadLockFile(lp); lerr == nil {
-			if prev, gerr := el.Get(localName); gerr == nil {
-				rootCoexists = prev.RootCoexists
-			}
-		}
-	}
+	rootCoexists := in.resolveRootCoexists(req, loc, localName)
 	return &installPlan{
 		name:             name,
 		localName:        localName,
@@ -1400,4 +1416,156 @@ func (in *Installer) resolveInstall(req *InstallRequest) (*installPlan, error) {
 		frozenRef:        frozenRef,
 		ambiguityWarning: ambiguityWarning,
 	}, nil
+}
+
+// resolveLockPath returns req.LockPath, falling back to the scope-appropriate
+// default lock path when the caller left it empty.
+func resolveLockPath(req *InstallRequest) string {
+	if req.LockPath != "" {
+		return req.LockPath
+	}
+	return model.DefaultLockPath(req.ProjectRoot, quiverHome(), req.Global)
+}
+
+// resolveLocalName returns the lock key + symlink filename for the install:
+// the canonical `name`, or the validated `--as` alias when set. Canonical
+// `name` still drives registry lookup and the worktree path so aliases at the
+// same SHA share one worktree.
+func resolveLocalName(req *InstallRequest, name string) (string, error) {
+	if req.As != "" {
+		if !nameRegex.MatchString(req.As) || strings.Contains(req.As, "--") {
+			return "", fmt.Errorf("invalid --as value %q: must be 1-64 chars, lowercase alphanumeric + hyphens, no leading/trailing or consecutive hyphens", req.As)
+		}
+		return req.As, nil
+	}
+	return name, nil
+}
+
+// resolveInstallVersion resolves the human ref label: an empty version becomes
+// the skill's default ref; an explicit (non-frozen) version is mapped to its
+// namespaced per-skill tag when the registry publishes versions that way (#152):
+// `qvr add alpha@v0.1.0` transparently resolves to the tag `alpha/v0.1.0`.
+// Falls through unchanged for branches, SHAs, and bare single-skill tags.
+func (in *Installer) resolveInstallVersion(req *InstallRequest, loc *registry.SkillLocation, version string) string {
+	if version == "" {
+		return resolveDefaultRef(loc, in.Git)
+	}
+	if !req.Frozen {
+		if eff, ok := resolveSkillRef(in.Git, loc.RepoPath, loc.Entry.Name, version); ok {
+			version = eff
+		}
+	}
+	return version
+}
+
+// validateInstallTargets requires at least one target and rejects any unknown one.
+func validateInstallTargets(targets []string) error {
+	if len(targets) == 0 {
+		return fmt.Errorf("at least one --target is required")
+	}
+	for _, t := range targets {
+		if _, ok := model.LookupTarget(t); !ok {
+			return fmt.Errorf("%w: %s", ErrUnknownTarget, t)
+		}
+	}
+	return nil
+}
+
+// prefillFromFrozenLock uses the lockfile (authoritative for a frozen install)
+// to pre-fill request fields the user didn't supply, returning the possibly
+// canonicalised lookup name. Two effects:
+//  1. Alias support (#102): when the user runs `qvr add --frozen <alias>` and
+//     the lock records <alias> as an alias entry (entry.Canonical != ""), swap
+//     the registry lookup to the canonical name and preserve the alias via
+//     req.As. Without this the lookup treats the alias as a registry skill name
+//     and fails ErrSkillNotFound, even though the lock is self-describing.
+//     RestoreAll already does this swap explicitly when iterating entries;
+//     here we handle the caller-supplied-name path.
+//  2. Registry scoping (#105): pre-fill req.Registry from entry.Registry so
+//     resolveSkill is scoped to the source that was pinned at install time.
+//     Without this the resolver walks every configured registry and may emit a
+//     stale ambiguity warning even though the lockfile already chose.
+func (in *Installer) prefillFromFrozenLock(req *InstallRequest, name string) (string, error) {
+	lp := resolveLockPath(req)
+	// --frozen is lock-authoritative, so a missing/unreadable lock is a
+	// hard error BEFORE we resolve anything. Checked here (not just at the
+	// drift gate below) so the user gets the contract string "requires a
+	// readable lock file" regardless of whether the skill name happens to
+	// resolve in a registry. ReadLockFile returns an empty lock — not an
+	// error — for a non-existent file (that's the expected pre-first-install
+	// state), so we stat explicitly to tell "no lock at all" (this error)
+	// apart from "lock exists but lacks the entry" (the "skill not present"
+	// error at the drift gate). AC-FROZEN-2 / #132.
+	if _, statErr := os.Stat(lp); statErr != nil {
+		return name, fmt.Errorf("--frozen requires a readable lock file: %w", statErr)
+	}
+	existingLock, lerr := model.ReadLockFile(lp)
+	if lerr != nil {
+		return name, fmt.Errorf("--frozen requires a readable lock file: %w", lerr)
+	}
+	if existing, gerr := existingLock.Get(name); gerr == nil {
+		if req.As == "" && existing.Canonical != "" {
+			req.As = name
+			name = existing.Canonical
+		}
+		if req.Registry == "" && existing.Registry != "" {
+			req.Registry = existing.Registry
+		}
+	}
+	return name, nil
+}
+
+// pinToFrozenLock pins the install to the lockfile: the entry must exist and its
+// recorded Ref becomes the install version. Returns the captured frozen entry
+// (so the drift check can re-read the same recorded values) and the version.
+func (in *Installer) pinToFrozenLock(req *InstallRequest, localName, version string) (*model.LockEntry, string, error) {
+	lp := resolveLockPath(req)
+	existingLock, lerr := model.ReadLockFile(lp)
+	if lerr != nil {
+		return nil, version, fmt.Errorf("--frozen requires a readable lock file: %w", lerr)
+	}
+	existing, gerr := existingLock.Get(localName)
+	if gerr != nil {
+		return nil, version, fmt.Errorf("--frozen: skill %q not present in lock file", localName)
+	}
+	if existing.Ref != "" {
+		version = existing.Ref
+	}
+	return existing, version, nil
+}
+
+// checkRefConflict refuses an install that would silently swap the lock entry to
+// a different ref — that contradicts the "switching refs is a symlink repoint,
+// not a re-install" contract. Idempotent when the existing ref matches. Issue
+// #111: the hint leads with remove+add (always correct), keeps --force as the
+// in-place overwrite, and qualifies `qvr switch` as same-source-only. Uses
+// localName so `--as <alias>` installs only conflict with prior installs of the
+// same alias, not the canonical name — the whole point of --as is coexistence.
+func (in *Installer) checkRefConflict(req *InstallRequest, localName, version string) error {
+	lp := resolveLockPath(req)
+	if existingLock, lerr := model.ReadLockFile(lp); lerr == nil {
+		if existing, gerr := existingLock.Get(localName); gerr == nil && existing.Ref != "" && existing.Ref != version {
+			return fmt.Errorf("%s already installed at %s (from %s); pass --force to overwrite, or `qvr remove %s --force && qvr add %s@%s` to reinstall (if the source is changing too — `qvr switch` only moves the ref within the same source)",
+				localName, existing.Ref, existing.Source, localName, localName, version)
+		}
+	}
+	return nil
+}
+
+// resolveRootCoexists decides the content scope. Normally taken from the
+// freshly-resolved index entry, but a reproducible restore (`qvr sync` via
+// PinCommit) materializes the LOCKED commit while the index reflects HEAD — so
+// honor the scope recorded in the lock at original install time, which can't
+// drift if upstream later changed the sibling layout. See model.SkillScopePaths.
+func (in *Installer) resolveRootCoexists(req *InstallRequest, loc *registry.SkillLocation, localName string) bool {
+	rootCoexists := loc.Entry.RootCoexists
+	if req.PinCommit != "" {
+		lp := resolveLockPath(req)
+		if el, lerr := model.ReadLockFile(lp); lerr == nil {
+			if prev, gerr := el.Get(localName); gerr == nil {
+				rootCoexists = prev.RootCoexists
+			}
+		}
+	}
+	return rootCoexists
 }

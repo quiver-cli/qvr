@@ -47,53 +47,76 @@ func (p *patternCheck) Run(_ context.Context, _ *model.Skill, files []FileEntry)
 		if f.Content == "" {
 			continue
 		}
-		applicable := make([]compiledRule, 0, len(p.rules))
-		for _, r := range p.rules {
-			if !r.rule.AppliesTo(f.Path) {
-				continue
-			}
-			applicable = append(applicable, r)
-		}
-		if len(applicable) == 0 {
+		findings = append(findings, p.scanFile(f)...)
+	}
+	return findings
+}
+
+// scanFile runs every applicable rule over a single file's content,
+// returning one finding per (rule, match). Rules are partitioned into
+// full-file and per-line families and applied in that order.
+func (p *patternCheck) scanFile(f FileEntry) []Finding {
+	applicable := make([]compiledRule, 0, len(p.rules))
+	for _, r := range p.rules {
+		if !r.rule.AppliesTo(f.Path) {
 			continue
 		}
+		applicable = append(applicable, r)
+	}
+	if len(applicable) == 0 {
+		return nil
+	}
 
-		fullFile := make([]compiledRule, 0, len(applicable))
-		lineRules := make([]compiledRule, 0, len(applicable))
-		for _, r := range applicable {
-			if r.rule.FullFile {
-				fullFile = append(fullFile, r)
-			} else {
-				lineRules = append(lineRules, r)
-			}
+	fullFile := make([]compiledRule, 0, len(applicable))
+	lineRules := make([]compiledRule, 0, len(applicable))
+	for _, r := range applicable {
+		if r.rule.FullFile {
+			fullFile = append(fullFile, r)
+		} else {
+			lineRules = append(lineRules, r)
 		}
+	}
 
-		for _, r := range fullFile {
-			loc := r.re.FindStringIndex(f.Content)
-			if loc == nil {
-				continue
-			}
-			if r.skip != nil && r.skip.MatchString(f.Content[loc[0]:loc[1]]) {
-				continue
-			}
-			line := lineNumberFor(f.Content, loc[0])
-			findings = append(findings, p.findingFor(r.rule, f.Path, line, lineTextFor(f.Content, loc[0])))
-		}
+	var findings []Finding
+	findings = append(findings, p.scanFullFile(f, fullFile)...)
+	if len(lineRules) == 0 {
+		return findings
+	}
+	findings = append(findings, p.scanLines(f, lineRules)...)
+	return findings
+}
 
-		if len(lineRules) == 0 {
+// scanFullFile applies full-file rules to f, attributing each match to
+// the line of its byte offset.
+func (p *patternCheck) scanFullFile(f FileEntry, rules []compiledRule) []Finding {
+	var findings []Finding
+	for _, r := range rules {
+		loc := r.re.FindStringIndex(f.Content)
+		if loc == nil {
 			continue
 		}
-		lines := strings.Split(f.Content, "\n")
-		for lineIdx, line := range lines {
-			for _, r := range lineRules {
-				if !r.re.MatchString(line) {
-					continue
-				}
-				if r.skip != nil && r.skip.MatchString(line) {
-					continue
-				}
-				findings = append(findings, p.findingFor(r.rule, f.Path, lineIdx+1, line))
+		if r.skip != nil && r.skip.MatchString(f.Content[loc[0]:loc[1]]) {
+			continue
+		}
+		line := lineNumberFor(f.Content, loc[0])
+		findings = append(findings, p.findingFor(r.rule, f.Path, line, lineTextFor(f.Content, loc[0])))
+	}
+	return findings
+}
+
+// scanLines applies per-line rules across every line of f.Content.
+func (p *patternCheck) scanLines(f FileEntry, rules []compiledRule) []Finding {
+	var findings []Finding
+	lines := strings.Split(f.Content, "\n")
+	for lineIdx, line := range lines {
+		for _, r := range rules {
+			if !r.re.MatchString(line) {
+				continue
 			}
+			if r.skip != nil && r.skip.MatchString(line) {
+				continue
+			}
+			findings = append(findings, p.findingFor(r.rule, f.Path, lineIdx+1, line))
 		}
 	}
 	return findings

@@ -147,7 +147,7 @@ func hexCodepoint(r rune) string {
 // both Latin and Cyrillic/Greek scripts. Whitespace-delimited; we don't
 // split on punctuation so multi-word phrases stay coherent.
 func firstMixedScriptWord(line string) (string, bool) {
-	for _, word := range strings.Fields(line) {
+	for word := range strings.FieldsSeq(line) {
 		var hasLatin, hasCyrillic, hasGreek bool
 		for _, r := range word {
 			switch {

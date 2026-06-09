@@ -84,35 +84,13 @@ func Capture(ctx context.Context, s Store, agent, hookType string, payload []byt
 	// 1. Tail the transcript, if we can locate it.
 	if path := resolveTranscriptPath(agent, &hp, sessionID); path != "" {
 		res.TranscriptPath = path
-		lines, newOffset, err := tailTranscript(ctx, s, agent, path)
+		tailed, newCursor, err := captureTranscriptTail(ctx, s, agent, path, &hp, sessionID, agentSessionID, now)
 		if err != nil {
 			return nil, err
 		}
-		for _, ln := range lines {
-			rows = append(rows, &ops.RawTrace{
-				AgentName:        agent,
-				SessionID:        sessionID,
-				AgentSessionID:   agentSessionID,
-				Source:           ops.RawSourceTranscript,
-				SourcePath:       path,
-				WorkingDirectory: hp.Cwd,
-				ByteOffset:       ln.offset,
-				CapturedAt:       now,
-				// Anonymize secrets at capture so redaction trickles into every
-				// derived view. Only the secret value is masked — reasoning,
-				// structure, and JSON validity are preserved. ByteOffset still
-				// points at the original file position (provenance); the tail
-				// cursor advances over the original bytes, not the redacted copy.
-				Raw: redact.Bytes(ln.bytes),
-			})
-		}
-		res.LinesStored = len(lines)
-		cursor = &store.RawCursor{
-			AgentName:  agent,
-			SourcePath: path,
-			ByteOffset: newOffset,
-			SessionID:  sessionID,
-		}
+		rows = append(rows, tailed...)
+		res.LinesStored = len(tailed)
+		cursor = newCursor
 	}
 
 	// 2. Store the raw hook payload verbatim (skip genuinely empty payloads —
@@ -149,26 +127,66 @@ func Capture(ctx context.Context, s Store, agent, hookType string, payload []byt
 		n, hasSkill, derr := persistSpans(ctx, s, sessionID, agent)
 		res.SpansStored = n
 		res.SpanError = derr
-
-		// Skill-only retention: Quiver keeps skill-attributed sessions, not
-		// generic transcripts. When a session completes with no skill usage,
-		// drop it whole (raw + spans + cursor). Only sessions whose agent has a
-		// deriver are eligible — for an agent we can't yet derive, absence of a
-		// skill span is unprovable, so we never delete its data.
-		// derr == nil guards against a failed derivation: a query/persist error
-		// yields hasSkill==false without a clean read, so acting on it would
-		// delete a session we never actually proved skill-free.
-		if completion && !hasSkill && derr == nil {
-			if _, ok := derive.Get(agent); ok {
-				if _, perr := s.DeleteSession(ctx, sessionID); perr == nil {
-					res.Pruned = true
-					res.SpansStored = 0
-				}
-				// A prune failure is non-fatal; capture already succeeded.
-			}
-		}
+		applySkillOnlyRetention(ctx, s, sessionID, agent, completion, hasSkill, derr, res)
 	}
 	return res, nil
+}
+
+// applySkillOnlyRetention enforces Quiver's skill-only retention on a settled
+// session: Quiver keeps skill-attributed sessions, not generic transcripts. When
+// a session completes with no skill usage, drop it whole (raw + spans + cursor)
+// and mark the result pruned. Only sessions whose agent has a deriver are
+// eligible — for an agent we can't yet derive, absence of a skill span is
+// unprovable, so we never delete its data. derr == nil guards against a failed
+// derivation: a query/persist error yields hasSkill==false without a clean read,
+// so acting on it would delete a session we never actually proved skill-free.
+func applySkillOnlyRetention(ctx context.Context, s Store, sessionID uuid.UUID, agent string, completion, hasSkill bool, derr error, res *Result) {
+	if completion && !hasSkill && derr == nil {
+		if _, ok := derive.Get(agent); ok {
+			if _, perr := s.DeleteSession(ctx, sessionID); perr == nil {
+				res.Pruned = true
+				res.SpansStored = 0
+			}
+			// A prune failure is non-fatal; capture already succeeded.
+		}
+	}
+}
+
+// captureTranscriptTail tails the transcript at path from the stored cursor and
+// builds the verbatim RawTrace rows for any new complete lines plus the advanced
+// cursor. Secrets are redacted at capture; the cursor still advances over the
+// original (unredacted) byte length so provenance offsets stay accurate.
+func captureTranscriptTail(ctx context.Context, s Store, agent, path string, hp *hookPayload, sessionID uuid.UUID, agentSessionID string, now time.Time) ([]*ops.RawTrace, *store.RawCursor, error) {
+	lines, newOffset, err := tailTranscript(ctx, s, agent, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var rows []*ops.RawTrace
+	for _, ln := range lines {
+		rows = append(rows, &ops.RawTrace{
+			AgentName:        agent,
+			SessionID:        sessionID,
+			AgentSessionID:   agentSessionID,
+			Source:           ops.RawSourceTranscript,
+			SourcePath:       path,
+			WorkingDirectory: hp.Cwd,
+			ByteOffset:       ln.offset,
+			CapturedAt:       now,
+			// Anonymize secrets at capture so redaction trickles into every
+			// derived view. Only the secret value is masked — reasoning,
+			// structure, and JSON validity are preserved. ByteOffset still
+			// points at the original file position (provenance); the tail
+			// cursor advances over the original bytes, not the redacted copy.
+			Raw: redact.Bytes(ln.bytes),
+		})
+	}
+	cursor := &store.RawCursor{
+		AgentName:  agent,
+		SourcePath: path,
+		ByteOffset: newOffset,
+		SessionID:  sessionID,
+	}
+	return rows, cursor, nil
 }
 
 // isSessionCompletionHook reports whether a hook event marks the end of an

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -71,10 +72,8 @@ func isGitURL(arg string) bool {
 			if strings.HasSuffix(arg, ".git") {
 				return true
 			}
-			for _, h := range []string{"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"} {
-				if host == h {
-					return true
-				}
+			if slices.Contains([]string{"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}, host) {
+				return true
 			}
 		}
 	}

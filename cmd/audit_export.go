@@ -39,12 +39,9 @@ func init() {
 	auditCmd.AddCommand(auditExportCmd)
 }
 
-func runAuditExport(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-
+// buildExportFilter assembles the raw-trace filter from the export flags,
+// validating the --session id when given.
+func buildExportFilter() (*store.RawTraceFilter, error) {
 	filter := &store.RawTraceFilter{}
 	if exportAgent != "" {
 		filter.Agents = []string{exportAgent}
@@ -55,9 +52,22 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 	if exportSession != "" {
 		id, perr := uuid.Parse(exportSession)
 		if perr != nil {
-			return fmt.Errorf("invalid --session id %q: %w", exportSession, perr)
+			return nil, fmt.Errorf("invalid --session id %q: %w", exportSession, perr)
 		}
 		filter.SessionID = &id
+	}
+	return filter, nil
+}
+
+func runAuditExport(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	filter, err := buildExportFilter()
+	if err != nil {
+		return err
 	}
 
 	var w *bufio.Writer

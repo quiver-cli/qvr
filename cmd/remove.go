@@ -55,49 +55,17 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("read lock: %w", err)
 		}
-		var missing []string
-		for _, name := range args {
-			if _, err := lock.Get(name); err != nil {
-				missing = append(missing, name)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("skill(s) not present in lock file: %v (no changes made)", missing)
-		}
-
-		// Mode:edit pre-flight: refuse without --force, since the eject dir
-		// holds user edits that are not recoverable from upstream. Issue #93.
-		if !removeForce {
-			var ejected []string
-			for _, name := range args {
-				e, _ := lock.Get(name)
-				if e != nil && e.IsEdit() {
-					ejected = append(ejected, name)
-				}
-			}
-			if len(ejected) > 0 {
-				return fmt.Errorf("refuse to remove ejected skill(s) %v: the eject dir(s) at <projectRoot>/<EditPath> hold local edits not recoverable from upstream. Pass --force to delete them, or publish first (`qvr publish <skill>`)", ejected)
-			}
+		if err := checkRemovePreconditions(lock, args); err != nil {
+			return err
 		}
 
 		gc := git.NewGoGitClient()
 		wt := git.NewGoGitWorktree()
 		installer := skill.NewInstaller(newRegistryManager(gc), wt, gc)
 
-		var coords []string
-		for _, name := range args {
-			// Capture the qvr.toml coordinate from the in-memory lock BEFORE the
-			// removal so we can drop the matching declarative entry afterwards.
-			entry, _ := lock.Get(name)
-			coord := model.SkillCoordinate(entry)
-			req := skill.InstallRequest{ProjectRoot: projectRoot, Global: removeGlobal, Force: removeForce}
-			if err := installer.Remove(name, req); err != nil {
-				return fmt.Errorf("remove %s: %w", name, err)
-			}
-			removed = append(removed, name)
-			if coord != "" {
-				coords = append(coords, coord)
-			}
+		coords, err := removeSkills(installer, lock, args, projectRoot, &removed)
+		if err != nil {
+			return err
 		}
 		// Write-through: stop declaring the removed skills in qvr.toml so a later
 		// `qvr sync` doesn't resurrect them. Global removals have no project file.
@@ -125,4 +93,58 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		printer.Success(fmt.Sprintf("Removed %s", n))
 	}
 	return nil
+}
+
+// checkRemovePreconditions enforces the atomic guards before any removal: every
+// arg must be present in the lock (like `git rm`, no partial batch), and without
+// --force no mode:edit skill may be removed (its eject dir holds unrecoverable
+// local edits; issue #93).
+func checkRemovePreconditions(lock *model.LockFile, args []string) error {
+	var missing []string
+	for _, name := range args {
+		if _, err := lock.Get(name); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("skill(s) not present in lock file: %v (no changes made)", missing)
+	}
+
+	// Mode:edit pre-flight: refuse without --force, since the eject dir
+	// holds user edits that are not recoverable from upstream. Issue #93.
+	if !removeForce {
+		var ejected []string
+		for _, name := range args {
+			e, _ := lock.Get(name)
+			if e != nil && e.IsEdit() {
+				ejected = append(ejected, name)
+			}
+		}
+		if len(ejected) > 0 {
+			return fmt.Errorf("refuse to remove ejected skill(s) %v: the eject dir(s) at <projectRoot>/<EditPath> hold local edits not recoverable from upstream. Pass --force to delete them, or publish first (`qvr publish <skill>`)", ejected)
+		}
+	}
+	return nil
+}
+
+// removeSkills removes each named skill via the installer, appending successes
+// to *removed and returning the qvr.toml coordinates (captured pre-removal) of
+// the entries that carried one.
+func removeSkills(installer *skill.Installer, lock *model.LockFile, args []string, projectRoot string, removed *[]string) ([]string, error) {
+	var coords []string
+	for _, name := range args {
+		// Capture the qvr.toml coordinate from the in-memory lock BEFORE the
+		// removal so we can drop the matching declarative entry afterwards.
+		entry, _ := lock.Get(name)
+		coord := model.SkillCoordinate(entry)
+		req := skill.InstallRequest{ProjectRoot: projectRoot, Global: removeGlobal, Force: removeForce}
+		if err := installer.Remove(name, req); err != nil {
+			return nil, fmt.Errorf("remove %s: %w", name, err)
+		}
+		*removed = append(*removed, name)
+		if coord != "" {
+			coords = append(coords, coord)
+		}
+	}
+	return coords, nil
 }

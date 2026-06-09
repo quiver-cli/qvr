@@ -119,7 +119,7 @@ func (permissionsCheck) Run(_ context.Context, skill *model.Skill, files []FileE
 // allows `Bash(go test:*)` for scoped permission; the bare `Bash` form
 // grants arbitrary shell.
 func unrestrictedBash(allowed string) (string, bool) {
-	for _, tool := range strings.Fields(allowed) {
+	for tool := range strings.FieldsSeq(allowed) {
 		if strings.EqualFold(tool, "Bash") {
 			return "frontmatter declares unrestricted `Bash` in allowed-tools", true
 		}

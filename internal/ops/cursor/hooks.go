@@ -159,30 +159,54 @@ func (a *Adapter) Uninstall(opts ops.UninstallOptions) (ops.UninstallResult, err
 	}
 
 	if opts.DryRun {
-		c, rErr := readConfig(path)
-		if rErr != nil {
-			return res, rErr
-		}
-		for ht, cmds := range c.Hooks {
-			if len(cmds) != len(stripQuiver(cmds)) {
-				res.HooksRemoved = append(res.HooksRemoved, ht)
-			}
-		}
-		return res, nil
+		return uninstallDryRun(path)
 	}
 
+	if restored, ok, rErr := restoreFromBackup(path); rErr != nil || ok {
+		return restored, rErr
+	}
+
+	return stripQuiverInPlace(path)
+}
+
+// uninstallDryRun reports which hook types a real uninstall would touch,
+// without modifying hooks.json.
+func uninstallDryRun(path string) (ops.UninstallResult, error) {
+	var res ops.UninstallResult
+	c, rErr := readConfig(path)
+	if rErr != nil {
+		return res, rErr
+	}
+	for ht, cmds := range c.Hooks {
+		if len(cmds) != len(stripQuiver(cmds)) {
+			res.HooksRemoved = append(res.HooksRemoved, ht)
+		}
+	}
+	return res, nil
+}
+
+// restoreFromBackup restores hooks.json verbatim from the newest backup when
+// one exists. ok reports whether a backup was found and applied.
+func restoreFromBackup(path string) (ops.UninstallResult, bool, error) {
+	var res ops.UninstallResult
 	if backupDir, bErr := ops.LatestBackupDir(AgentName); bErr == nil && backupDir != "" {
 		bak := filepath.Join(backupDir, "hooks.json.bak")
 		if _, sErr := os.Stat(bak); sErr == nil {
 			if err := ops.CopyFile(bak, path); err != nil {
-				return res, fmt.Errorf("restore backup: %w", err)
+				return res, true, fmt.Errorf("restore backup: %w", err)
 			}
 			res.Restored = true
 			res.HooksRemoved = append([]string(nil), hookTypes...)
-			return res, nil
+			return res, true, nil
 		}
 	}
+	return res, false, nil
+}
 
+// stripQuiverInPlace surgically removes Quiver entries from hooks.json, used
+// when no pre-install backup is available.
+func stripQuiverInPlace(path string) (ops.UninstallResult, error) {
+	var res ops.UninstallResult
 	c, err := readConfig(path)
 	if err != nil {
 		return res, err

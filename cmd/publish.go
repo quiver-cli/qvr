@@ -200,225 +200,14 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		return errors.New("--migrate requires --fork <git-url>")
 	}
 
-	var (
-		result              *skill.PublishInstalledResult
-		entry               *model.LockEntry
-		autoUnejected       bool // tag pushed + relocked + relinked at the new tag
-		autoUnejectNeedsAdd bool // eject torn down, but re-install failed; user must `qvr add` to finish
-	)
+	var ps publishInstalledState
 	lockErr := model.WithLock(config.Dir(), lockPath, func() error {
-		lock, err := model.ReadLockFile(lockPath)
-		if err != nil {
-			return fmt.Errorf("read lock: %w", err)
-		}
-		e, err := lock.Get(name)
-		if err != nil {
-			return err
-		}
-		if e.IsLink() {
-			return fmt.Errorf("cannot publish %q: it is a link install — edit the source path and push with raw git", name)
-		}
-		if !e.IsEdit() {
-			return fmt.Errorf("publish %s: skill is not ejected. Run `qvr edit %s` first to make it editable", name, name)
-		}
-
-		// Integrity pre-check: refuse to publish when the lockfile's recorded
-		// commit doesn't match the edit repo's HEAD (issue #74). Publish is the
-		// place where lockfile drift becomes a permanent artifact on the
-		// registry — silently healing the SHA destroys the audit trail. Allow
-		// override via --allow-lockfile-heal so users with intentional resets
-		// can proceed explicitly.
-		editDir := skill.EffectiveTarget(e, projectRoot)
-		if editDir != "" {
-			head, herr := skill.ResolveEntryHeadCommit(e, projectRoot)
-			if herr == nil && head != "" && e.Commit != "" && head != e.Commit {
-				// Differentiate "user committed legitimately on top of e.Commit"
-				// from "lockfile commit is a fabrication". If head is a
-				// descendant of e.Commit, this is the #99 case — silently
-				// heal so the user doesn't have to flag every local commit.
-				// Otherwise it's the #74 case (tampered or orphaned) and we
-				// refuse without an explicit --allow-lockfile-heal.
-				ancestor, aerr := skill.EntryCommitIsAncestorOfHead(e, projectRoot)
-				switch {
-				case aerr == nil && ancestor:
-					// Legitimate local commit advance — heal silently.
-					e.Commit = head
-				case publishAllowHeal:
-					printer.Warning(fmt.Sprintf("publish %s: healing lockfile commit %s → %s (--allow-lockfile-heal)", name, e.Commit, head))
-					// Persist the heal NOW so the next publish doesn't see drift
-					// even when this publish ends up nothing-to-publish (issue #96).
-					e.Commit = head
-				default:
-					return fmt.Errorf("publish %s: lockfile commit %s does not match edit repo HEAD %s — refuse to publish without --allow-lockfile-heal (issue #74)",
-						name, e.Commit, head)
-				}
-			}
-		}
-
-		// Pre-flight scan gate against the edit dir — mirror the path-mode
-		// publisher's behavior so blocked publishes never touch the upstream.
-		var publishGate *scanGateResult
-		cfg, cerr := config.Load()
-		if cerr == nil && editDir != "" {
-			if err := enforceScanPolicy(cfg, publishNoScan); err != nil {
-				return err
-			}
-			gate, gerr := ScanAndGate(cmd.Context(), editDir, cfg, scanGateOptions{
-				Disabled: publishNoScan,
-				Action:   "publish",
-				Subject:  name,
-			})
-			if gerr != nil {
-				printer.Warning(fmt.Sprintf("publish: scan failed (%v); proceeding — rerun `qvr scan %s` to retry", gerr, name))
-			} else if gate.Blocked {
-				return fmt.Errorf("publish: scan blocked (max severity %s ≥ threshold %s); upstream not touched — see findings above or pass --no-scan to override (issue #74)",
-					gate.Result.Summary.MaxSeverity(), gate.Threshold)
-			} else {
-				publishGate = gate
-			}
-		}
-
-		p := skill.NewPublisher(git.NewGoGitClient())
-		// Serialize all publishes (greenfield and installed) on a single
-		// user-machine sentinel so two concurrent publishes can't race the
-		// remote registry's atomic ref check (issue #88).
-		var r *skill.PublishInstalledResult
-		err = model.WithPublishLock(config.Dir(), func() error {
-			ri, ierr := p.PublishInstalled(cmd.Context(), skill.PublishInstalledRequest{
-				Entry:       e,
-				ProjectRoot: projectRoot,
-				ForkURL:     publishFork,
-				Migrate:     publishMigrate,
-				Tag:         publishTag,
-				Branch:      publishBranch,
-				Message:     publishMessage,
-				Author:      publishAuthor,
-				Email:       publishEmail,
-				DryRun:      publishDryRun,
-				AutoCommit:  publishAutoCommit,
-				Layout:      publishLayout,
-			})
-			r = ri
-			return ierr
-		})
-		if err != nil {
-			return err
-		}
-		// PublishInstalled mutated the entry on success — persist. Reflect
-		// the just-run scan gate onto the entry's verification block so the
-		// recorded scan describes the NEW commit, not a stale one carried
-		// from the previous publish (issue #71). When the gate was skipped
-		// via --no-scan, applyScanToEntry installs the sentinel from
-		// toScanRef so the lock distinguishes "scanned and clean" from
-		// "scan was skipped".
-		if !publishDryRun {
-			applyScanToEntry(e, publishGate)
-			lock.Put(e)
-			if err := lock.Write(); err != nil {
-				return fmt.Errorf("write lock: %w", err)
-			}
-
-			// Auto un-eject: after a tagged publish, flip the lockfile
-			// out of edit mode and re-symlink the agent targets at the
-			// new tag's shared worktree — the same end state as
-			//   qvr remove --force <skill> && qvr add <skill>@<tag>
-			// without making the maintainer run them. The eject dir is
-			// removed; any committed-but-unpublished work beyond <tag>
-			// is gone, matching the cargo/npm convention that publish
-			// ends the editing session.
-			//
-			// Skipped for:
-			//   - dry-run / nothing-to-publish (no new state to switch to)
-			//   - HEAD-only push (no tag means the user is iterating)
-			//   - --fork without --migrate (the local entry still tracks
-			//     the original registry — re-resolving against the old
-			//     registry's tags would silently pick the wrong source)
-			//   - any other state where Registry can't be resolved
-			//     (auto-register attempted for --fork --migrate; see
-			//     autoRegisterForkAsRegistry — issue #108)
-			if r != nil && !r.NothingToPublish && publishTag != "" {
-				targetsCopy := append([]string{}, e.Targets...)
-				registryName := e.Registry
-				if registryName == "" && publishFork != "" && publishMigrate {
-					// --fork --migrate --tag graduation: PublishInstalled
-					// just cleared e.Registry and pointed e.Source at the
-					// fork URL. Auto-register the fork as a local
-					// registry so the standard install path can resolve
-					// it, then proceed through the same Remove + Install
-					// rails as a same-registry graduation. Issue #108.
-					if newName := autoRegisterForkAsRegistry(cmd.Context(), publishFork, e); newName != "" {
-						registryName = newName
-						// Persist the entry's freshly-set Registry now so
-						// a mid-flight failure leaves the lock pointing
-						// at a registry the world knows about, not "".
-						lock.Put(e)
-						if perr := lock.Write(); perr != nil {
-							printer.Warning(fmt.Sprintf("publish %s: persist auto-added registry failed (%v)", name, perr))
-						}
-					}
-				}
-				if registryName != "" {
-					gcc := git.NewGoGitClient()
-					wt := git.NewGoGitWorktree()
-					mgr := newRegistryManager(gcc)
-					installer := skill.NewInstaller(mgr, wt, gcc)
-
-					// Aliased installs need to re-install with the canonical
-					// name + As=alias because the registry index lists the
-					// canonical, not the local alias. Pre-#113 the auto-
-					// uneject used `name + "@" + publishTag` directly, which
-					// silently failed `FindSkillIn` for aliased entries. The
-					// non-aliased path is a no-op (canonical == name, As ==
-					// ""). Mirrors the same pattern in cmd/switch.go and
-					// cmd/upgrade.go.
-					canonicalSkill := name
-					aliasFlag := ""
-					if e.Canonical != "" {
-						canonicalSkill = e.Canonical
-						aliasFlag = name
-					}
-
-					// Refresh the bare clone so FindSkillIn sees the
-					// just-pushed tag; without this the new tag isn't
-					// in the local index yet and Install would resolve
-					// against stale tags.
-					if _, uerr := mgr.Update(cmd.Context(), registryName); uerr != nil {
-						printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — refresh %s failed (%v)", name, registryName, uerr))
-					} else if rerr := installer.Remove(name, skill.InstallRequest{
-						ProjectRoot: projectRoot,
-						Global:      publishGlobal,
-						LockPath:    lockPath,
-						Force:       true,
-					}); rerr != nil {
-						printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — remove failed (%v)", name, rerr))
-					} else if _, ierr := installer.Install(skill.InstallRequest{
-						Skill:       canonicalSkill + "@" + publishTag,
-						Targets:     targetsCopy,
-						Global:      publishGlobal,
-						ProjectRoot: projectRoot,
-						LockPath:    lockPath,
-						Force:       true,
-						Registry:    registryName,
-						As:          aliasFlag,
-					}); ierr != nil {
-						// Remove already tore down the eject dir + lock
-						// entry. The user needs `qvr add` (not the full
-						// two-step) to recover.
-						autoUnejectNeedsAdd = true
-						printer.Warning(fmt.Sprintf("publish %s: tag pushed and eject torn down, but re-install at %s failed (%v)", name, publishTag, ierr))
-					} else {
-						autoUnejected = true
-					}
-				}
-			}
-		}
-		result = r
-		entry = e
-		return nil
+		return publishInstalledUnderLock(cmd, name, projectRoot, lockPath, &ps)
 	})
 	if lockErr != nil {
 		return lockErr
 	}
+	result := ps.result
 
 	// Write-through: a successful publish auto-un-ejects the skill back to shared
 	// mode (with --fork --migrate, on the new fork's registry), so it re-gains a
@@ -438,6 +227,15 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 	if printer.Format == output.FormatJSON {
 		return printer.JSON(result)
 	}
+	return renderPublishInstalled(&ps)
+}
+
+// renderPublishInstalled prints the text-mode publish summary: the dry-run /
+// nothing-to-publish short-circuits, the "Published … (tagged …)" success line
+// with its migration context, and the auto un-eject status / manual-recovery
+// hint. Mirrors the exit-0 contract of the original inline rendering.
+func renderPublishInstalled(ps *publishInstalledState) error {
+	result := ps.result
 	if result.DryRun {
 		tagSuffix := ""
 		if result.Tag != "" {
@@ -454,6 +252,16 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		printer.Info(fmt.Sprintf("Nothing to publish: %s already matches %s@%s", result.Skill, result.Remote, result.Branch))
 		return nil
 	}
+	printer.Success(publishSuccessMessage(ps))
+	renderAutoUnejectStatus(ps)
+	return nil
+}
+
+// publishSuccessMessage builds the "Published …" line, appending the tag,
+// fork-migration context (and its three-state trailing note, issue #113), and
+// layout suffix.
+func publishSuccessMessage(ps *publishInstalledState) string {
+	result := ps.result
 	shortCommit := result.Commit
 	if len(shortCommit) >= 7 {
 		shortCommit = shortCommit[:7]
@@ -477,32 +285,35 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		//                           (issue #113).
 		//   - neither (registry "", autoRegister refused, etc.):
 		//                           keep the legacy explanation.
-		if !autoUnejected && !autoUnejectNeedsAdd {
+		if !ps.autoUnejected && !ps.autoUnejectNeedsAdd {
 			msg += " (Registry field cleared; auto-uneject did not run)"
 		}
-		_ = entry // suppress unused — kept for future hook points
+		_ = ps.entry // suppress unused — kept for future hook points
 	}
 	if result.Layout != "" {
 		msg += fmt.Sprintf(" [layout=%s]", result.Layout)
 	}
-	printer.Success(msg)
+	return msg
+}
 
-	// Auto un-eject status. After a tagged install-mode publish, the
-	// maintainer round-trip flips the lockfile out of edit mode and
-	// re-symlinks at the new tag automatically. Cover the four states:
-	//
-	//   - autoUnejected: full success, the entry is back in consume mode.
-	//   - autoUnejectNeedsAdd: Remove tore down state but Install failed;
-	//     the user has no entry on disk and needs to add to recover.
-	//   - publishFork or empty registry: auto un-eject was skipped by
-	//     design; print the manual recovery hint.
-	//   - otherwise (tag set, normal publish): never reached unless the
-	//     auto-un-eject Update or Remove step bailed mid-flight; surface
-	//     the same manual recovery hint as the conservative fallback.
+// renderAutoUnejectStatus prints the post-publish auto un-eject verdict. After a
+// tagged install-mode publish the maintainer round-trip flips the lockfile out
+// of edit mode and re-symlinks at the new tag automatically. Covers the states:
+//
+//   - autoUnejected: full success, the entry is back in consume mode.
+//   - autoUnejectNeedsAdd: Remove tore down state but Install failed;
+//     the user has no entry on disk and needs to add to recover.
+//   - publishFork or empty registry: auto un-eject was skipped by
+//     design; print the manual recovery hint.
+//   - otherwise (tag set, normal publish): never reached unless the
+//     auto-un-eject Update or Remove step bailed mid-flight; surface
+//     the same manual recovery hint as the conservative fallback.
+func renderAutoUnejectStatus(ps *publishInstalledState) {
+	result := ps.result
 	switch {
-	case autoUnejected:
+	case ps.autoUnejected:
 		printer.Info(fmt.Sprintf("Switched %s back to consume mode at %s", result.Skill, result.Tag))
-	case autoUnejectNeedsAdd:
+	case ps.autoUnejectNeedsAdd:
 		printer.Info(fmt.Sprintf("Hint: run `qvr add %s@%s` to finish switching back to consume mode",
 			result.Skill, result.Tag))
 	case result.Tag != "" && !result.DryRun && !result.NothingToPublish && publishFork == "":
@@ -515,7 +326,248 @@ func runPublishInstalled(cmd *cobra.Command, name, projectRoot, lockPath string)
 		// trailing hint — `qvr add %s@%s` doesn't work for a fork URL
 		// that isn't a configured registry yet.
 	}
+}
+
+// publishInstalledState carries the under-lock publish outcome back to
+// runPublishInstalled for rendering.
+type publishInstalledState struct {
+	result              *skill.PublishInstalledResult
+	entry               *model.LockEntry
+	autoUnejected       bool // tag pushed + relocked + relinked at the new tag
+	autoUnejectNeedsAdd bool // eject torn down, but re-install failed; user must `qvr add` to finish
+}
+
+// publishInstalledUnderLock runs the lock-held body of an install-mode publish:
+// validate the entry is ejected, integrity-check the lockfile commit, scan-gate
+// the edit dir, push via the publisher, persist the entry, and (on a tagged
+// publish) auto un-eject back to consume mode. Outcomes land on ps.
+func publishInstalledUnderLock(cmd *cobra.Command, name, projectRoot, lockPath string, ps *publishInstalledState) error {
+	lock, err := model.ReadLockFile(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lock: %w", err)
+	}
+	e, err := lock.Get(name)
+	if err != nil {
+		return err
+	}
+	if e.IsLink() {
+		return fmt.Errorf("cannot publish %q: it is a link install — edit the source path and push with raw git", name)
+	}
+	if !e.IsEdit() {
+		return fmt.Errorf("publish %s: skill is not ejected. Run `qvr edit %s` first to make it editable", name, name)
+	}
+
+	editDir := skill.EffectiveTarget(e, projectRoot)
+	if err := checkPublishLockfileIntegrity(e, name, projectRoot, editDir); err != nil {
+		return err
+	}
+
+	// Pre-flight scan gate against the edit dir — mirror the path-mode
+	// publisher's behavior so blocked publishes never touch the upstream.
+	publishGate, gerr := preflightPublishScan(cmd, name, editDir)
+	if gerr != nil {
+		return gerr
+	}
+
+	p := skill.NewPublisher(git.NewGoGitClient())
+	// Serialize all publishes (greenfield and installed) on a single
+	// user-machine sentinel so two concurrent publishes can't race the
+	// remote registry's atomic ref check (issue #88).
+	var r *skill.PublishInstalledResult
+	err = model.WithPublishLock(config.Dir(), func() error {
+		ri, ierr := p.PublishInstalled(cmd.Context(), skill.PublishInstalledRequest{
+			Entry:       e,
+			ProjectRoot: projectRoot,
+			ForkURL:     publishFork,
+			Migrate:     publishMigrate,
+			Tag:         publishTag,
+			Branch:      publishBranch,
+			Message:     publishMessage,
+			Author:      publishAuthor,
+			Email:       publishEmail,
+			DryRun:      publishDryRun,
+			AutoCommit:  publishAutoCommit,
+			Layout:      publishLayout,
+		})
+		r = ri
+		return ierr
+	})
+	if err != nil {
+		return err
+	}
+	// PublishInstalled mutated the entry on success — persist. Reflect
+	// the just-run scan gate onto the entry's verification block so the
+	// recorded scan describes the NEW commit, not a stale one carried
+	// from the previous publish (issue #71). When the gate was skipped
+	// via --no-scan, applyScanToEntry installs the sentinel from
+	// toScanRef so the lock distinguishes "scanned and clean" from
+	// "scan was skipped".
+	if !publishDryRun {
+		applyScanToEntry(e, publishGate)
+		lock.Put(e)
+		if err := lock.Write(); err != nil {
+			return fmt.Errorf("write lock: %w", err)
+		}
+
+		if r != nil && !r.NothingToPublish && publishTag != "" {
+			autoUnejectAfterPublish(cmd, name, projectRoot, lockPath, lock, e, ps)
+		}
+	}
+	ps.result = r
+	ps.entry = e
 	return nil
+}
+
+// checkPublishLockfileIntegrity refuses to publish when the lockfile's recorded
+// commit doesn't match the edit repo's HEAD (issue #74), since publish makes
+// lockfile drift a permanent registry artifact. A legitimate local commit
+// advance (HEAD descends from e.Commit, #99) heals silently; --allow-lockfile-
+// heal heals with a warning; anything else (tampered/orphaned) is refused.
+func checkPublishLockfileIntegrity(e *model.LockEntry, name, projectRoot, editDir string) error {
+	if editDir == "" {
+		return nil
+	}
+	head, herr := skill.ResolveEntryHeadCommit(e, projectRoot)
+	if herr != nil || head == "" || e.Commit == "" || head == e.Commit {
+		return nil
+	}
+	// Differentiate "user committed legitimately on top of e.Commit"
+	// from "lockfile commit is a fabrication". If head is a
+	// descendant of e.Commit, this is the #99 case — silently
+	// heal so the user doesn't have to flag every local commit.
+	// Otherwise it's the #74 case (tampered or orphaned) and we
+	// refuse without an explicit --allow-lockfile-heal.
+	ancestor, aerr := skill.EntryCommitIsAncestorOfHead(e, projectRoot)
+	switch {
+	case aerr == nil && ancestor:
+		// Legitimate local commit advance — heal silently.
+		e.Commit = head
+	case publishAllowHeal:
+		printer.Warning(fmt.Sprintf("publish %s: healing lockfile commit %s → %s (--allow-lockfile-heal)", name, e.Commit, head))
+		// Persist the heal NOW so the next publish doesn't see drift
+		// even when this publish ends up nothing-to-publish (issue #96).
+		e.Commit = head
+	default:
+		return fmt.Errorf("publish %s: lockfile commit %s does not match edit repo HEAD %s — refuse to publish without --allow-lockfile-heal (issue #74)",
+			name, e.Commit, head)
+	}
+	return nil
+}
+
+// preflightPublishScan runs the scan gate against the edit dir before the push,
+// mirroring the path-mode publisher so a blocked publish never touches upstream.
+// Returns the gate to record on the entry (nil when scanning was skipped or
+// failed), or an error when the gate blocked or the scan policy refused.
+func preflightPublishScan(cmd *cobra.Command, name, editDir string) (*scanGateResult, error) {
+	cfg, cerr := config.Load()
+	if cerr != nil || editDir == "" {
+		return nil, nil
+	}
+	if err := enforceScanPolicy(cfg, publishNoScan); err != nil {
+		return nil, err
+	}
+	gate, gerr := ScanAndGate(cmd.Context(), editDir, cfg, scanGateOptions{
+		Disabled: publishNoScan,
+		Action:   "publish",
+		Subject:  name,
+	})
+	if gerr != nil {
+		printer.Warning(fmt.Sprintf("publish: scan failed (%v); proceeding — rerun `qvr scan %s` to retry", gerr, name))
+		return nil, nil
+	}
+	if gate.Blocked {
+		return nil, fmt.Errorf("publish: scan blocked (max severity %s ≥ threshold %s); upstream not touched — see findings above or pass --no-scan to override (issue #74)",
+			gate.Result.Summary.MaxSeverity(), gate.Threshold)
+	}
+	return gate, nil
+}
+
+// autoUnejectAfterPublish flips the lockfile out of edit mode and re-symlinks
+// the agent targets at the new tag's shared worktree — the same end state as
+//
+//	qvr remove --force <skill> && qvr add <skill>@<tag>
+//
+// without making the maintainer run them. The eject dir is removed; any
+// committed-but-unpublished work beyond <tag> is gone, matching the cargo/npm
+// convention that publish ends the editing session. Updates ps.autoUnejected /
+// ps.autoUnejectNeedsAdd; a registry that can't be resolved is a silent no-op
+// (auto-register is attempted for --fork --migrate; see autoRegisterForkAsRegistry,
+// issue #108).
+func autoUnejectAfterPublish(cmd *cobra.Command, name, projectRoot, lockPath string, lock *model.LockFile, e *model.LockEntry, ps *publishInstalledState) {
+	targetsCopy := append([]string{}, e.Targets...)
+	registryName := e.Registry
+	if registryName == "" && publishFork != "" && publishMigrate {
+		// --fork --migrate --tag graduation: PublishInstalled
+		// just cleared e.Registry and pointed e.Source at the
+		// fork URL. Auto-register the fork as a local
+		// registry so the standard install path can resolve
+		// it, then proceed through the same Remove + Install
+		// rails as a same-registry graduation. Issue #108.
+		if newName := autoRegisterForkAsRegistry(cmd.Context(), publishFork, e); newName != "" {
+			registryName = newName
+			// Persist the entry's freshly-set Registry now so
+			// a mid-flight failure leaves the lock pointing
+			// at a registry the world knows about, not "".
+			lock.Put(e)
+			if perr := lock.Write(); perr != nil {
+				printer.Warning(fmt.Sprintf("publish %s: persist auto-added registry failed (%v)", name, perr))
+			}
+		}
+	}
+	if registryName == "" {
+		return
+	}
+	gcc := git.NewGoGitClient()
+	wt := git.NewGoGitWorktree()
+	mgr := newRegistryManager(gcc)
+	installer := skill.NewInstaller(mgr, wt, gcc)
+
+	// Aliased installs need to re-install with the canonical
+	// name + As=alias because the registry index lists the
+	// canonical, not the local alias. Pre-#113 the auto-
+	// uneject used `name + "@" + publishTag` directly, which
+	// silently failed `FindSkillIn` for aliased entries. The
+	// non-aliased path is a no-op (canonical == name, As ==
+	// ""). Mirrors the same pattern in cmd/switch.go and
+	// cmd/upgrade.go.
+	canonicalSkill := name
+	aliasFlag := ""
+	if e.Canonical != "" {
+		canonicalSkill = e.Canonical
+		aliasFlag = name
+	}
+
+	// Refresh the bare clone so FindSkillIn sees the
+	// just-pushed tag; without this the new tag isn't
+	// in the local index yet and Install would resolve
+	// against stale tags.
+	if _, uerr := mgr.Update(cmd.Context(), registryName); uerr != nil {
+		printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — refresh %s failed (%v)", name, registryName, uerr))
+	} else if rerr := installer.Remove(name, skill.InstallRequest{
+		ProjectRoot: projectRoot,
+		Global:      publishGlobal,
+		LockPath:    lockPath,
+		Force:       true,
+	}); rerr != nil {
+		printer.Warning(fmt.Sprintf("publish %s: auto un-eject skipped — remove failed (%v)", name, rerr))
+	} else if _, ierr := installer.Install(skill.InstallRequest{
+		Skill:       canonicalSkill + "@" + publishTag,
+		Targets:     targetsCopy,
+		Global:      publishGlobal,
+		ProjectRoot: projectRoot,
+		LockPath:    lockPath,
+		Force:       true,
+		Registry:    registryName,
+		As:          aliasFlag,
+	}); ierr != nil {
+		// Remove already tore down the eject dir + lock
+		// entry. The user needs `qvr add` (not the full
+		// two-step) to recover.
+		ps.autoUnejectNeedsAdd = true
+		printer.Warning(fmt.Sprintf("publish %s: tag pushed and eject torn down, but re-install at %s failed (%v)", name, publishTag, ierr))
+	} else {
+		ps.autoUnejected = true
+	}
 }
 
 func runPublishGreenfield(cmd *cobra.Command, path string) error {

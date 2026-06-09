@@ -8,6 +8,7 @@ import (
 	"github.com/astra-sh/qvr/internal/git"
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/output"
+	"github.com/astra-sh/qvr/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -91,9 +92,23 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list tags: %w", err)
 	}
 
-	// `current` (the ref this skill is checked out at) came from the same lock
-	// entry we scoped resolution to above; it's "" when nothing is installed
-	// here, which just means no ref is marked current — not an error.
+	vl := buildVersionList(skillName, loc, current, branches, tags)
+
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(vl)
+	}
+
+	renderVersionListText(cmd, skillName, loc.RegistryName, vl)
+	return nil
+}
+
+// buildVersionList assembles the sorted VersionList for a skill from its
+// registry's branches and tags, marking the currently-checked-out ref. Only the
+// skill's own tags belong (namespaced "<skill>/<v>" plus bare legacy tags),
+// never siblings' versions (#152).
+func buildVersionList(skillName string, loc *registry.SkillLocation, current string, branches, tags []git.RefInfo) *model.VersionList {
+	// `current` (the ref this skill is checked out at) is "" when nothing is
+	// installed here, which just means no ref is marked current — not an error.
 	vl := &model.VersionList{
 		SkillName:     skillName,
 		Registry:      loc.RegistryName,
@@ -127,12 +142,12 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 	}
 
 	model.SortVersions(vl, loc.DefaultBranch)
+	return vl
+}
 
-	if printer.Format == output.FormatJSON {
-		return printer.JSON(vl)
-	}
-
-	printer.Info(fmt.Sprintf("Versions for %s (registry: %s):\n", skillName, loc.RegistryName))
+// renderVersionListText prints the tag/branch tables for `qvr version list`.
+func renderVersionListText(cmd *cobra.Command, skillName, registryName string, vl *model.VersionList) {
+	printer.Info(fmt.Sprintf("Versions for %s (registry: %s):\n", skillName, registryName))
 	if len(vl.Tags) > 0 {
 		printer.Info("Tags:")
 		for _, tag := range vl.Tags {
@@ -159,7 +174,6 @@ func runVersionList(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s%s\t%s%s\n", marker, b.Ref, shortHash(b.Commit), suffix)
 		}
 	}
-	return nil
 }
 
 // currentInstalledEntry looks up the skill in the project's lock file and

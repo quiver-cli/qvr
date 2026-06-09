@@ -369,8 +369,20 @@ func summarise(findings []Finding) Summary {
 	return s
 }
 
+// sortFindings imposes a single canonical (total) order on a skill's findings,
+// applied once and shared by BOTH the `qvr scan` display and the report
+// serialization that verification.scan.reportSHA hashes (issue #234).
+//
+// The ordering must be TOTAL: checks emit findings in Go map-iteration order
+// (e.g. mcp_least_privilege walks the declared/exercised capability maps), so
+// any pair the comparator leaves "equal" keeps its non-deterministic input
+// order under SliceStable. That leaked into reportSHA — installing the same
+// skill@commit on two machines produced different hashes and churned the
+// committed qvr.lock. Tie-breaking down to Message (which embeds the offending
+// capability/token, so sibling LP4/LP1 findings differ there) and finally
+// Evidence removes every map-order-dependent tie.
 func sortFindings(findings []Finding) {
-	sort.SliceStable(findings, func(i, j int) bool {
+	sort.Slice(findings, func(i, j int) bool {
 		a, b := findings[i], findings[j]
 		// Highest severity first.
 		if a.Severity.Rank() != b.Severity.Rank() {
@@ -382,6 +394,15 @@ func sortFindings(findings []Finding) {
 		if a.File != b.File {
 			return a.File < b.File
 		}
-		return a.Line < b.Line
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.RuleID != b.RuleID {
+			return a.RuleID < b.RuleID
+		}
+		if a.Message != b.Message {
+			return a.Message < b.Message
+		}
+		return a.Evidence < b.Evidence
 	})
 }

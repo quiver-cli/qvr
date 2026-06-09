@@ -88,6 +88,36 @@ func TestSortFindingsBySeverityThenFileLine(t *testing.T) {
 	assert.Equal(t, "unicode", findings[2].Check)
 }
 
+// TestSortFindingsIsTotalOrder pins the issue #234 fix: findings that tie on
+// (severity, check, file, line) must still sort deterministically rather than
+// keeping their input (Go map-iteration) order. Two LP4-style findings differ
+// only by RuleID/Message; feeding the same set in two different input orders
+// must produce the same output order, so the downstream reportSHA is stable.
+func TestSortFindingsIsTotalOrder(t *testing.T) {
+	// Same severity/check/file/line — only Message (and RuleID) differ, mirroring
+	// the mcp_least_privilege LP4 findings that churned reportSHA.
+	mk := func() []Finding {
+		return []Finding{
+			{Check: "mcp_least_privilege", RuleID: "LP4", Severity: SeverityInfo, File: "SKILL.md", Message: "LP4: shell declared but never exercised"},
+			{Check: "mcp_least_privilege", RuleID: "LP4", Severity: SeverityInfo, File: "SKILL.md", Message: "LP4: file_read declared but never exercised"},
+			{Check: "mcp_least_privilege", RuleID: "LP4", Severity: SeverityInfo, File: "SKILL.md", Message: "LP4: file_write declared but never exercised"},
+		}
+	}
+	a := mk()
+	sortFindings(a)
+	// Reverse the input and sort again — a total order yields the identical slice.
+	b := mk()
+	b[0], b[2] = b[2], b[0]
+	sortFindings(b)
+
+	require.Len(t, a, 3)
+	assert.Equal(t, a, b, "sortFindings must be a total order independent of input order")
+	// Messages must be in ascending order (the canonical tie-break).
+	assert.Equal(t, "LP4: file_read declared but never exercised", a[0].Message)
+	assert.Equal(t, "LP4: file_write declared but never exercised", a[1].Message)
+	assert.Equal(t, "LP4: shell declared but never exercised", a[2].Message)
+}
+
 func TestFilter(t *testing.T) {
 	findings := []Finding{
 		{Severity: SeverityInfo},

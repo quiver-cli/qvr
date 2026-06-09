@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"unicode/utf8"
@@ -168,68 +169,13 @@ func WalkSkill(dir string) ([]FileEntry, error) {
 			return nil
 		}
 
-		rel, err := filepath.Rel(abs, path)
+		entry, skip, err := walkFileEntry(abs, path)
 		if err != nil {
 			return err
 		}
-		rel = filepath.ToSlash(rel)
-
-		// Use Lstat so symlinks come through as symlinks, not their
-		// targets. This matters for the permissions check.
-		fi, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("lstat %s: %w", rel, err)
-		}
-
-		entry := FileEntry{
-			Path: rel,
-			Mode: fi.Mode(),
-			Size: fi.Size(),
-		}
-
-		// Don't read symlinks; their content is the target path which
-		// we'd misattribute as skill content.
-		if fi.Mode()&os.ModeSymlink != 0 {
-			entry.IsSymlink = true
-			if target, err := os.Readlink(path); err == nil {
-				entry.SymlinkTarget = target
-			}
-			if _, err := os.Stat(path); err != nil {
-				// Stat follows symlinks, so an error here means the
-				// target is missing or there's a cycle. Both belong on
-				// the report (issue #40) — the permissions check
-				// surfaces them as info findings.
-				entry.SymlinkBroken = true
-			}
-			entries = append(entries, entry)
+		if skip {
 			return nil
 		}
-
-		if maxScanBytes > 0 && fi.Size() > maxScanBytes {
-			entry.Truncated = true
-			// Stream the file looking for credential prefixes only.
-			// Other detectors (patterns, unicode, signatures) still
-			// skip the file — the coverage check tells the user — but
-			// the highest-stakes leak class (secrets) at least cannot
-			// hide behind a 1-byte-over-cap pad. Issue #44.
-			if hits, err := streamScanForSecrets(path); err == nil {
-				entry.OversizeSecretHits = hits
-			}
-			entries = append(entries, entry)
-			return nil
-		}
-
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", rel, err)
-		}
-
-		if isBinary(content) {
-			entry.IsBinary = true
-		} else {
-			entry.Content = string(content)
-		}
-
 		entries = append(entries, entry)
 		return nil
 	})
@@ -239,6 +185,81 @@ func WalkSkill(dir string) ([]FileEntry, error) {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+// walkFileEntry builds the FileEntry for a single regular file at path,
+// relative to the scan root abs. It returns skip=true when the file
+// produced no entry (currently never — reserved so the walker callback
+// can stay branch-light); errors are already wrapped for the caller.
+func walkFileEntry(abs, path string) (FileEntry, bool, error) {
+	rel, err := filepath.Rel(abs, path)
+	if err != nil {
+		return FileEntry{}, false, err
+	}
+	rel = filepath.ToSlash(rel)
+
+	// Use Lstat so symlinks come through as symlinks, not their
+	// targets. This matters for the permissions check.
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return FileEntry{}, false, fmt.Errorf("lstat %s: %w", rel, err)
+	}
+
+	entry := FileEntry{
+		Path: rel,
+		Mode: fi.Mode(),
+		Size: fi.Size(),
+	}
+
+	// Don't read symlinks; their content is the target path which
+	// we'd misattribute as skill content.
+	if fi.Mode()&os.ModeSymlink != 0 {
+		fillSymlinkEntry(&entry, path)
+		return entry, false, nil
+	}
+
+	if maxScanBytes > 0 && fi.Size() > maxScanBytes {
+		entry.Truncated = true
+		// Stream the file looking for credential prefixes only.
+		// Other detectors (patterns, unicode, signatures) still
+		// skip the file — the coverage check tells the user — but
+		// the highest-stakes leak class (secrets) at least cannot
+		// hide behind a 1-byte-over-cap pad. Issue #44.
+		if hits, err := streamScanForSecrets(path); err == nil {
+			entry.OversizeSecretHits = hits
+		}
+		return entry, false, nil
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return FileEntry{}, false, fmt.Errorf("read %s: %w", rel, err)
+	}
+
+	if isBinary(content) {
+		entry.IsBinary = true
+	} else {
+		entry.Content = string(content)
+	}
+
+	return entry, false, nil
+}
+
+// fillSymlinkEntry populates the symlink-specific fields of entry for the
+// link at path: its raw target and whether the target resolves. We never
+// dereference the link to read content.
+func fillSymlinkEntry(entry *FileEntry, path string) {
+	entry.IsSymlink = true
+	if target, err := os.Readlink(path); err == nil {
+		entry.SymlinkTarget = target
+	}
+	if _, err := os.Stat(path); err != nil {
+		// Stat follows symlinks, so an error here means the
+		// target is missing or there's a cycle. Both belong on
+		// the report (issue #40) — the permissions check
+		// surfaces them as info findings.
+		entry.SymlinkBroken = true
+	}
 }
 
 // streamScanForSecrets opens path and runs the high-precision
@@ -301,10 +322,8 @@ func isBinary(content []byte) bool {
 		return false
 	}
 	// A NUL byte in the first 512 bytes is the strongest single signal.
-	for _, b := range probe {
-		if b == 0 {
-			return true
-		}
+	if slices.Contains(probe, 0) {
+		return true
 	}
 	return !utf8.Valid(probe)
 }

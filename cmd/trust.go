@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -117,11 +118,9 @@ func runTrustPin(cmd *cobra.Command, args []string) error {
 		cfg.Trust.Registries = map[string]config.RegistryTrustConfig{}
 	}
 	p := cfg.Trust.Registries[registryName]
-	for _, existing := range p.Authors {
-		if existing == author {
-			printer.Success(fmt.Sprintf("Trusted author %q for registry %s", author, registryName))
-			return config.Save(cfg)
-		}
+	if slices.Contains(p.Authors, author) {
+		printer.Success(fmt.Sprintf("Trusted author %q for registry %s", author, registryName))
+		return config.Save(cfg)
 	}
 	p.Authors = append(p.Authors, author)
 	sort.Strings(p.Authors)
@@ -215,20 +214,7 @@ func runTrustVerify(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		filter = args[0]
 	}
-	var rows []trustVerifyRow
-	failed := 0
-	for _, scoped := range locks {
-		for _, entry := range scoped.Lock.Entries() {
-			if filter != "" && entry.Name != filter {
-				continue
-			}
-			row := verifyTrustEntry(entry, cfg)
-			rows = append(rows, row)
-			if row.Status == "failed" {
-				failed++
-			}
-		}
-	}
+	rows, failed := collectTrustVerifyRows(locks, cfg, filter)
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].Registry == rows[j].Registry {
 			return rows[i].Skill < rows[j].Skill
@@ -256,6 +242,27 @@ func runTrustVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("trust verify failed for %d skill(s)", failed)
 	}
 	return nil
+}
+
+// collectTrustVerifyRows verifies every (optionally filtered) installed skill
+// across the scoped locks, returning the rows and the count with status
+// "failed".
+func collectTrustVerifyRows(locks []scopedLock, cfg *config.Config, filter string) ([]trustVerifyRow, int) {
+	var rows []trustVerifyRow
+	failed := 0
+	for _, scoped := range locks {
+		for _, entry := range scoped.Lock.Entries() {
+			if filter != "" && entry.Name != filter {
+				continue
+			}
+			row := verifyTrustEntry(entry, cfg)
+			rows = append(rows, row)
+			if row.Status == "failed" {
+				failed++
+			}
+		}
+	}
+	return rows, failed
 }
 
 func verifyTrustEntry(entry *model.LockEntry, cfg *config.Config) trustVerifyRow {

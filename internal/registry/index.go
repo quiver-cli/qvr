@@ -78,13 +78,7 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 
 	// 1. Every SKILL.md anywhere in the tree maps to its containing directory
 	//    ("." for a root SKILL.md). This is the "search all SKILL.md files" pass.
-	var skillDirs []string
-	for _, b := range blobs {
-		if path.Base(b.Path) != "SKILL.md" {
-			continue
-		}
-		skillDirs = append(skillDirs, path.Dir(b.Path))
-	}
+	skillDirs := collectSkillDirs(blobs)
 	// Sort so any ancestor directory precedes its descendants — required for the
 	// single-pass prune below to be correct and deterministic.
 	sort.Strings(skillDirs)
@@ -93,6 +87,46 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 	//    skill's own asset (references/, scripts/, examples, …), not a separate
 	//    skill. The repo ROOT is the sole exception: it may itself be a skill yet
 	//    still parents sibling skills, so it never prunes its children.
+	kept := pruneNestedSkillDirs(skillDirs)
+
+	// 3. Parse, validate, and dedup the kept skill directories.
+	skills, skipped := idx.indexSkillDirs(repoPath, kept)
+
+	// 4. Flag a root skill that coexists with siblings so scan/install can scope
+	//    it to its own content rather than the entire repository.
+	if len(skills) > 1 {
+		for i := range skills {
+			if skills[i].Path == "." {
+				skills[i].RootCoexists = true
+			}
+		}
+	}
+
+	idx.populateVersions(repoPath, skills)
+
+	return skills, skipped, nil
+}
+
+// collectSkillDirs maps every SKILL.md blob anywhere in the tree to its
+// containing directory ("." for a root SKILL.md). This is the "search all
+// SKILL.md files" pass of BuildIndex.
+func collectSkillDirs(blobs []git.TreeEntry) []string {
+	var skillDirs []string
+	for _, b := range blobs {
+		if path.Base(b.Path) != "SKILL.md" {
+			continue
+		}
+		skillDirs = append(skillDirs, path.Dir(b.Path))
+	}
+	return skillDirs
+}
+
+// pruneNestedSkillDirs drops any skill directory that lives inside another
+// skill's subtree (its own asset, not a separate skill). The repo ROOT (".") is
+// the sole exception: it may itself be a skill yet still parents siblings, so it
+// never prunes its children. Input must be sorted so ancestors precede
+// descendants.
+func pruneNestedSkillDirs(skillDirs []string) []string {
 	var kept []string
 	for _, d := range skillDirs {
 		if d == "." {
@@ -113,8 +147,13 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 			kept = append(kept, d)
 		}
 	}
+	return kept
+}
 
-	// 3. Parse, validate, and dedup the kept skill directories.
+// indexSkillDirs parses, validates, and dedups the kept skill directories,
+// returning the index entries plus an informational list of skipped
+// directories (missing/unparsable SKILL.md, name↔dir mismatch, duplicate name).
+func (idx *Indexer) indexSkillDirs(repoPath string, kept []string) ([]SkillIndexEntry, []SkippedSkill) {
 	var skills []SkillIndexEntry
 	var skipped []SkippedSkill
 	seen := make(map[string]string) // skill name -> path of first occurrence
@@ -167,20 +206,7 @@ func (idx *Indexer) BuildIndex(repoPath string) ([]SkillIndexEntry, []SkippedSki
 			Metadata:    parsed.Frontmatter.Metadata,
 		})
 	}
-
-	// 4. Flag a root skill that coexists with siblings so scan/install can scope
-	//    it to its own content rather than the entire repository.
-	if len(skills) > 1 {
-		for i := range skills {
-			if skills[i].Path == "." {
-				skills[i].RootCoexists = true
-			}
-		}
-	}
-
-	idx.populateVersions(repoPath, skills)
-
-	return skills, skipped, nil
+	return skills, skipped
 }
 
 // BuildEntry indexes a SINGLE skill at a known repo-relative directory without
@@ -317,25 +343,9 @@ func Search(filter SearchFilter, entries []SkillIndexEntry) []SearchResult {
 			continue
 		}
 
-		var score float64
-		if hasQuery {
-			if strings.Contains(strings.ToLower(entry.Name), q) {
-				score += 3.0
-			}
-			if strings.Contains(strings.ToLower(entry.Description), q) {
-				score += 1.0
-			}
-			for _, v := range entry.Metadata {
-				if strings.Contains(strings.ToLower(v), q) {
-					score += 0.5
-					break
-				}
-			}
-			if score == 0 {
-				continue
-			}
-		} else {
-			score = 1.0
+		score, ok := scoreEntry(entry, q, hasQuery)
+		if !ok {
+			continue
 		}
 
 		results = append(results, SearchResult{SkillIndexEntry: entry, Score: score})
@@ -348,6 +358,34 @@ func Search(filter SearchFilter, entries []SkillIndexEntry) []SearchResult {
 		return results[i].Name < results[j].Name
 	})
 	return results
+}
+
+// scoreEntry computes a query relevance score for an entry. When hasQuery is
+// false it returns the flat filter-only score (1.0, always kept). When hasQuery
+// is true it scores name (+3.0), description (+1.0), and metadata (+0.5 once),
+// returning ok=false for a zero score so the entry is dropped. q must already
+// be lower-cased and trimmed.
+func scoreEntry(entry SkillIndexEntry, q string, hasQuery bool) (float64, bool) {
+	if !hasQuery {
+		return 1.0, true
+	}
+	var score float64
+	if strings.Contains(strings.ToLower(entry.Name), q) {
+		score += 3.0
+	}
+	if strings.Contains(strings.ToLower(entry.Description), q) {
+		score += 1.0
+	}
+	for _, v := range entry.Metadata {
+		if strings.Contains(strings.ToLower(v), q) {
+			score += 0.5
+			break
+		}
+	}
+	if score == 0 {
+		return 0, false
+	}
+	return score, true
 }
 
 // entryHasAllTags is true when every required tag appears in the entry's

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,11 +75,8 @@ func TestConfigRead_SecurityPolicyKeysSurface(t *testing.T) {
 			t.Fatalf("%s missing validator", tc.key)
 		}
 		var found bool
-		for _, k := range knownConfigKeys {
-			if k == tc.key {
-				found = true
-				break
-			}
+		if slices.Contains(knownConfigKeys, tc.key) {
+			found = true
 		}
 		if !found {
 			t.Fatalf("%s missing from knownConfigKeys", tc.key)
@@ -111,11 +109,8 @@ func TestConfigRead_OpsKeysSurface(t *testing.T) {
 	}
 	for _, k := range []string{"ops.enabled", "ops.db_path"} {
 		var found bool
-		for _, kk := range knownConfigKeys {
-			if kk == k {
-				found = true
-				break
-			}
+		if slices.Contains(knownConfigKeys, k) {
+			found = true
 		}
 		if !found {
 			t.Errorf("%q missing from knownConfigKeys — text-mode loop won't print it", k)

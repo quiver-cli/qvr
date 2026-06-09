@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -65,60 +66,7 @@ FROM raw_traces`
 
 // ListRawSessions returns session summaries newest-first (by first-seen time).
 func (s *sqliteStore) ListRawSessions(ctx context.Context, f *RawSessionFilter) ([]*RawSession, error) {
-	var where []string
-	var args []any
-	if f != nil {
-		if f.Agent != "" {
-			where = append(where, "agent_name = ?")
-			args = append(args, f.Agent)
-		}
-		if len(f.Dirs) > 0 {
-			where = append(where, "working_directory IN ("+placeholders(len(f.Dirs))+")")
-			for _, d := range f.Dirs {
-				args = append(args, d)
-			}
-		}
-		if f.Skill != "" {
-			// A session "used" a skill when one of its derived spans is attributed
-			// to it (skill.name lives inside the spans.attributes JSON). Restrict
-			// to sessions whose span set includes the requested skill.
-			where = append(where,
-				`session_id IN (SELECT DISTINCT session_id FROM spans
-				  WHERE json_extract(attributes, '$."skill.name"') = ?)`)
-			args = append(args, f.Skill)
-		} else if f.SkillsOnly {
-			// Surface only skill-bearing sessions: keep those with at least one
-			// span attributed to any skill. The DB still holds skill-less sessions
-			// (see SkillsOnly doc) — this hides them from the listing without
-			// deleting them. Redundant when f.Skill is set, hence the else.
-			where = append(where,
-				`session_id IN (SELECT DISTINCT session_id FROM spans
-				  WHERE json_extract(attributes, '$."skill.name"') IS NOT NULL
-				    AND json_extract(attributes, '$."skill.name"') != '')`)
-		}
-	}
-	q := rawSessionSelect
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += " GROUP BY session_id"
-	var having []string
-	if f != nil && f.Since != nil {
-		having = append(having, "MIN(captured_at) >= ?")
-		args = append(args, f.Since.UTC())
-	}
-	if f != nil && f.Until != nil {
-		having = append(having, "MIN(captured_at) <= ?")
-		args = append(args, f.Until.UTC())
-	}
-	if len(having) > 0 {
-		q += " HAVING " + strings.Join(having, " AND ")
-	}
-	q += " ORDER BY MIN(captured_at) DESC"
-	if f != nil && f.Limit > 0 {
-		q += " LIMIT ?"
-		args = append(args, f.Limit)
-	}
+	q, args := buildRawSessionQuery(f)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -128,32 +76,121 @@ func (s *sqliteStore) ListRawSessions(ctx context.Context, f *RawSessionFilter) 
 
 	var out []*RawSession
 	for rows.Next() {
-		var (
-			sid, agent, agentSID, wd string
-			startedStr, lastStr      string
-			rs                       RawSession
-		)
-		if err := rows.Scan(&sid, &agent, &agentSID, &wd, &startedStr, &lastStr,
-			&rs.TranscriptLines, &rs.HookPayloads, &rs.TotalRows); err != nil {
-			return nil, fmt.Errorf("store: scan raw session: %w", err)
-		}
-		id, err := uuid.Parse(sid)
+		rs, err := scanRawSession(rows)
 		if err != nil {
+			return nil, err
+		}
+		if rs == nil {
 			continue // skip a non-uuid session key rather than failing the list
 		}
-		rs.SessionID = id
-		rs.AgentName = agent
-		rs.AgentSessionID = agentSID
-		rs.WorkingDirectory = wd
-		if t, err := parseSQLiteTime(startedStr); err == nil {
-			rs.StartedAt = t
-		}
-		if t, err := parseSQLiteTime(lastStr); err == nil {
-			rs.LastAt = t
-		}
-		out = append(out, &rs)
+		out = append(out, rs)
 	}
 	return out, rows.Err()
+}
+
+// buildRawSessionQuery assembles the aggregate query (WHERE/GROUP BY/HAVING/
+// ORDER BY/LIMIT) and its argument list for the given filter.
+func buildRawSessionQuery(f *RawSessionFilter) (string, []any) {
+	where, args := rawSessionWhere(f)
+	q := rawSessionSelect
+	if len(where) > 0 {
+		q += " WHERE " + strings.Join(where, " AND ")
+	}
+	q += " GROUP BY session_id"
+	having := rawSessionHaving(f, &args)
+	if len(having) > 0 {
+		q += " HAVING " + strings.Join(having, " AND ")
+	}
+	q += " ORDER BY MIN(captured_at) DESC"
+	if f != nil && f.Limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, f.Limit)
+	}
+	return q, args
+}
+
+// rawSessionWhere builds the row-level WHERE clauses (agent/dirs/skill scoping)
+// and the matching positional args.
+func rawSessionWhere(f *RawSessionFilter) ([]string, []any) {
+	var where []string
+	var args []any
+	if f == nil {
+		return where, args
+	}
+	if f.Agent != "" {
+		where = append(where, "agent_name = ?")
+		args = append(args, f.Agent)
+	}
+	if len(f.Dirs) > 0 {
+		where = append(where, "working_directory IN ("+placeholders(len(f.Dirs))+")")
+		for _, d := range f.Dirs {
+			args = append(args, d)
+		}
+	}
+	if f.Skill != "" {
+		// A session "used" a skill when one of its derived spans is attributed
+		// to it (skill.name lives inside the spans.attributes JSON). Restrict
+		// to sessions whose span set includes the requested skill.
+		where = append(where,
+			`session_id IN (SELECT DISTINCT session_id FROM spans
+			  WHERE json_extract(attributes, '$."skill.name"') = ?)`)
+		args = append(args, f.Skill)
+	} else if f.SkillsOnly {
+		// Surface only skill-bearing sessions: keep those with at least one
+		// span attributed to any skill. The DB still holds skill-less sessions
+		// (see SkillsOnly doc) — this hides them from the listing without
+		// deleting them. Redundant when f.Skill is set, hence the else.
+		where = append(where,
+			`session_id IN (SELECT DISTINCT session_id FROM spans
+			  WHERE json_extract(attributes, '$."skill.name"') IS NOT NULL
+			    AND json_extract(attributes, '$."skill.name"') != '')`)
+	}
+	return where, args
+}
+
+// rawSessionHaving builds the post-aggregation HAVING clauses (since/until on
+// first-seen time), appending their args to *args in clause order.
+func rawSessionHaving(f *RawSessionFilter, args *[]any) []string {
+	var having []string
+	if f != nil && f.Since != nil {
+		having = append(having, "MIN(captured_at) >= ?")
+		*args = append(*args, f.Since.UTC())
+	}
+	if f != nil && f.Until != nil {
+		having = append(having, "MIN(captured_at) <= ?")
+		*args = append(*args, f.Until.UTC())
+	}
+	return having
+}
+
+// scanRawSession reads one aggregate row into a RawSession. It returns
+// (nil, nil) for a row whose session key isn't a UUID so the caller can skip it
+// without failing the whole listing.
+func scanRawSession(rows *sql.Rows) (*RawSession, error) {
+	var (
+		sid, agent, agentSID, wd string
+		startedStr, lastStr      string
+		rs                       RawSession
+	)
+	if err := rows.Scan(&sid, &agent, &agentSID, &wd, &startedStr, &lastStr,
+		&rs.TranscriptLines, &rs.HookPayloads, &rs.TotalRows); err != nil {
+		return nil, fmt.Errorf("store: scan raw session: %w", err)
+	}
+	id, err := uuid.Parse(sid)
+	if err != nil {
+		return nil, nil // skip a non-uuid session key rather than failing the list
+	}
+	rs.SessionID = id
+	rs.AgentName = agent
+	rs.AgentSessionID = agentSID
+	rs.WorkingDirectory = wd
+	if t, err := parseSQLiteTime(startedStr); err == nil {
+		rs.StartedAt = t
+	}
+	if t, err := parseSQLiteTime(lastStr); err == nil {
+		rs.LastAt = t
+	}
+	return &rs, nil
 }
 
 // SkillsForSessions returns the distinct skill names attributed to each given

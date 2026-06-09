@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"maps"
 	"sync"
 	"testing"
 )
@@ -26,9 +27,7 @@ func snapshotInstallers(t *testing.T) func() {
 	t.Helper()
 	adapterMu.Lock()
 	saved := make(map[string]HookInstaller, len(installers))
-	for k, v := range installers {
-		saved[k] = v
-	}
+	maps.Copy(saved, installers)
 	adapterMu.Unlock()
 	return func() {
 		adapterMu.Lock()
@@ -97,7 +96,7 @@ func TestListInstallers_SortedStable(t *testing.T) {
 func TestRegistry_ConcurrentAccess(t *testing.T) {
 	t.Cleanup(snapshotInstallers(t))
 	var wg sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()

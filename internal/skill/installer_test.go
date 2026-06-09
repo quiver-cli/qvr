@@ -448,17 +448,24 @@ description: local dev skill
 	}
 
 	// Lock entry: mode:local, source records provenance, ref "local".
-	lockPath := filepath.Join(h.project, model.LockFileName)
+	assertLocalLockEntry(t, h.project, "my-skill", absLocal)
+}
+
+// assertLocalLockEntry reads the project lock and asserts the named entry is a
+// mode:local install with the expected source provenance and ref "local".
+func assertLocalLockEntry(t *testing.T, projectRoot, name, wantSource string) {
+	t.Helper()
+	lockPath := filepath.Join(projectRoot, model.LockFileName)
 	lock, err := model.ReadLockFile(lockPath)
 	if err != nil {
 		t.Fatalf("read lock: %v", err)
 	}
-	entry, err := lock.Get("my-skill")
+	entry, err := lock.Get(name)
 	if err != nil {
-		t.Fatalf("my-skill missing from lock: %v", err)
+		t.Fatalf("%s missing from lock: %v", name, err)
 	}
-	if entry.Source != absLocal {
-		t.Errorf("lock entry source = %q, want %s", entry.Source, absLocal)
+	if entry.Source != wantSource {
+		t.Errorf("lock entry source = %q, want %s", entry.Source, wantSource)
 	}
 	if entry.Ref != "local" {
 		t.Errorf("lock entry ref = %q, want local", entry.Ref)

@@ -200,7 +200,7 @@ func refsOf(repoPath string) (map[string]string, error) {
 		return nil, err
 	}
 	refs := map[string]string{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

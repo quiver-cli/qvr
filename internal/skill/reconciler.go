@@ -137,63 +137,8 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			continue
 		}
 
-		worktreePath := EntryWorktreePath(entry)
-		needsRestore := worktreePath == ""
-		if !needsRestore {
-			if _, err := os.Stat(worktreePath); err != nil {
-				needsRestore = true
-			}
-		}
-		if needsRestore && r.Installer != nil && !opts.DryRun {
-			// Aliased entries (`qvr add <skill> --as <alias>`) key the lock on
-			// the alias but resolve their registry source by the canonical name;
-			// preserve the alias via As so the restored lock key stays the alias.
-			// Without this swap the resolver is handed the alias key (e.g.
-			// "careful-v1") as a registry skill name and fails ErrSkillNotFound,
-			// so sync — the documented repair path — can't restore a missing
-			// aliased worktree (issue #159). Mirrors Installer.RestoreAll.
-			canonicalName := entry.Name
-			aliasFlag := ""
-			if entry.Canonical != "" {
-				canonicalName = entry.Canonical
-				aliasFlag = entry.Name
-			}
-			ref := canonicalName
-			if entry.Ref != "" {
-				ref = canonicalName + "@" + entry.Ref
-			}
-			// uv reproducibility contract: restore the lock's recorded commit,
-			// not whatever the ref label resolves to now. A teammate cloning
-			// the project and running `qvr sync` gets the locked commit even if
-			// upstream "main" advanced — only `qvr update` re-resolves. Pin to
-			// the same SHA EntryWorktreePath keys on so the restored dir lands
-			// where the symlink pass expects it.
-			pin := entry.InstallCommit
-			if pin == "" {
-				pin = entry.Commit
-			}
-			if _, err := r.Installer.Install(InstallRequest{
-				Skill:                    ref,
-				Targets:                  entry.Targets,
-				Global:                   global,
-				ProjectRoot:              projectRoot,
-				PinCommit:                pin,
-				As:                       aliasFlag,
-				RequireSigned:            opts.RequireSigned,
-				TrustedAuthors:           opts.TrustedAuthorsByRegistry[entry.Registry],
-				TrustedAuthorsByRegistry: opts.TrustedAuthorsByRegistry,
-			}); err != nil {
-				res.Errors = append(res.Errors, fmt.Sprintf("install %s: %v", entry.Name, err))
-				continue
-			}
-			res.Installed = append(res.Installed, entry.Name)
-			// Install rewrote the lock — pick up the fresh entry so the
-			// symlink pass uses the new Worktree path.
-			if fresh, err := lock.Get(entry.Name); err == nil {
-				entry = fresh
-			}
-		} else if needsRestore && opts.DryRun {
-			res.Installed = append(res.Installed, entry.Name+" (would install)")
+		entry, skip := r.restoreShared(entry, lock, projectRoot, global, opts, res)
+		if skip {
 			continue
 		}
 
@@ -202,6 +147,75 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 		}
 	}
 	return nil
+}
+
+// restoreShared restores a shared (registry) entry whose worktree is missing,
+// re-installing it pinned to the lock's recorded commit (the uv reproducibility
+// contract). Returns the entry to link (refreshed from the lock after a real
+// install) and skip=true when the caller should continue to the next entry
+// without running the symlink pass (an install error, or a dry-run "would
+// install" record).
+func (r *Reconciler) restoreShared(entry *model.LockEntry, lock *model.LockFile, projectRoot string, global bool, opts ReconcileOptions, res *ReconcileResult) (*model.LockEntry, bool) {
+	worktreePath := EntryWorktreePath(entry)
+	needsRestore := worktreePath == ""
+	if !needsRestore {
+		if _, err := os.Stat(worktreePath); err != nil {
+			needsRestore = true
+		}
+	}
+	if needsRestore && r.Installer != nil && !opts.DryRun {
+		// Aliased entries (`qvr add <skill> --as <alias>`) key the lock on
+		// the alias but resolve their registry source by the canonical name;
+		// preserve the alias via As so the restored lock key stays the alias.
+		// Without this swap the resolver is handed the alias key (e.g.
+		// "careful-v1") as a registry skill name and fails ErrSkillNotFound,
+		// so sync — the documented repair path — can't restore a missing
+		// aliased worktree (issue #159). Mirrors Installer.RestoreAll.
+		canonicalName := entry.Name
+		aliasFlag := ""
+		if entry.Canonical != "" {
+			canonicalName = entry.Canonical
+			aliasFlag = entry.Name
+		}
+		ref := canonicalName
+		if entry.Ref != "" {
+			ref = canonicalName + "@" + entry.Ref
+		}
+		// uv reproducibility contract: restore the lock's recorded commit,
+		// not whatever the ref label resolves to now. A teammate cloning
+		// the project and running `qvr sync` gets the locked commit even if
+		// upstream "main" advanced — only `qvr update` re-resolves. Pin to
+		// the same SHA EntryWorktreePath keys on so the restored dir lands
+		// where the symlink pass expects it.
+		pin := entry.InstallCommit
+		if pin == "" {
+			pin = entry.Commit
+		}
+		if _, err := r.Installer.Install(InstallRequest{
+			Skill:                    ref,
+			Targets:                  entry.Targets,
+			Global:                   global,
+			ProjectRoot:              projectRoot,
+			PinCommit:                pin,
+			As:                       aliasFlag,
+			RequireSigned:            opts.RequireSigned,
+			TrustedAuthors:           opts.TrustedAuthorsByRegistry[entry.Registry],
+			TrustedAuthorsByRegistry: opts.TrustedAuthorsByRegistry,
+		}); err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("install %s: %v", entry.Name, err))
+			return entry, true
+		}
+		res.Installed = append(res.Installed, entry.Name)
+		// Install rewrote the lock — pick up the fresh entry so the
+		// symlink pass uses the new Worktree path.
+		if fresh, err := lock.Get(entry.Name); err == nil {
+			entry = fresh
+		}
+	} else if needsRestore && opts.DryRun {
+		res.Installed = append(res.Installed, entry.Name+" (would install)")
+		return entry, true
+	}
+	return entry, false
 }
 
 // restoreLocal reconciles a `qvr add --local` entry. Its immutable copy lives
@@ -286,45 +300,54 @@ func (r *Reconciler) fixSymlinks(entry *model.LockEntry, projectRoot string, glo
 		}
 	}
 	for _, t := range entry.Targets {
-		linkPath, err := ResolveTargetPath(t, entry.Name, projectRoot, global)
-		if err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("%s/%s: %v", entry.Name, t, err))
-			continue
-		}
-		if canonicalAbs != "" {
-			if abs, err := filepath.Abs(linkPath); err == nil && normalize(abs) == canonicalAbs {
-				// This is the canonical edit dir itself — already the real
-				// source of truth, nothing to symlink.
-				continue
-			}
-		}
-		if opts.DryRun {
-			if existing, err := os.Lstat(linkPath); err != nil || existing.Mode()&os.ModeSymlink == 0 {
-				res.SymlinksFixed = append(res.SymlinksFixed, linkPath+" (would create)")
-			}
-			continue
-		}
-		// Suppress the "Linked …" report when the symlink already points at
-		// the right target — sync should be silent on no-state-change reruns
-		// (issue #79). Existing-but-wrong / missing links still go through
-		// CreateSymlink below and DO get reported.
-		alreadyCorrect := false
-		if absTarget, aerr := filepath.Abs(target); aerr == nil {
-			if existing, lerr := os.Lstat(linkPath); lerr == nil && existing.Mode()&os.ModeSymlink != 0 {
-				if cur, rerr := os.Readlink(linkPath); rerr == nil && cur == absTarget {
-					alreadyCorrect = true
-				}
-			}
-		}
-		if err := CreateSymlink(linkPath, target); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("link %s/%s: %v", entry.Name, t, err))
-			continue
-		}
-		if !alreadyCorrect {
-			res.SymlinksFixed = append(res.SymlinksFixed, linkPath)
-		}
+		r.fixOneSymlink(entry, t, target, canonicalAbs, projectRoot, global, opts, res)
 	}
 	return nil
+}
+
+// fixOneSymlink ensures a single target's symlink points at target. It skips the
+// canonical edit dir (the real source of truth, never a self-link), records a
+// "would create" under --dry-run, and otherwise creates/repoints the link —
+// staying silent in res.SymlinksFixed when the link is already correct (issue
+// #79). Per-target failures are appended to res.Errors so siblings still run.
+func (r *Reconciler) fixOneSymlink(entry *model.LockEntry, t, target, canonicalAbs, projectRoot string, global bool, opts ReconcileOptions, res *ReconcileResult) {
+	linkPath, err := ResolveTargetPath(t, entry.Name, projectRoot, global)
+	if err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("%s/%s: %v", entry.Name, t, err))
+		return
+	}
+	if canonicalAbs != "" {
+		if abs, err := filepath.Abs(linkPath); err == nil && normalize(abs) == canonicalAbs {
+			// This is the canonical edit dir itself — already the real
+			// source of truth, nothing to symlink.
+			return
+		}
+	}
+	if opts.DryRun {
+		if existing, err := os.Lstat(linkPath); err != nil || existing.Mode()&os.ModeSymlink == 0 {
+			res.SymlinksFixed = append(res.SymlinksFixed, linkPath+" (would create)")
+		}
+		return
+	}
+	// Suppress the "Linked …" report when the symlink already points at
+	// the right target — sync should be silent on no-state-change reruns
+	// (issue #79). Existing-but-wrong / missing links still go through
+	// CreateSymlink below and DO get reported.
+	alreadyCorrect := false
+	if absTarget, aerr := filepath.Abs(target); aerr == nil {
+		if existing, lerr := os.Lstat(linkPath); lerr == nil && existing.Mode()&os.ModeSymlink != 0 {
+			if cur, rerr := os.Readlink(linkPath); rerr == nil && cur == absTarget {
+				alreadyCorrect = true
+			}
+		}
+	}
+	if err := CreateSymlink(linkPath, target); err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("link %s/%s: %v", entry.Name, t, err))
+		return
+	}
+	if !alreadyCorrect {
+		res.SymlinksFixed = append(res.SymlinksFixed, linkPath)
+	}
 }
 
 // strictRemoveOrphans walks each agent target's directory (project-local
@@ -373,53 +396,61 @@ func (r *Reconciler) strictRemoveOrphans(lock *model.LockFile, projectRoot strin
 			continue
 		}
 		for _, dirent := range entries {
-			full := filepath.Join(dir, dirent.Name())
-			info, err := os.Lstat(full)
-			if err != nil {
-				res.Errors = append(res.Errors, fmt.Sprintf("stat %s: %v", full, err))
-				continue
-			}
-			if info.Mode()&os.ModeSymlink == 0 {
-				// Hand-placed file/dir — never our business.
-				continue
-			}
-			if _, ok := tracked[normalize(full)]; ok {
-				continue
-			}
-			resolved, rerr := os.Readlink(full)
-			if rerr != nil {
-				res.Errors = append(res.Errors, fmt.Sprintf("readlink %s: %v", full, rerr))
-				continue
-			}
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(filepath.Dir(full), resolved)
-			}
-			if !IsManaged(resolved, managedPrefixes) {
-				// Symlink points outside the qvr-managed scope (e.g. into
-				// /etc/passwd or the user's own dev dir). The strict rule
-				// is to leave it alone and surface it.
-				res.Skipped = append(res.Skipped, fmt.Sprintf("%s -> %s (target outside qvr scope)", full, resolved))
-				continue
-			}
-			if opts.KeepUntracked {
-				res.Skipped = append(res.Skipped, full+" (managed but --keep-untracked)")
-				continue
-			}
-			if opts.DryRun {
-				res.Removed = append(res.Removed, full+" (would remove)")
-				continue
-			}
-			if err := RemoveSymlink(full); err != nil {
-				// RemoveSymlink only errors when the path isn't a symlink
-				// (we already checked) or the unlink itself fails. Either
-				// way, record and move on.
-				res.Errors = append(res.Errors, fmt.Sprintf("remove %s: %v", full, err))
-				continue
-			}
-			res.Removed = append(res.Removed, full)
+			sweepOrphanDirent(dir, dirent, tracked, managedPrefixes, opts, res)
 		}
 	}
 	return nil
+}
+
+// sweepOrphanDirent classifies a single agent-dir entry under strict removal:
+// non-symlinks and tracked/out-of-scope symlinks are left alone (the latter
+// surfaced in res.Skipped), and a managed but untracked symlink is removed
+// (or recorded under --dry-run / --keep-untracked).
+func sweepOrphanDirent(dir string, dirent os.DirEntry, tracked map[string]struct{}, managedPrefixes []string, opts ReconcileOptions, res *ReconcileResult) {
+	full := filepath.Join(dir, dirent.Name())
+	info, err := os.Lstat(full)
+	if err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("stat %s: %v", full, err))
+		return
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		// Hand-placed file/dir — never our business.
+		return
+	}
+	if _, ok := tracked[normalize(full)]; ok {
+		return
+	}
+	resolved, rerr := os.Readlink(full)
+	if rerr != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("readlink %s: %v", full, rerr))
+		return
+	}
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(filepath.Dir(full), resolved)
+	}
+	if !IsManaged(resolved, managedPrefixes) {
+		// Symlink points outside the qvr-managed scope (e.g. into
+		// /etc/passwd or the user's own dev dir). The strict rule
+		// is to leave it alone and surface it.
+		res.Skipped = append(res.Skipped, fmt.Sprintf("%s -> %s (target outside qvr scope)", full, resolved))
+		return
+	}
+	if opts.KeepUntracked {
+		res.Skipped = append(res.Skipped, full+" (managed but --keep-untracked)")
+		return
+	}
+	if opts.DryRun {
+		res.Removed = append(res.Removed, full+" (would remove)")
+		return
+	}
+	if err := RemoveSymlink(full); err != nil {
+		// RemoveSymlink only errors when the path isn't a symlink
+		// (we already checked) or the unlink itself fails. Either
+		// way, record and move on.
+		res.Errors = append(res.Errors, fmt.Sprintf("remove %s: %v", full, err))
+		return
+	}
+	res.Removed = append(res.Removed, full)
 }
 
 // ManagedRoots returns the absolute paths whose subtree is fair game for

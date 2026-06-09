@@ -121,30 +121,7 @@ func TestLockUpgrade_RepopulatesVerificationScanAndSubtreeHash(t *testing.T) {
 	reg, name, commit := "upr", "demo", "abc1234"
 	worktree := registry.WorktreePath(reg, name, registry.ShortSHA(commit))
 	skillRel := filepath.Join("skills", "demo")
-	if err := os.MkdirAll(filepath.Join(worktree, skillRel), 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(worktree, skillRel, "SKILL.md"),
-		[]byte("---\nname: demo\ndescription: test\n---\nbody\n"), 0o644); err != nil {
-		t.Fatalf("write SKILL.md: %v", err)
-	}
-	// HashSubtree reads via go-git, so the worktree must be a real git
-	// repo with at least one commit. Without this the hash computation
-	// fails and the test's setup doesn't actually exercise the upgrade
-	// path.
-	repo, err := gogit.PlainInit(worktree, false)
-	if err != nil {
-		t.Fatalf("git init: %v", err)
-	}
-	wt, _ := repo.Worktree()
-	if _, err := wt.Add(filepath.Join(skillRel, "SKILL.md")); err != nil {
-		t.Fatalf("git add: %v", err)
-	}
-	if _, err := wt.Commit("init", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "t", Email: "t@t", When: time.Unix(0, 0).UTC()},
-	}); err != nil {
-		t.Fatalf("git commit: %v", err)
-	}
+	initWorktreeWithSkill(t, worktree, skillRel, "demo", "test")
 
 	// Build a lock with neither SubtreeHash nor Verification on the
 	// entry — the post-fix "user hand-edited to strip both" repro from
@@ -172,6 +149,42 @@ func TestLockUpgrade_RepopulatesVerificationScanAndSubtreeHash(t *testing.T) {
 		t.Fatalf("lockUpgradeInternal: %v", err)
 	}
 
+	assertUpgradeFilledHashAndScan(t, lockPath, name)
+}
+
+// initWorktreeWithSkill materialises a worktree as a real git repo containing a
+// committed SKILL.md at skillRel — HashSubtree reads via go-git, so the worktree
+// must be a real repo with at least one commit for the upgrade path to be
+// exercised. t.Fatal on any setup failure.
+func initWorktreeWithSkill(t *testing.T, worktree, skillRel, skillName, desc string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(worktree, skillRel), 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, skillRel, "SKILL.md"),
+		[]byte("---\nname: "+skillName+"\ndescription: "+desc+"\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	repo, err := gogit.PlainInit(worktree, false)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	wt, _ := repo.Worktree()
+	if _, err := wt.Add(filepath.Join(skillRel, "SKILL.md")); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := wt.Commit("init", &gogit.CommitOptions{
+		Author: &object.Signature{Name: "t", Email: "t@t", When: time.Unix(0, 0).UTC()},
+	}); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+}
+
+// assertUpgradeFilledHashAndScan rereads the lock and asserts the upgrade filled
+// both SubtreeHash and verification.scan (with a ScannerVersion stamp so
+// `qvr lock verify` can detect drift across binary upgrades).
+func assertUpgradeFilledHashAndScan(t *testing.T, lockPath, name string) {
+	t.Helper()
 	// Read back and assert both fields are filled.
 	reread, err := model.ReadLockFile(lockPath)
 	if err != nil {

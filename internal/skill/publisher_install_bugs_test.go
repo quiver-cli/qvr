@@ -150,21 +150,7 @@ func TestPublishInstalled_SecondReleaseOnMigratedFork_RootLayoutPreserved(t *tes
 	// Make a real edit so the second release has content to commit (the
 	// stage goes dirty, exercising the commit path that pre-fix hit the
 	// nuked .git).
-	if err := os.WriteFile(filepath.Join(editDir, "NEW.md"), []byte("second release\n"), 0o644); err != nil {
-		t.Fatalf("write NEW.md: %v", err)
-	}
-	wt, err := editRepo.Worktree()
-	if err != nil {
-		t.Fatalf("worktree: %v", err)
-	}
-	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
-		t.Fatalf("stage edit: %v", err)
-	}
-	if _, err := wt.Commit("second release edit", &gogit.CommitOptions{
-		Author: &object.Signature{Name: "u", Email: "u@e", When: time.Now()},
-	}); err != nil {
-		t.Fatalf("commit edit: %v", err)
-	}
+	commitEditFile(t, editRepo, editDir, "NEW.md", "second release\n", "second release edit")
 
 	// Second release: NO --fork, NO --layout. Pre-fix this exited with
 	// "commit: reference not found"; post-fix it must default to root and
@@ -184,13 +170,20 @@ func TestPublishInstalled_SecondReleaseOnMigratedFork_RootLayoutPreserved(t *tes
 
 	// The v0.2.0 tag must exist on the fork at root layout (SKILL.md + NEW.md
 	// at the repo root, not under skills/<name>/).
+	assertTagTreeHasRootFiles(t, forkURL, "v0.2.0", "SKILL.md", "NEW.md")
+}
+
+// assertTagTreeHasRootFiles opens the bare repo at forkURL and asserts the named
+// annotated tag's tree contains each wantFile at the repo root (root layout).
+func assertTagTreeHasRootFiles(t *testing.T, forkURL, tag string, wantFiles ...string) {
+	t.Helper()
 	fork, err := gogit.PlainOpen(forkURL)
 	if err != nil {
 		t.Fatalf("open fork: %v", err)
 	}
-	tagRef, err := fork.Tag("v0.2.0")
+	tagRef, err := fork.Tag(tag)
 	if err != nil {
-		t.Fatalf("v0.2.0 not on fork: %v", err)
+		t.Fatalf("%s not on fork: %v", tag, err)
 	}
 	tagObj, err := fork.TagObject(tagRef.Hash())
 	if err != nil {
@@ -200,11 +193,31 @@ func TestPublishInstalled_SecondReleaseOnMigratedFork_RootLayoutPreserved(t *tes
 	if err != nil {
 		t.Fatalf("tag tree: %v", err)
 	}
-	if _, err := tree.File("SKILL.md"); err != nil {
-		t.Errorf("SKILL.md not at fork root in v0.2.0 (root layout broken): %v", err)
+	for _, f := range wantFiles {
+		if _, err := tree.File(f); err != nil {
+			t.Errorf("%s not at fork root in %s (root layout broken): %v", f, tag, err)
+		}
 	}
-	if _, err := tree.File("NEW.md"); err != nil {
-		t.Errorf("second-release edit (NEW.md) missing from v0.2.0: %v", err)
+}
+
+// commitEditFile writes name=content into editDir, stages all changes in
+// editRepo, and commits them with msg.
+func commitEditFile(t *testing.T, editRepo *gogit.Repository, editDir, name, content, msg string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(editDir, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	wt, err := editRepo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+		t.Fatalf("stage edit: %v", err)
+	}
+	if _, err := wt.Commit(msg, &gogit.CommitOptions{
+		Author: &object.Signature{Name: "u", Email: "u@e", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("commit edit: %v", err)
 	}
 }
 

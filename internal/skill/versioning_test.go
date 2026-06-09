@@ -410,26 +410,8 @@ func TestInstall_ExplicitRefMissingSkill_ActionableError(t *testing.T) {
 // who tagged a fork before publishing into it.
 func seedRemoteWithTaggedAndPostTagSkill(t *testing.T, tagName, skillName, skillContent string) string {
 	t.Helper()
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if _, err := gogit.PlainInit(remote, true); err != nil {
-		t.Fatalf("init remote: %v", err)
-	}
-
-	seed := t.TempDir()
-	sr, err := gogit.PlainInit(seed, false)
-	if err != nil {
-		t.Fatalf("init seed: %v", err)
-	}
-	if _, err := sr.CreateRemote(&gogitcfg.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remote},
-	}); err != nil {
-		t.Fatalf("create remote: %v", err)
-	}
-	wt, err := sr.Worktree()
-	if err != nil {
-		t.Fatalf("worktree: %v", err)
-	}
+	remote, sr, wt := newSeedRepo(t)
+	seed := wt.Filesystem.Root()
 
 	// C0: README only. The tag will live here.
 	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# fork\n"), 0o644); err != nil {
@@ -473,24 +455,9 @@ func seedRemoteWithTaggedAndPostTagSkill(t *testing.T, tagName, skillName, skill
 		t.Fatalf("set main at C1: %v", err)
 	}
 
-	if err := sr.Push(&gogit.PushOptions{
-		RemoteName: "origin",
-		RefSpecs: []gogitcfg.RefSpec{
-			"refs/heads/main:refs/heads/main",
-			gogitcfg.RefSpec("refs/tags/" + tagName + ":refs/tags/" + tagName),
-		},
-	}); err != nil {
-		t.Fatalf("push seed: %v", err)
-	}
-
-	rr, err := gogit.PlainOpen(remote)
-	if err != nil {
-		t.Fatalf("open remote: %v", err)
-	}
-	if err := rr.Storer.SetReference(plumbing.NewSymbolicReference(
-		plumbing.HEAD, plumbing.NewBranchReferenceName("main"),
-	)); err != nil {
-		t.Fatalf("set remote HEAD: %v", err)
-	}
+	pushSeedAndSetHEAD(t, sr, remote, []gogitcfg.RefSpec{
+		"refs/heads/main:refs/heads/main",
+		gogitcfg.RefSpec("refs/tags/" + tagName + ":refs/tags/" + tagName),
+	})
 	return remote
 }

@@ -257,7 +257,22 @@ func TestRefVersions(t *testing.T) {
 		t.Fatalf("expected >=2 refs, got %d (%+v)", len(vers), vers)
 	}
 
-	var sawTag, sawBranch bool
+	sawTag, sawBranch := scanRefVersions(t, vers)
+	if !sawTag {
+		t.Errorf("expected the v1.0.0 tag in %+v", vers)
+	}
+	if !sawBranch {
+		t.Errorf("expected at least one branch in %+v", vers)
+	}
+
+	assertRefVersionsSorted(t, vers)
+}
+
+// scanRefVersions asserts every ref version has a non-empty hash and non-zero
+// commit time, and reports whether the v1.0.0 tag and at least one branch were
+// seen.
+func scanRefVersions(t *testing.T, vers []git.RefVersion) (sawTag, sawBranch bool) {
+	t.Helper()
 	for _, v := range vers {
 		if v.Hash == "" {
 			t.Errorf("ref %q has empty hash", v.Name)
@@ -272,14 +287,13 @@ func TestRefVersions(t *testing.T) {
 			sawBranch = true
 		}
 	}
-	if !sawTag {
-		t.Errorf("expected the v1.0.0 tag in %+v", vers)
-	}
-	if !sawBranch {
-		t.Errorf("expected at least one branch in %+v", vers)
-	}
+	return sawTag, sawBranch
+}
 
-	// Sorted newest-commit-first (non-increasing time).
+// assertRefVersionsSorted verifies vers is ordered newest-commit-first
+// (non-increasing time).
+func assertRefVersionsSorted(t *testing.T, vers []git.RefVersion) {
+	t.Helper()
 	for i := 1; i < len(vers); i++ {
 		if vers[i-1].Time.Before(vers[i].Time) {
 			t.Errorf("versions not sorted newest-first at %d: %v before %v",

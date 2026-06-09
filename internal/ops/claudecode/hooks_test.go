@@ -40,16 +40,33 @@ func readSettingsFile(t *testing.T, home string) map[string]json.RawMessage {
 	return m
 }
 
+// seedSettings writes the given JSON into the temp ~/.claude/settings.json.
+func seedSettings(t *testing.T, home, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(contents), 0o600); err != nil {
+		t.Fatalf("seed settings.json: %v", err)
+	}
+}
+
+// assertStatusInstalledValid fails unless Status reports installed+valid.
+func assertStatusInstalledValid(t *testing.T, a *Adapter) {
+	t.Helper()
+	st, err := a.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Installed || !st.Valid {
+		t.Errorf("Status = %+v, want installed+valid", st)
+	}
+}
+
 func TestInstallUninstallRoundTrip(t *testing.T) {
 	home := setupHome(t)
 	a := &Adapter{}
 
 	// Seed an existing settings.json so install has something to back up
 	// and uninstall can restore it verbatim.
-	seed := `{"model":"opus"}` + "\n"
-	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(seed), 0o600); err != nil {
-		t.Fatalf("seed settings.json: %v", err)
-	}
+	seedSettings(t, home, `{"model":"opus"}`+"\n")
 
 	// Install.
 	res, err := a.Install(ops.InstallOptions{})
@@ -68,13 +85,7 @@ func TestInstallUninstallRoundTrip(t *testing.T) {
 	}
 
 	// Status: installed + valid.
-	st, err := a.Status()
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if !st.Installed || !st.Valid {
-		t.Errorf("Status = %+v, want installed+valid", st)
-	}
+	assertStatusInstalledValid(t, a)
 
 	// Re-install without force is a no-op warning.
 	res2, err := a.Install(ops.InstallOptions{})
@@ -127,10 +138,7 @@ func TestInstallPreservesUserHooks(t *testing.T) {
 	if _, ok := settings["model"]; !ok {
 		t.Error("top-level 'model' key was dropped")
 	}
-	var hooks map[string][]hookMatcher
-	if err := json.Unmarshal(settings["hooks"], &hooks); err != nil {
-		t.Fatalf("unmarshal hooks: %v", err)
-	}
+	hooks := unmarshalHooks(t, settings["hooks"])
 	// PreToolUse should contain both the user's matcher and ours.
 	var sawUser, sawQuiver bool
 	for _, m := range hooks["PreToolUse"] {
@@ -156,10 +164,7 @@ func TestInstallPreservesUserHooks(t *testing.T) {
 		t.Fatalf("Uninstall: %v", err)
 	}
 	after := readSettingsFile(t, home)
-	var hooksAfter map[string][]hookMatcher
-	if err := json.Unmarshal(after["hooks"], &hooksAfter); err != nil {
-		t.Fatalf("unmarshal hooks after: %v", err)
-	}
+	hooksAfter := unmarshalHooks(t, after["hooks"])
 	for _, m := range hooksAfter["PreToolUse"] {
 		for _, h := range m.Hooks {
 			if isQuiverCommand(h.Command) {
@@ -167,6 +172,17 @@ func TestInstallPreservesUserHooks(t *testing.T) {
 			}
 		}
 	}
+}
+
+// unmarshalHooks decodes a settings "hooks" section into the per-type matcher
+// map, failing the test on a decode error.
+func unmarshalHooks(t *testing.T, raw json.RawMessage) map[string][]hookMatcher {
+	t.Helper()
+	var hooks map[string][]hookMatcher
+	if err := json.Unmarshal(raw, &hooks); err != nil {
+		t.Fatalf("unmarshal hooks: %v", err)
+	}
+	return hooks
 }
 
 // TestInstallHonorsConfigDirEnv verifies CLAUDE_CONFIG_DIR redirects install

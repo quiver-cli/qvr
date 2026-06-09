@@ -145,7 +145,7 @@ func parseDeclaredPermissions(skill *model.Skill) (set map[Capability]bool, wild
 		return
 	}
 
-	for _, tok := range strings.Fields(skill.Frontmatter.AllowedTools) {
+	for tok := range strings.FieldsSeq(skill.Frontmatter.AllowedTools) {
 		raw := strings.ToLower(tok)
 		// Strip any parenthesised scope so `Bash(go:*)` → `bash`.
 		if idx := strings.Index(raw, "("); idx >= 0 {

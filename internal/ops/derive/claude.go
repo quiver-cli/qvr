@@ -263,10 +263,7 @@ func (t *turn) llmSpan(sessionID string) Span {
 	}
 	inMsgs, _ := json.Marshal([]map[string]string{{"role": "user", "content": t.prompt}})
 	outMsgs, _ := json.Marshal([]map[string]string{{"role": "assistant", "content": output}})
-	end := t.endMs
-	if end < t.startMs {
-		end = t.startMs
-	}
+	end := max(t.endMs, t.startMs)
 	name := "chat"
 	if t.model != "" {
 		name = "chat " + t.model

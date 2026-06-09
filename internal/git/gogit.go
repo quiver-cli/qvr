@@ -590,8 +590,8 @@ func parseSymrefHead(r io.Reader) string {
 		}
 		body = strings.TrimSpace(body)
 		const headsPrefix = "refs/heads/"
-		if strings.HasPrefix(body, headsPrefix) {
-			return strings.TrimPrefix(body, headsPrefix)
+		if after, ok := strings.CutPrefix(body, headsPrefix); ok {
+			return after
 		}
 		// Non-branch HEAD (e.g. detached, tag symref) — caller treats
 		// as "no signal" and falls through.

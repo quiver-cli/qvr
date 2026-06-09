@@ -42,12 +42,12 @@ type Config struct {
 	DefaultTarget   string                    `yaml:"default_target,omitempty" json:"default_target,omitempty"`
 	DefaultRegistry string                    `yaml:"default_registry,omitempty" json:"default_registry,omitempty"`
 	GithubToken     string                    `yaml:"github_token,omitempty" json:"github_token,omitempty"`
-	Security        SecurityConfig            `yaml:"security,omitempty" json:"security,omitempty"`
-	Trust           TrustConfig               `yaml:"trust,omitempty" json:"trust,omitempty"`
-	Output          OutputConfig              `yaml:"output,omitempty" json:"output,omitempty"`
-	Cache           CacheConfig               `yaml:"cache,omitempty" json:"cache,omitempty"`
-	Ops             OpsConfig                 `yaml:"ops,omitempty" json:"ops,omitempty"`
-	Prefetch        PrefetchConfig            `yaml:"prefetch,omitempty" json:"prefetch,omitempty"`
+	Security        SecurityConfig            `yaml:"security,omitempty" json:"security"`
+	Trust           TrustConfig               `yaml:"trust,omitempty" json:"trust"`
+	Output          OutputConfig              `yaml:"output,omitempty" json:"output"`
+	Cache           CacheConfig               `yaml:"cache,omitempty" json:"cache"`
+	Ops             OpsConfig                 `yaml:"ops,omitempty" json:"ops"`
+	Prefetch        PrefetchConfig            `yaml:"prefetch,omitempty" json:"prefetch"`
 }
 
 // PrefetchConfig controls opportunistic background prefetch of registered

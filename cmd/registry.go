@@ -148,10 +148,7 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	// just the default branch at --depth (negative normalised to full history of
 	// that one branch).
 	full := registryAddFull
-	depth := registryAddDepth
-	if depth < 0 {
-		depth = 0
-	}
+	depth := max(registryAddDepth, 0)
 
 	// Re-adding an already-configured registry: with --full, deepen the existing
 	// latest-only clone in place (fetch all branches + tags into the same bare
@@ -161,27 +158,7 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	// unmentioned `registry remove` first (#184). Without --full it stays a
 	// conflict, now signposting BOTH escape hatches.
 	if _, exists := cfg.Registries[name]; exists {
-		if !full {
-			return fmt.Errorf("registry %q already exists — pass --name <alias> to add it under a different name, or --full to deepen it to all branches and tags", name)
-		}
-		sp := printer.Spinner()
-		sp.Start(fmt.Sprintf("Deepening %s to full (all branches, tags, history) …", name))
-		reg, derr := mgr.Deepen(cmd.Context(), name)
-		sp.Stop()
-		if derr != nil {
-			return fmt.Errorf("deepen registry: %w", derr)
-		}
-		if printer.Format == output.FormatJSON {
-			return printer.JSON(reg)
-		}
-		msg := fmt.Sprintf("Deepened registry %q (%s) to full — %d skills; all branches and tags are now installable",
-			reg.Name, reg.URL, reg.SkillCount)
-		if reg.SkippedCount > 0 {
-			msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
-				reg.SkippedCount, reg.Name)
-		}
-		printer.Success(msg)
-		return nil
+		return runRegistryDeepen(cmd, mgr, name, full)
 	}
 
 	// Clone + first index happen inside Add and can take seconds on a large
@@ -230,6 +207,33 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 	if !full {
 		printer.Info(fmt.Sprintf("Fetched the default branch only (fast). To install specific tags or older versions, re-add with: qvr registry add %s --full", reg.URL))
 	}
+	return nil
+}
+
+// runRegistryDeepen handles the already-configured case of `qvr registry add`:
+// without --full it's a conflict (signposting both escape hatches); with --full
+// it deepens the existing latest-only clone in place (#184).
+func runRegistryDeepen(cmd *cobra.Command, mgr *registry.Manager, name string, full bool) error {
+	if !full {
+		return fmt.Errorf("registry %q already exists — pass --name <alias> to add it under a different name, or --full to deepen it to all branches and tags", name)
+	}
+	sp := printer.Spinner()
+	sp.Start(fmt.Sprintf("Deepening %s to full (all branches, tags, history) …", name))
+	reg, derr := mgr.Deepen(cmd.Context(), name)
+	sp.Stop()
+	if derr != nil {
+		return fmt.Errorf("deepen registry: %w", derr)
+	}
+	if printer.Format == output.FormatJSON {
+		return printer.JSON(reg)
+	}
+	msg := fmt.Sprintf("Deepened registry %q (%s) to full — %d skills; all branches and tags are now installable",
+		reg.Name, reg.URL, reg.SkillCount)
+	if reg.SkippedCount > 0 {
+		msg += fmt.Sprintf(" (%d skipped — run `qvr registry update %s --verbose` for reasons)",
+			reg.SkippedCount, reg.Name)
+	}
+	printer.Success(msg)
 	return nil
 }
 
@@ -342,8 +346,8 @@ func githubOwner(reg *model.Registry) string {
 			return parts[0]
 		}
 	}
-	if strings.HasPrefix(reg.URL, "git@github.com:") {
-		rest := strings.TrimPrefix(reg.URL, "git@github.com:")
+	if after, ok := strings.CutPrefix(reg.URL, "git@github.com:"); ok {
+		rest := after
 		parts := strings.Split(strings.Trim(rest, "/"), "/")
 		if len(parts) >= 2 && parts[0] != "" {
 			return parts[0]
@@ -442,38 +446,7 @@ func runRegistryUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if registryUpdateCheck {
-		results, err := mgr.Check(cmd.Context(), name)
-		if err != nil {
-			return fmt.Errorf("check registries: %w", err)
-		}
-		failed := 0
-		for _, r := range results {
-			if r.Error != "" {
-				failed++
-			}
-		}
-		if printer.Format == output.FormatJSON {
-			if jerr := printer.JSON(results); jerr != nil {
-				return jerr
-			}
-			if failed > 0 {
-				return errJSONHandled
-			}
-			return nil
-		}
-		for _, r := range results {
-			if r.Error != "" {
-				printer.Error(fmt.Sprintf("%s: %s", r.Name, r.Error))
-			} else if r.HasUpstreamChanges {
-				printer.Info(fmt.Sprintf("%s: upstream changes available", r.Name))
-			} else {
-				printer.Info(fmt.Sprintf("%s: up to date", r.Name))
-			}
-		}
-		if failed > 0 {
-			return fmt.Errorf("%d registr(y/ies) failed to check", failed)
-		}
-		return nil
+		return runRegistryCheck(cmd, mgr, name)
 	}
 
 	results, err := mgr.Update(cmd.Context(), name)
@@ -481,12 +454,7 @@ func runRegistryUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update registries: %w", err)
 	}
 
-	failed := 0
-	for _, r := range results {
-		if r.Error != "" {
-			failed++
-		}
-	}
+	failed := countRegistryFailures(results)
 
 	if printer.Format == output.FormatJSON {
 		if jerr := printer.JSON(results); jerr != nil {
@@ -518,6 +486,50 @@ func runRegistryUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%d registr(y/ies) failed to update", failed)
 	}
 	return nil
+}
+
+// runRegistryCheck implements the --check branch of `qvr registry update`:
+// report upstream-change status without fetching, mirroring the JSON/text and
+// exit-code conventions of the update path.
+func runRegistryCheck(cmd *cobra.Command, mgr *registry.Manager, name string) error {
+	results, err := mgr.Check(cmd.Context(), name)
+	if err != nil {
+		return fmt.Errorf("check registries: %w", err)
+	}
+	failed := countRegistryFailures(results)
+	if printer.Format == output.FormatJSON {
+		if jerr := printer.JSON(results); jerr != nil {
+			return jerr
+		}
+		if failed > 0 {
+			return errJSONHandled
+		}
+		return nil
+	}
+	for _, r := range results {
+		if r.Error != "" {
+			printer.Error(fmt.Sprintf("%s: %s", r.Name, r.Error))
+		} else if r.HasUpstreamChanges {
+			printer.Info(fmt.Sprintf("%s: upstream changes available", r.Name))
+		} else {
+			printer.Info(fmt.Sprintf("%s: up to date", r.Name))
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d registr(y/ies) failed to check", failed)
+	}
+	return nil
+}
+
+// countRegistryFailures counts results carrying a non-empty Error field.
+func countRegistryFailures(results []model.RegistryStatus) int {
+	failed := 0
+	for _, r := range results {
+		if r.Error != "" {
+			failed++
+		}
+	}
+	return failed
 }
 
 // rejectWebURL rejects GitHub/GitLab/Bitbucket web-browse URLs like

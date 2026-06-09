@@ -42,34 +42,18 @@ func TestClaudeDerive_TurnToolSkill(t *testing.T) {
 		t.Fatalf("derive: %v", err)
 	}
 
-	var llm, tool, skill *derive.Span
-	for i := range spans {
-		switch spans[i].Kind {
-		case derive.KindLLM:
-			llm = &spans[i]
-		case derive.KindTool:
-			tool = &spans[i]
-		case derive.KindSkill:
-			skill = &spans[i]
-		}
-	}
+	llm, tool, skill := splitSpanKinds(spans)
 	if llm == nil || tool == nil || skill == nil {
 		t.Fatalf("want LLM+TOOL+SKILL spans, got %d spans (%+v)", len(spans), spans)
 	}
 
 	// LLM turn: OTel gen_ai chat conventions — tokens, model, messages.
-	if got := llm.Attributes["gen_ai.usage.input_tokens"]; got != 100 {
-		t.Errorf("input tokens: want 100, got %v", got)
-	}
-	if got := llm.Attributes["gen_ai.usage.output_tokens"]; got != 25 {
-		t.Errorf("output tokens: want 25, got %v", got)
-	}
-	if llm.Attributes["gen_ai.request.model"] != "claude-opus-4-8" {
-		t.Errorf("model: got %v", llm.Attributes["gen_ai.request.model"])
-	}
-	if llm.Attributes["gen_ai.provider.name"] != "anthropic" {
-		t.Errorf("provider: got %v", llm.Attributes["gen_ai.provider.name"])
-	}
+	wantAttrs(t, llm, map[string]any{
+		"gen_ai.usage.input_tokens":  100,
+		"gen_ai.usage.output_tokens": 25,
+		"gen_ai.request.model":       "claude-opus-4-8",
+		"gen_ai.provider.name":       "anthropic",
+	})
 	if s, _ := llm.Attributes["gen_ai.input.messages"].(string); !strings.Contains(s, "add a feature") {
 		t.Errorf("input messages missing prompt: got %v", llm.Attributes["gen_ai.input.messages"])
 	}
@@ -78,23 +62,19 @@ func TestClaudeDerive_TurnToolSkill(t *testing.T) {
 	}
 
 	// SKILL span: OTel execute_tool + the Quiver skill.name extension tag.
-	if skill.Attributes["skill.name"] != "code-review" {
-		t.Errorf("skill.name: got %v", skill.Attributes["skill.name"])
-	}
-	if skill.Attributes["gen_ai.operation.name"] != "execute_tool" {
-		t.Errorf("skill operation: got %v", skill.Attributes["gen_ai.operation.name"])
-	}
+	wantAttrs(t, skill, map[string]any{
+		"skill.name":            "code-review",
+		"gen_ai.operation.name": "execute_tool",
+	})
 	if skill.ParentSpanID != llm.SpanID {
 		t.Errorf("skill should parent to the turn LLM span")
 	}
 
 	// TOOL span: gen_ai.tool.* with result attached, parents to the turn.
-	if tool.Attributes["gen_ai.tool.name"] != "Read" {
-		t.Errorf("tool name: got %v", tool.Attributes["gen_ai.tool.name"])
-	}
-	if tool.Attributes["gen_ai.tool.call.result"] != "package main" {
-		t.Errorf("tool result: got %v", tool.Attributes["gen_ai.tool.call.result"])
-	}
+	wantAttrs(t, tool, map[string]any{
+		"gen_ai.tool.name":        "Read",
+		"gen_ai.tool.call.result": "package main",
+	})
 	if tool.ParentSpanID != llm.SpanID {
 		t.Errorf("tool should parent to the turn LLM span")
 	}

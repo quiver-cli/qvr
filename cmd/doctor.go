@@ -87,16 +87,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	var checks []doctorCheck
-	for _, s := range locks {
-		scoped := runDoctorChecks(s.Lock, cfg, projectRoot)
-		if doctorAll {
-			for i := range scoped {
-				scoped[i].Scope = s.Scope
-			}
-		}
-		checks = append(checks, scoped...)
-	}
+	checks := runScopedDoctorChecks(locks, cfg, projectRoot)
 
 	failed := 0
 	for _, c := range checks {
@@ -113,114 +104,143 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// list so the primary/other distinction collapses to "all entries."
 	primary := locks[0]
 	orphans := scanOrphans(cfg, primary.Lock, primary.Scope == "global", projectRoot)
-	if doctorStrict {
-		for i := range orphans {
-			orphans[i].OK = false
-		}
-		failed += len(orphans)
-	}
-	checks = append(checks, orphans...)
+	checks = appendInformationalChecks(checks, orphans, &failed)
 
 	// unreferenced-registry: a configured registry that no reachable lock
 	// (across both scopes) names. Informational; --strict promotes to fail.
 	unref := scanUnreferencedRegistries(cfg, locks, projectRoot)
-	if doctorStrict {
-		for i := range unref {
-			unref[i].OK = false
-		}
-		failed += len(unref)
-	}
-	checks = append(checks, unref...)
+	checks = appendInformationalChecks(checks, unref, &failed)
 
 	// qvr.toml ⟷ qvr.lock consistency (project scope only — qvr.toml is
 	// project-level). Informational unless --strict.
 	if !doctorGlobal {
-		var projectLock *model.LockFile
-		for _, s := range locks {
-			if !s.Lock.IsGlobal(config.Dir()) {
-				projectLock = s.Lock
-				break
-			}
-		}
-		if projectLock != nil {
+		if projectLock := projectScopeLock(locks); projectLock != nil {
 			drift := scanProjectFileDrift(projectLock, model.DefaultProjectPath(projectRoot))
-			if doctorStrict {
-				for i := range drift {
-					drift[i].OK = false
-				}
-				failed += len(drift)
-			}
-			checks = append(checks, drift...)
+			checks = appendInformationalChecks(checks, drift, &failed)
 		}
 	}
 
-	// When the project lock is empty but the user has skills installed in
-	// the global lock, "0/0 checks passed" reads like success and hides the
-	// fact that nothing was actually inspected. Surface a clear hint so CI
-	// runs and ad-hoc invocations don't silently miss broken global state.
-	globalHint := ""
-	if !doctorGlobal && !doctorAll && len(primary.Lock.Skills) == 0 {
-		globalLockPath := model.DefaultLockPath(projectRoot, config.Dir(), true)
-		if globalLock, gerr := model.ReadLockFile(globalLockPath); gerr == nil && len(globalLock.Skills) > 0 {
-			globalHint = fmt.Sprintf("project lock is empty; %d skill(s) installed globally — run `qvr doctor --global` to diagnose them", len(globalLock.Skills))
-		}
-	}
+	globalHint := emptyProjectGlobalHint(primary, projectRoot)
 
 	if printer.Format == output.FormatJSON {
-		out := map[string]any{
-			"checks": checks,
-			"failed": failed,
-			"total":  len(checks),
-		}
-		if globalHint != "" {
-			out["hint"] = globalHint
-		}
-		if jsonErr := printer.JSON(out); jsonErr != nil {
-			return jsonErr
-		}
-		// The payload already encodes failure via "failed": N. Skip the
-		// duplicate {"error": "..."} envelope so stdout stays a single doc.
-		if failed > 0 {
-			return errJSONHandled
-		}
-		return nil
-	} else {
-		for _, c := range checks {
-			renderDoctorCheck(c)
-		}
-		orphanCount, lockFailed := 0, 0
-		for _, c := range checks {
-			if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" || c.Type == "project-file-drift" {
-				orphanCount++
-				continue
-			}
-			if !c.OK {
-				lockFailed++
-			}
-		}
-		lockChecks := len(checks) - orphanCount
-		switch {
-		case len(checks) == 0 && globalHint != "":
-			fmt.Fprintf(printer.Out, "\n%s\n", globalHint)
-		case len(checks) == 0:
-			fmt.Fprintf(printer.Out, "\nno installed skills to check\n")
-		default:
-			fmt.Fprintf(printer.Out, "\n%d/%d lock-tracked checks passed",
-				lockChecks-lockFailed, lockChecks)
-			if orphanCount > 0 {
-				fmt.Fprintf(printer.Out, ", %d orphan/unreferenced artifact(s) found", orphanCount)
-			}
-			fmt.Fprintln(printer.Out)
-			if globalHint != "" {
-				fmt.Fprintf(printer.Out, "%s\n", globalHint)
-			}
-		}
+		return emitDoctorJSON(checks, failed, globalHint)
 	}
-
+	renderDoctorSummary(checks, globalHint)
 	if failed > 0 {
 		return fmt.Errorf("%d check(s) failed", failed)
 	}
 	return nil
+}
+
+// runScopedDoctorChecks runs the per-lock health checks across every scoped lock,
+// tagging each result with its scope when --all unions both lanes.
+func runScopedDoctorChecks(locks []scopedLock, cfg *config.Config, projectRoot string) []doctorCheck {
+	var checks []doctorCheck
+	for _, s := range locks {
+		scoped := runDoctorChecks(s.Lock, cfg, projectRoot)
+		if doctorAll {
+			for i := range scoped {
+				scoped[i].Scope = s.Scope
+			}
+		}
+		checks = append(checks, scoped...)
+	}
+	return checks
+}
+
+// emptyProjectGlobalHint returns a hint when the project lock is empty but the
+// user has skills installed globally — otherwise "0/0 checks passed" reads like
+// success and hides un-inspected global state. Empty when not applicable.
+func emptyProjectGlobalHint(primary scopedLock, projectRoot string) string {
+	if doctorGlobal || doctorAll || len(primary.Lock.Skills) != 0 {
+		return ""
+	}
+	globalLockPath := model.DefaultLockPath(projectRoot, config.Dir(), true)
+	if globalLock, gerr := model.ReadLockFile(globalLockPath); gerr == nil && len(globalLock.Skills) > 0 {
+		return fmt.Sprintf("project lock is empty; %d skill(s) installed globally — run `qvr doctor --global` to diagnose them", len(globalLock.Skills))
+	}
+	return ""
+}
+
+// appendInformationalChecks appends an informational scan's results to checks,
+// promoting each to a failure (OK=false, bumping *failed) under --strict — the
+// shared shape of doctor's orphan / unreferenced / drift augmentations.
+func appendInformationalChecks(checks, scanned []doctorCheck, failed *int) []doctorCheck {
+	if doctorStrict {
+		for i := range scanned {
+			scanned[i].OK = false
+		}
+		*failed += len(scanned)
+	}
+	return append(checks, scanned...)
+}
+
+// projectScopeLock returns the project-scope lock from the scoped list (the one
+// that isn't the global lock), or nil when only the global lock is present.
+func projectScopeLock(locks []scopedLock) *model.LockFile {
+	for _, s := range locks {
+		if !s.Lock.IsGlobal(config.Dir()) {
+			return s.Lock
+		}
+	}
+	return nil
+}
+
+// emitDoctorJSON writes the doctor result envelope. The payload already encodes
+// failure via "failed": N, so a non-zero failed count returns errJSONHandled
+// rather than a duplicate {"error": …} envelope, keeping stdout a single doc.
+func emitDoctorJSON(checks []doctorCheck, failed int, globalHint string) error {
+	out := map[string]any{
+		"checks": checks,
+		"failed": failed,
+		"total":  len(checks),
+	}
+	if globalHint != "" {
+		out["hint"] = globalHint
+	}
+	if jsonErr := printer.JSON(out); jsonErr != nil {
+		return jsonErr
+	}
+	if failed > 0 {
+		return errJSONHandled
+	}
+	return nil
+}
+
+// renderDoctorSummary prints the text-mode check rows followed by the
+// lock-tracked pass tally, the orphan/unreferenced artifact count, and the
+// empty-lock / global-hint variants.
+func renderDoctorSummary(checks []doctorCheck, globalHint string) {
+	for _, c := range checks {
+		renderDoctorCheck(c)
+	}
+	orphanCount, lockFailed := 0, 0
+	for _, c := range checks {
+		if strings.HasPrefix(c.Type, "orphan-") || c.Type == "unreferenced-registry" || c.Type == "project-file-drift" {
+			orphanCount++
+			continue
+		}
+		if !c.OK {
+			lockFailed++
+		}
+	}
+	lockChecks := len(checks) - orphanCount
+	switch {
+	case len(checks) == 0 && globalHint != "":
+		fmt.Fprintf(printer.Out, "\n%s\n", globalHint)
+	case len(checks) == 0:
+		fmt.Fprintf(printer.Out, "\nno installed skills to check\n")
+	default:
+		fmt.Fprintf(printer.Out, "\n%d/%d lock-tracked checks passed",
+			lockChecks-lockFailed, lockChecks)
+		if orphanCount > 0 {
+			fmt.Fprintf(printer.Out, ", %d orphan/unreferenced artifact(s) found", orphanCount)
+		}
+		fmt.Fprintln(printer.Out)
+		if globalHint != "" {
+			fmt.Fprintf(printer.Out, "%s\n", globalHint)
+		}
+	}
 }
 
 // runDoctorChecks is the side-effect-free heart of `qvr doctor` — given a lock
@@ -656,8 +676,8 @@ func scanRegistryOrphans(root string, claimed map[string]struct{}) []doctorCheck
 			continue
 		}
 		// Flat lane: `<name>.git/` directly under registries/.
-		if strings.HasSuffix(top.Name(), ".git") {
-			name := strings.TrimSuffix(top.Name(), ".git")
+		if before, ok := strings.CutSuffix(top.Name(), ".git"); ok {
+			name := before
 			if _, ok := claimed[name]; !ok {
 				out = append(out, doctorCheck{
 					Type:    "orphan-registry",

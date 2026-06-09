@@ -54,8 +54,36 @@ func (s *sqliteStore) AppendRawTraces(ctx context.Context, rows []*ops.RawTrace,
 	defer func() { _ = tx.Rollback() }()
 
 	// Resolve the next sequence number per session once up front.
+	seqFor := newRawSeqAllocator(ctx, tx)
+
+	if err := insertRawTraceRows(ctx, tx, rows, seqFor); err != nil {
+		return err
+	}
+
+	if cursor != nil {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO trace_cursors(agent_name, source_path, byte_offset, session_id, updated_at)
+			 VALUES (?,?,?,?,?)
+			 ON CONFLICT(agent_name, source_path)
+			 DO UPDATE SET byte_offset = excluded.byte_offset,
+			               session_id  = excluded.session_id,
+			               updated_at  = excluded.updated_at`,
+			cursor.AgentName, cursor.SourcePath, cursor.ByteOffset,
+			nullableSessionID(cursor.SessionID), time.Now().UTC(),
+		); err != nil {
+			return fmt.Errorf("store: advance cursor: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// newRawSeqAllocator returns a per-session sequence allocator that hands out a
+// dense monotonic run continuing from whatever is already stored for a session,
+// caching the next value per session so repeated calls within one tx stay dense.
+func newRawSeqAllocator(ctx context.Context, tx *sql.Tx) func(sid uuid.UUID) (int, error) {
 	nextSeq := map[uuid.UUID]int{}
-	seqFor := func(sid uuid.UUID) (int, error) {
+	return func(sid uuid.UUID) (int, error) {
 		if n, ok := nextSeq[sid]; ok {
 			nextSeq[sid] = n + 1
 			return n, nil
@@ -73,7 +101,12 @@ func (s *sqliteStore) AppendRawTraces(ctx context.Context, rows []*ops.RawTrace,
 		nextSeq[sid] = base + 1
 		return base, nil
 	}
+}
 
+// insertRawTraceRows fills in defaults (id, captured_at), assigns each row its
+// per-session sequence number via seqFor, and inserts it verbatim. A nil row is
+// skipped; a row missing a session id is a hard error.
+func insertRawTraceRows(ctx context.Context, tx *sql.Tx, rows []*ops.RawTrace, seqFor func(uuid.UUID) (int, error)) error {
 	for _, r := range rows {
 		if r == nil {
 			continue
@@ -100,23 +133,7 @@ func (s *sqliteStore) AppendRawTraces(ctx context.Context, rows []*ops.RawTrace,
 			return fmt.Errorf("store: append raw trace: %w", err)
 		}
 	}
-
-	if cursor != nil {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO trace_cursors(agent_name, source_path, byte_offset, session_id, updated_at)
-			 VALUES (?,?,?,?,?)
-			 ON CONFLICT(agent_name, source_path)
-			 DO UPDATE SET byte_offset = excluded.byte_offset,
-			               session_id  = excluded.session_id,
-			               updated_at  = excluded.updated_at`,
-			cursor.AgentName, cursor.SourcePath, cursor.ByteOffset,
-			nullableSessionID(cursor.SessionID), time.Now().UTC(),
-		); err != nil {
-			return fmt.Errorf("store: advance cursor: %w", err)
-		}
-	}
-
-	return tx.Commit()
+	return nil
 }
 
 // GetRawCursor returns the byte offset capture last consumed for (agent,
