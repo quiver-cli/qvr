@@ -29,8 +29,8 @@ var targetRegistry = []Target{
 	},
 	{
 		Name: "codex", Display: "OpenAI Codex CLI",
-		LocalDir: ".agents/skills", GlobalDir: "~/.codex/skills",
-		// docs: https://github.com/openai/skills
+		LocalDir: ".agents/skills", GlobalDir: "~/.agents/skills",
+		// docs: https://developers.openai.com/codex/skills/ (also reads system /etc/codex/skills)
 	},
 	{
 		Name: "cursor", Display: "Cursor",
@@ -142,12 +142,12 @@ var targetRegistry = []Target{
 		Name: "kiro", Display: "Kiro",
 		LocalDir: ".kiro/skills", GlobalDir: "~/.kiro/skills",
 		Aliases: []string{"kiro-cli"},
-		// docs: https://kiro.dev/docs/cli/skills/
+		// docs: https://kiro.dev/docs/skills/
 	},
 	{
 		Name: "trae", Display: "Trae",
 		LocalDir: ".trae/skills", GlobalDir: "~/.trae/skills",
-		// docs: https://docs.trae.ai (convention; no first-party skill-location docs found)
+		// docs: https://docs.trae.ai/ide/skills (also reads .agents/skills via opt-in setting)
 	},
 	{
 		Name: "trae-cn", Display: "Trae CN",
@@ -162,14 +162,14 @@ var targetRegistry = []Target{
 	},
 	{
 		Name: "openhands", Display: "OpenHands",
-		LocalDir: ".openhands/skills", GlobalDir: "~/.openhands/skills",
-		// docs: https://docs.openhands.dev/overview/skills/overview
+		LocalDir: ".agents/skills", GlobalDir: "~/.agents/skills",
+		// docs: https://docs.openhands.dev/overview/skills (.openhands/skills is a deprecated fallback)
 	},
 	{
 		Name: "tabnine", Display: "Tabnine",
 		LocalDir: ".tabnine/agent/skills", GlobalDir: "~/.tabnine/agent/skills",
 		Aliases: []string{"tabnine-cli"},
-		// docs: https://docs.tabnine.com/main/getting-started/tabnine-agent (convention; no first-party skill-location docs found)
+		// docs: https://docs.tabnine.com/main/getting-started/tabnine-cli/features/agent-skills
 	},
 	{
 		Name: "replit", Display: "Replit Agent",
@@ -209,9 +209,20 @@ var targetRegistry = []Target{
 		// docs: https://docs.astrbot.app/use/computer.html
 	},
 	{
+		Name: "autohand", Display: "Autohand Code CLI",
+		LocalDir: ".autohand/skills", GlobalDir: "~/.autohand/skills",
+		Aliases: []string{"autohand-code"},
+		// docs: https://github.com/autohandai/code-cli/blob/main/docs/agent-skills.md
+	},
+	{
 		Name: "bob", Display: "Bob",
 		LocalDir: ".bob/skills", GlobalDir: "~/.bob/skills",
 		// docs: (convention; no first-party skill-location docs found)
+	},
+	{
+		Name: "bub", Display: "Bub",
+		LocalDir: ".agents/skills", GlobalDir: "~/.agents/skills",
+		// docs: https://bub.build/docs/build/skills/ (implements the agentskills.io standard locations)
 	},
 	{
 		Name: "codearts", Display: "CodeArts Doer",
@@ -251,6 +262,13 @@ var targetRegistry = []Target{
 		LocalDir: ".agents/skills", GlobalDir: "~/.deepagents/agent/skills",
 		Aliases: []string{"deep-agents"},
 		// docs: https://docs.langchain.com/oss/python/deepagents/skills
+	},
+	{
+		Name: "fastagent", Display: "fast-agent",
+		LocalDir: ".fast-agent/skills", GlobalDir: "~/.fast-agent/skills",
+		Aliases: []string{"fast-agent"},
+		// docs: https://fast-agent.ai/agents/skills/ (project dirs only — .fast-agent/skills,
+		// .agents/skills, .claude/skills; global dir is convention, no documented global location)
 	},
 	{
 		Name: "firebender", Display: "Firebender",
@@ -295,6 +313,12 @@ var targetRegistry = []Target{
 		// docs: https://mux.coder.com/agents/agent-skills
 	},
 	{
+		Name: "nanobot", Display: "nanobot",
+		LocalDir: ".nanobot/skills", GlobalDir: "~/.nanobot/workspace/skills",
+		// docs: https://nanobot.wiki/docs/0.1.5/use-nanobot/skills (global workspace dir only,
+		// verified in nanobot/agent/skills.py; local dir is convention — no project-level loading)
+	},
+	{
 		Name: "neovate", Display: "Neovate",
 		LocalDir: ".neovate/skills", GlobalDir: "~/.neovate/skills",
 		// docs: (convention; no first-party skill-location docs found)
@@ -306,6 +330,12 @@ var targetRegistry = []Target{
 		// docs: https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md
 	},
 	{
+		Name: "ona", Display: "Ona",
+		LocalDir: ".ona/skills", GlobalDir: "~/.ona/skills",
+		// docs: https://ona.com/docs/ona/agents/skills (repo dir only — also reads .claude/skills
+		// and .agents/skills; org skills are platform-configured, global dir is convention)
+	},
+	{
 		Name: "openclaw", Display: "OpenClaw",
 		LocalDir: "skills", GlobalDir: "~/.openclaw/skills",
 		// docs: https://docs.openclaw.ai/cli/skills
@@ -313,7 +343,7 @@ var targetRegistry = []Target{
 	{
 		Name: "pi", Display: "Pi",
 		LocalDir: ".pi/skills", GlobalDir: "~/.pi/agent/skills",
-		// docs: https://pi.dev/docs/latest/skills
+		// docs: https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/skills.md (also reads .agents/skills)
 	},
 	{
 		Name: "pochi", Display: "Pochi",
@@ -341,6 +371,18 @@ var targetRegistry = []Target{
 		Name: "verdent", Display: "Verdent",
 		LocalDir: ".verdent/skills", GlobalDir: "~/.verdent/skills",
 		// docs: https://www.verdent.ai/docs/verdent-manager/core-features/skills
+	},
+	{
+		Name: "vtcode", Display: "VT Code",
+		LocalDir: ".agents/skills", GlobalDir: "~/.agents/skills",
+		Aliases: []string{"vt-code"},
+		// docs: https://github.com/vinhnx/vtcode/blob/main/docs/skills/SKILLS_GUIDE.md
+	},
+	{
+		Name: "workshop", Display: "Workshop",
+		LocalDir: ".workshop/skills", GlobalDir: "~/.workshop/skills",
+		// docs: https://docs.workshop.ai/core-concepts/skills.md (project dir documented; installs
+		// are UI-managed — manual placement unverified; global dir is convention)
 	},
 	{
 		Name: "zencoder", Display: "Zencoder",
