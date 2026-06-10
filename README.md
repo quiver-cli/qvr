@@ -2,7 +2,7 @@
 
 # quiver(qvr)
 
-An extremely fast skills manager for coding agents, written in Go.
+An extremely fast skills manager for your agents, written in Go.
 
 </div>
 
