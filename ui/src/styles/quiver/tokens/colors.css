@@ -1,0 +1,145 @@
+/* vendored from docs/Quiver Design System (tokens/colors.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Color tokens
+   Cool graphite neutrals + signal-cyan accent. Dark terminal is
+   the default (:root). Light "paper" theme under [data-theme="light"].
+   ============================================================ */
+
+:root {
+  /* --- Base neutrals: cool graphite scale (near-black -> light) --- */
+  --ink-950: #0a0c10;
+  --ink-900: #0f131a;
+  --ink-850: #151a22;
+  --ink-800: #1b212b;
+  --ink-750: #222a35;
+  --ink-700: #2d3643;
+  --ink-600: #3c4754;
+  --ink-500: #586572;
+  --ink-400: #7d8a98;
+  --ink-300: #a4b0bd;
+  --ink-200: #c8d1db;
+  --ink-100: #e3e9ef;
+  --ink-50:  #f1f5f8;
+  --paper:   #f5f8fb;
+
+  /* --- Brand accent: lime / chartreuse phosphor (bowstring) --- */
+  --brand-300: #d6f58e;
+  --brand-400: #c4f25e;
+  --brand-500: #a3e635;   /* primary */
+  --brand-600: #84cc16;
+  --brand-700: #5f8a12;
+  --brand-800: #3f5e0a;
+
+  /* --- Supporting / semantic hues (terminal-muted) --- */
+  --green-400: #5fd08a;
+  --green-500: #3fb457;
+  --green-600: #2f9147;
+  --red-400:   #f47077;
+  --red-500:   #ef5b62;
+  --red-600:   #cf3d44;
+  --blue-400:  #6fa6ff;
+  --blue-500:  #4c8cff;
+  --blue-600:  #2f6fe0;
+  --yellow-500: #e3b341;  /* caution / warning only — not a brand color */
+  --iris-400:  #a6b0ee;   /* used sparingly: links / SHAs / paths in terminal */
+
+  /* ======================================================
+     SEMANTIC ALIASES — dark terminal (default)
+     ====================================================== */
+
+  /* Surfaces */
+  --bg:              var(--ink-950);
+  --bg-subtle:       var(--ink-900);
+  --surface:         var(--ink-900);
+  --surface-raised:  var(--ink-850);
+  --surface-overlay: var(--ink-800);
+  --surface-inset:   #06080b;            /* terminal viewport, darker than bg */
+
+  /* Borders / hairlines */
+  --border:          var(--ink-700);
+  --border-subtle:   var(--ink-800);
+  --border-strong:   var(--ink-600);
+
+  /* Text */
+  --text:            var(--ink-50);
+  --text-muted:      var(--ink-300);
+  --text-subtle:     var(--ink-400);
+  --text-faint:      var(--ink-500);
+  --text-inverted:   var(--ink-950);
+
+  /* Accent */
+  --accent:          var(--brand-500);
+  --accent-hover:    var(--brand-400);
+  --accent-press:    var(--brand-600);
+  --accent-soft:     rgba(163, 230, 53, 0.13);   /* tint fill */
+  --accent-line:     rgba(163, 230, 53, 0.32);   /* tint border */
+  --on-accent:       #0d1402;                     /* dark text on lime */
+
+  /* Functional roles */
+  --prompt:          var(--brand-500);   /* shell prompt chevron */
+  --link:            var(--iris-400);
+  --focus-ring:      var(--brand-500);
+
+  /* Semantic states */
+  --success:         var(--green-500);
+  --success-soft:    rgba(63, 180, 87, 0.14);
+  --danger:          var(--red-500);
+  --danger-soft:     rgba(239, 91, 98, 0.14);
+  --info:            var(--blue-500);
+  --info-soft:       rgba(76, 140, 255, 0.14);
+  --warning:         var(--yellow-500);
+  --warning-soft:    rgba(227, 179, 65, 0.14);
+
+  /* Git diff semantics */
+  --diff-add:        var(--green-400);
+  --diff-add-bg:     rgba(63, 180, 87, 0.12);
+  --diff-remove:     var(--red-400);
+  --diff-remove-bg:  rgba(239, 91, 98, 0.12);
+
+  color-scheme: dark;
+}
+
+/* ======================================================
+   SEMANTIC ALIASES — light "paper" theme
+   ====================================================== */
+[data-theme="light"] {
+  --bg:              var(--paper);
+  --bg-subtle:       #eef2f7;
+  --surface:         #ffffff;
+  --surface-raised:  #ffffff;
+  --surface-overlay: #ffffff;
+  --surface-inset:   #eaeff4;
+
+  --border:          #d6dde6;
+  --border-subtle:   #e4e9f0;
+  --border-strong:   #bcc6d2;
+
+  --text:            var(--ink-900);
+  --text-muted:      var(--ink-500);
+  --text-subtle:     var(--ink-400);
+  --text-faint:      #9aa6b3;
+  --text-inverted:   var(--paper);
+
+  --accent:          var(--brand-700);
+  --accent-hover:    var(--brand-600);
+  --accent-press:    var(--brand-800);
+  --accent-soft:     rgba(95, 138, 18, 0.13);
+  --accent-line:     rgba(95, 138, 18, 0.32);
+  --on-accent:       #ffffff;
+
+  --prompt:          var(--brand-700);
+  --link:            var(--blue-600);
+  --focus-ring:      var(--brand-700);
+
+  --success:         var(--green-600);
+  --danger:          var(--red-600);
+  --info:            var(--blue-600);
+  --warning:         #b5841a;
+
+  --diff-add:        var(--green-600);
+  --diff-add-bg:     rgba(47, 145, 71, 0.12);
+  --diff-remove:     var(--red-600);
+  --diff-remove-bg:  rgba(207, 61, 68, 0.10);
+
+  color-scheme: light;
+}

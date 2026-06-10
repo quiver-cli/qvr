@@ -1,19 +1,22 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import { ChevronDown, ChevronRight, Dot } from "lucide-react";
 import { api, prettyAgent, useFetch, type RawTraceView, type SpanRow } from "../api";
 import {
-  Card,
+  Badge,
   CodeBlock,
-  Empty,
+  DetailHeader,
+  EmptyState,
   ErrorBox,
-  fmtTime,
   Loading,
-  Mono,
-  PageHeader,
-  Pill,
-  prettyJSON,
-  StatCard,
-} from "../components/ui";
+  Back,
+  Meta,
+  MetaItem,
+  Tabs,
+  Tag,
+} from "../components/qvr";
+import { fmtMs, fmtTime, prettyJSON, short } from "../lib/format";
+import { spanKindTone } from "../lib/tones";
 
 type View = "spans" | "raw";
 
@@ -27,78 +30,54 @@ export default function SessionDetail() {
 
   return (
     <>
-      <div className="mb-4">
-        <Link to="/sessions" className="text-sm font-medium text-[#2f765d] hover:underline">
-          ← Sessions
-        </Link>
-      </div>
+      <Back to="/sessions" label="Sessions" />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
       {data && session && (
         <>
-          <PageHeader
-            title={title}
-            subtitle={`${prettyAgent(session.agent_name)} · started ${fmtTime(
-              session.started_at,
-            )}`}
+          <DetailHeader
+            name={title}
+            badges={<Badge tone="info">{prettyAgent(session.agent_name)}</Badge>}
           />
-
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <StatCard label="Harness" value={prettyAgent(session.agent_name)} />
-            <StatCard label="Transcript lines" value={session.transcript_lines} />
-            <StatCard label="Hook payloads" value={session.hook_payloads} />
-            <StatCard label="Total rows" value={session.total_rows} />
-          </div>
-
+          <Meta>
+            <MetaItem k="started">{fmtTime(session.started_at)}</MetaItem>
+            <MetaItem k="transcript">{session.transcript_lines} lines</MetaItem>
+            <MetaItem k="hooks">{session.hook_payloads}</MetaItem>
+            <MetaItem k="rows">{session.total_rows}</MetaItem>
+            <span className="qvr-meta__item">
+              <span className="qvr-meta__k">session</span>
+              <Tag title={session.session_id}>{short(session.session_id, 8)}</Tag>
+            </span>
+          </Meta>
           {session.working_directory && (
-            <div className="mt-4">
-              <Card title="Working directory">
-                <Mono>{session.working_directory}</Mono>
-              </Card>
-            </div>
+            <Meta style={{ marginTop: 4 }}>
+              <MetaItem k="cwd">{session.working_directory}</MetaItem>
+            </Meta>
           )}
 
           {/* Toggle between the processed (derived span) view and the lossless
               raw rows — the two representations of the same session. */}
-          <div className="mt-8 mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase text-[#4d5853]">
-              {view === "spans"
-                ? `Processed spans (${data.spans.length})`
-                : `Raw traces (${data.traces.length})`}
-            </h2>
-            <Toggle view={view} onChange={setView} />
+          <div style={{ marginTop: 18 }}>
+            <Tabs
+              items={[
+                { id: "spans", label: "spans", count: data.spans.length },
+                { id: "raw", label: "raw", count: data.traces.length },
+              ]}
+              value={view}
+              onChange={(v) => setView(v as View)}
+            />
           </div>
 
-          {view === "spans" ? (
-            <SpansView spans={data.spans} />
-          ) : (
-            <RawView traces={data.traces} />
-          )}
+          <div style={{ marginTop: 16 }}>
+            {view === "spans" ? (
+              <SpansView spans={data.spans} />
+            ) : (
+              <RawView traces={data.traces} />
+            )}
+          </div>
         </>
       )}
     </>
-  );
-}
-
-function Toggle({ view, onChange }: { view: View; onChange: (v: View) => void }) {
-  const opt = (v: View, label: string) => (
-    <button
-      type="button"
-      onClick={() => onChange(v)}
-      className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-        view === v
-          ? "bg-white text-[#121816] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
-          : "text-[#63706a] hover:text-[#22302b]"
-      }`}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div className="inline-flex rounded-[6px] border border-[#cbd2ce] bg-[#ecefed] p-0.5">
-      {opt("spans", "Processed spans")}
-      {opt("raw", "Raw traces")}
-    </div>
   );
 }
 
@@ -210,15 +189,14 @@ function SpansView({ spans }: { spans: SpanRow[] }) {
   const turns = useMemo(() => groupTurns(spans), [spans]);
   if (spans.length === 0) {
     return (
-      <Empty>
-        No processed spans for this session. Spans are derived from the transcript —
-        switch to <strong>Raw traces</strong> to see the captured bytes, or run{" "}
-        <code className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5">qvr audit derive</code>.
-      </Empty>
+      <EmptyState title="no processed spans" art={false}>
+        spans are derived from the transcript — switch to raw to see the captured bytes,
+        or run qvr audit rederive.
+      </EmptyState>
     );
   }
   return (
-    <div className="space-y-4">
+    <div style={{ display: "grid", gap: 14 }}>
       {turns.map((t, i) => (
         <TurnCard key={t.llm.span_id} turn={t} index={i + 1} />
       ))}
@@ -230,23 +208,27 @@ function TurnCard({ turn, index }: { turn: Turn; index: number }) {
   const a = parseAttrs(turn.llm.attributes);
   const dur = turn.llm.end_ms - turn.llm.start_ms;
   return (
-    <div className="rounded-[6px] border border-[#d7ddda] bg-white shadow-[0_1px_0_rgba(22,32,28,0.04)]">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[#e6e9e7] bg-[#fbfbfa] px-4 py-3">
-        <span className="font-mono text-xs font-semibold text-[#708078]">#{index}</span>
-        <Pill tone="blue">LLM</Pill>
-        <span className="font-medium text-[#22302b]">{a.model || "chat"}</span>
+    <div className="qvr-card">
+      <div className="qvr-card__header" style={{ flexWrap: "wrap" }}>
+        <span
+          style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)", color: "var(--text-faint)" }}
+        >
+          #{index}
+        </span>
+        <Badge tone={spanKindTone("LLM")}>LLM</Badge>
+        <span className="qvr-card__title">{a.model || "chat"}</span>
         {(a.inTokens != null || a.outTokens != null) && (
-          <span className="font-mono text-xs text-[#708078]">
-            {a.inTokens ?? 0} in / {a.outTokens ?? 0} out tokens
+          <span className="qvr-scan__scanner">
+            {a.inTokens ?? 0} in / {a.outTokens ?? 0} out tok
           </span>
         )}
-        {dur > 0 && <span className="font-mono text-xs text-[#708078]">{(dur / 1000).toFixed(1)}s</span>}
+        {dur > 0 && <span className="qvr-scan__scanner">{fmtMs(dur)}</span>}
       </div>
-      <div className="space-y-3 p-4">
-        {a.prompt && <MessageBlock label="Prompt" tone="user" text={a.prompt} />}
-        {a.output && <MessageBlock label="Response" tone="assistant" text={a.output} />}
+      <div className="qvr-card__body" style={{ display: "grid", gap: 12 }}>
+        {a.prompt && <MessageBlock label="prompt" tone="user" text={a.prompt} />}
+        {a.output && <MessageBlock label="response" tone="assistant" text={a.output} />}
         {turn.children.length > 0 && (
-          <div className="space-y-2 pt-1">
+          <div style={{ display: "grid", gap: 8 }}>
             {turn.children.map((c) => (
               <ToolSpan key={c.span_id} span={c} />
             ))}
@@ -266,13 +248,24 @@ function MessageBlock({
   tone: "user" | "assistant";
   text: string;
 }) {
-  const bar = tone === "user" ? "border-[#9bb9c8]" : "border-[#8cc8b0]";
+  const bar = tone === "user" ? "var(--info)" : "var(--success)";
   return (
-    <div className={`border-l-2 ${bar} pl-3`}>
-      <div className="mb-0.5 text-xs font-semibold uppercase text-[#708078]">
+    <div style={{ borderLeft: `2px solid ${bar}`, paddingLeft: 12 }}>
+      <div className="qvr-meta__k" style={{ marginBottom: 2 }}>
         {label}
       </div>
-      <div className="whitespace-pre-wrap break-words text-sm leading-6 text-[#34423d]">{text}</div>
+      <div
+        style={{
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          fontFamily: "var(--font-body)",
+          fontSize: "var(--text-sm)",
+          lineHeight: "var(--leading-normal)",
+          color: "var(--text)",
+        }}
+      >
+        {text}
+      </div>
     </div>
   );
 }
@@ -282,53 +275,64 @@ function ToolSpan({ span }: { span: SpanRow }) {
   const a = parseAttrs(span.attributes);
   const isSkill = span.kind === "SKILL";
   const hasDetail = !!(a.toolArgs || a.toolResult);
+  const identity = skillIdentity(a);
   return (
-    <div className="rounded-[6px] border border-[#e1e5e3] bg-[#f7f9f8]">
+    <div className="qvr-card qvr-card--inset">
       <button
         type="button"
         onClick={() => hasDetail && setOpen((v) => !v)}
-        className={`flex w-full items-center gap-2 px-3 py-2 text-left ${
-          hasDetail ? "cursor-pointer hover:bg-[#eef2f0]" : "cursor-default"
-        }`}
+        style={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          gap: 8,
+          padding: "8px 12px",
+          background: "none",
+          border: "none",
+          textAlign: "left",
+          cursor: hasDetail ? "pointer" : "default",
+          color: "var(--text-faint)",
+        }}
       >
-        <span className="text-[#708078]">{hasDetail ? (open ? "▾" : "▸") : "•"}</span>
-        <Pill tone={isSkill ? "amber" : "gray"}>{span.kind}</Pill>
-        <span className="font-medium text-[#22302b]">{a.toolName || span.name}</span>
+        {hasDetail ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <Dot size={14} />}
+        <Badge tone={spanKindTone(span.kind)}>{span.kind}</Badge>
+        <span
+          style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-sm)", color: "var(--text)" }}
+        >
+          {a.toolName || span.name}
+        </span>
         {isSkill && a.skillName && (
-          <span className="text-xs text-[#63706a]">→ {a.skillName}</span>
+          <span className="qvr-scan__scanner">→ {a.skillName}</span>
         )}
-        {isSkill && skillIdentity(a) && (
-          <span
-            className={
-              a.skillVerified === false
-                ? "rounded-[3px] bg-[#ecefed] px-1.5 py-0.5 font-mono text-[11px] text-[#63706a]"
-                : "rounded-[3px] bg-[#f7efd9] px-1.5 py-0.5 font-mono text-[11px] text-[#77560f]"
-            }
+        {isSkill && a.skillVerified !== false && identity && (
+          <Badge tone="success" dot title="skill identity verified against the loaded artifact">
+            {identity}
+          </Badge>
+        )}
+        {isSkill && a.skillVerified === false && (
+          <Badge
+            tone="warning"
             title={
-              a.skillVerified === false
+              identity
                 ? "best-guess identity from qvr.lock — qvr could not confirm the copy the agent actually loaded"
-                : "skill identity verified against the loaded artifact"
+                : "qvr could not resolve the loaded copy to a locked skill (e.g. a global eject or a shadowing install)"
             }
           >
-            {a.skillVerified === false ? "~" : ""}
-            {skillIdentity(a)}
-          </span>
-        )}
-        {isSkill && !skillIdentity(a) && a.skillVerified === false && (
-          <span
-            className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5 text-[11px] text-[#63706a]"
-            title="qvr could not resolve the loaded copy to a locked skill (e.g. a global eject or a shadowing install)"
-          >
-            unverified
-          </span>
+            {identity ? `~${identity}` : "unverified"}
+          </Badge>
         )}
         {!isSkill && a.toolDesc && (
-          <span className="truncate text-xs text-[#708078]">{a.toolDesc}</span>
+          <span
+            className="qvr-scan__scanner"
+            style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {a.toolDesc}
+          </span>
         )}
-        {a.error && <Pill tone="red">{a.error}</Pill>}
+        {a.error && <Badge tone="danger">{a.error}</Badge>}
       </button>
       {open && hasDetail && (
-        <div className="px-3 pb-3">
+        <div style={{ padding: "0 12px 12px" }}>
           {a.toolArgs && <CodeBlock value={pretty(a.toolArgs)} label="arguments" />}
           {a.toolResult && <CodeBlock value={a.toolResult} label="result" />}
         </div>
@@ -350,10 +354,14 @@ function pretty(s: string): string {
 
 function RawView({ traces }: { traces: RawTraceView[] }) {
   if (traces.length === 0) {
-    return <Empty>No raw rows captured for this session.</Empty>;
+    return (
+      <EmptyState title="no raw rows" art={false}>
+        nothing captured for this session.
+      </EmptyState>
+    );
   }
   return (
-    <div className="space-y-2">
+    <div style={{ display: "grid", gap: 8 }}>
       {traces.map((t) => (
         <RawRow key={t.seq} trace={t} />
       ))}
@@ -364,27 +372,51 @@ function RawView({ traces }: { traces: RawTraceView[] }) {
 function RawRow({ trace }: { trace: RawTraceView }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-[6px] border border-[#d7ddda] bg-white shadow-[0_1px_0_rgba(22,32,28,0.04)]">
+    <div className="qvr-card">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-[#f7f9f8]"
+        aria-expanded={open}
+        style={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          gap: 10,
+          padding: "9px 14px",
+          background: "none",
+          border: "none",
+          textAlign: "left",
+          cursor: "pointer",
+          color: "var(--text-faint)",
+        }}
       >
-        <span className="text-[#708078]">{open ? "▾" : "▸"}</span>
-        <span className="w-10 shrink-0 font-mono text-xs text-[#708078]">#{trace.seq}</span>
-        <Pill tone={trace.source === "transcript" ? "blue" : "amber"}>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <span
+          style={{
+            width: 40,
+            flex: "none",
+            fontFamily: "var(--font-mono)",
+            fontSize: "var(--text-xs)",
+            color: "var(--text-faint)",
+          }}
+        >
+          #{trace.seq}
+        </span>
+        <Badge tone={trace.source === "transcript" ? "info" : "warning"}>
           {trace.source === "hook_payload" ? "hook" : "transcript"}
-        </Pill>
-        {trace.hook_type && <Mono>{trace.hook_type}</Mono>}
-        <span className="ml-auto text-xs text-[#708078]">{fmtTime(trace.captured_at)}</span>
+        </Badge>
+        {trace.hook_type && <Tag>{trace.hook_type}</Tag>}
+        <span className="qvr-scan__scanner" style={{ marginLeft: "auto" }}>
+          {fmtTime(trace.captured_at)}
+        </span>
       </button>
       {open && (
-        <div className="px-4 pb-3">
+        <div style={{ padding: "0 14px 12px" }}>
           <CodeBlock value={prettyJSON(trace.raw)} label="raw" />
           {trace.source_path && (
-            <div className="mt-1 text-xs text-[#708078]">
-              <Mono>{trace.source_path}</Mono>
-            </div>
+            <p className="qvr-scan__scanner" style={{ marginTop: 4 }}>
+              {trace.source_path}
+            </p>
           )}
         </div>
       )}

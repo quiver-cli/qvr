@@ -1,0 +1,32 @@
+/* vendored from docs/Quiver Design System (tokens/motion.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Motion tokens
+   Crisp, mechanical, fast. Like a terminal repainting: no bounce,
+   no float. Snappy ease-out for entrances; near-instant feedback
+   on press.
+   ============================================================ */
+
+:root {
+  /* Durations */
+  --dur-instant: 60ms;  /* @kind other */
+  --dur-fast:    120ms; /* @kind other */
+  --dur-base:    180ms; /* @kind other */
+  --dur-slow:    280ms; /* @kind other */
+  --dur-slower:  420ms; /* @kind other */
+
+  /* Easings — no overshoot; terminal is precise */
+  --ease-out:   cubic-bezier(0.22, 1, 0.36, 1);   /* @kind other */
+  --ease-in:    cubic-bezier(0.4, 0, 1, 1);        /* @kind other */
+  --ease-inout: cubic-bezier(0.65, 0, 0.35, 1);    /* @kind other */
+  /* hard cut, e.g. cursor blink frames */
+  --ease-step:  steps(1, end); /* @kind other */
+
+  /* Cursor blink (caret) */
+  --blink: 1s;  /* @kind other */
+}
+
+/* Terminal caret blink — used by code/terminal components */
+@keyframes qvr-caret-blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}

@@ -1,0 +1,159 @@
+/* vendored from docs/Quiver Design System (styles/controls.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Controls: button, icon-button, input, select,
+   checkbox, switch, kbd. Class-based so states ship to consumers.
+   ============================================================ */
+
+/* ---------- Button ---------- */
+.qvr-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  padding: 0 var(--space-4);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-normal);
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              transform var(--dur-instant) var(--ease-out);
+  user-select: none;
+}
+.qvr-btn:hover { background: var(--surface-overlay); border-color: var(--border-strong); }
+.qvr-btn:active { transform: translateY(0.5px); }
+.qvr-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.qvr-btn[disabled], .qvr-btn[aria-disabled="true"] {
+  opacity: 0.45; cursor: not-allowed; pointer-events: none;
+}
+
+/* sizes */
+.qvr-btn--sm { height: var(--control-h-sm); padding: 0 var(--space-3); font-size: var(--text-xs); }
+.qvr-btn--lg { height: var(--control-h-lg); padding: 0 var(--space-5); font-size: var(--text-base); }
+
+/* variants */
+.qvr-btn--primary {
+  background: var(--accent); border-color: transparent; color: var(--on-accent);
+  font-weight: var(--weight-semibold);
+}
+.qvr-btn--primary:hover { background: var(--accent-hover); }
+.qvr-btn--primary:active { background: var(--accent-press); }
+
+.qvr-btn--ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.qvr-btn--ghost:hover { background: var(--surface-raised); color: var(--text); border-color: transparent; }
+
+.qvr-btn--outline { background: transparent; }
+.qvr-btn--outline:hover { background: var(--accent-soft); border-color: var(--accent-line); color: var(--text); }
+
+.qvr-btn--danger { background: transparent; border-color: var(--border); color: var(--danger); }
+.qvr-btn--danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+
+.qvr-btn--block { display: flex; width: 100%; }
+
+/* icon slot sizing inside buttons */
+.qvr-btn svg { width: 15px; height: 15px; flex: none; }
+
+/* ---------- Icon button ---------- */
+.qvr-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--control-h); height: var(--control-h);
+  padding: 0; color: var(--text-muted);
+  background: transparent; border: var(--border-w) solid transparent;
+  border-radius: var(--radius-md); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.qvr-icon-btn:hover { background: var(--surface-raised); color: var(--text); }
+.qvr-icon-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.qvr-icon-btn--sm { width: var(--control-h-sm); height: var(--control-h-sm); }
+.qvr-icon-btn svg { width: 16px; height: 16px; }
+
+/* ---------- Input ---------- */
+.qvr-field { display: inline-flex; flex-direction: column; gap: var(--space-2); }
+.qvr-label {
+  font-family: var(--font-ui); font-size: var(--text-xs); font-weight: var(--weight-medium);
+  color: var(--text-muted); letter-spacing: var(--tracking-wide);
+}
+.qvr-input-wrap {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  height: var(--control-h); padding: 0 var(--space-3);
+  background: var(--surface-inset);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.qvr-input-wrap:focus-within { border-color: var(--accent-line); box-shadow: var(--glow-amber); }
+.qvr-input-wrap--invalid { border-color: var(--danger); }
+.qvr-input-wrap .qvr-affix { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--text-sm); flex: none; }
+.qvr-input-wrap svg { width: 15px; height: 15px; color: var(--text-faint); flex: none; }
+.qvr-input {
+  flex: 1 1 auto; min-width: 0; height: 100%;
+  background: transparent; border: none; outline: none;
+  color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm);
+}
+.qvr-input::placeholder { color: var(--text-faint); }
+.qvr-input-wrap--lg { height: var(--control-h-lg); }
+.qvr-hint { font-size: var(--text-xs); color: var(--text-faint); font-family: var(--font-ui); }
+.qvr-hint--error { color: var(--danger); }
+
+/* ---------- Select ---------- */
+.qvr-select-wrap { position: relative; display: inline-flex; align-items: center; }
+.qvr-select {
+  appearance: none; -webkit-appearance: none;
+  height: var(--control-h); padding: 0 var(--space-8) 0 var(--space-3);
+  background: var(--surface-inset); color: var(--text);
+  border: var(--border-w) solid var(--border); border-radius: var(--radius-md);
+  font-family: var(--font-mono); font-size: var(--text-sm); cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.qvr-select:hover { border-color: var(--border-strong); }
+.qvr-select:focus-visible { outline: none; border-color: var(--accent-line); box-shadow: var(--glow-amber); }
+.qvr-select-wrap svg { position: absolute; right: var(--space-3); width: 14px; height: 14px; color: var(--text-faint); pointer-events: none; }
+
+/* ---------- Checkbox ---------- */
+.qvr-check { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; font-family: var(--font-ui); font-size: var(--text-sm); color: var(--text); user-select: none; }
+.qvr-check input { position: absolute; opacity: 0; width: 0; height: 0; }
+.qvr-check__box {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 17px; height: 17px; flex: none;
+  background: var(--surface-inset); border: var(--border-w) solid var(--border-strong);
+  border-radius: var(--radius-xs); color: var(--on-accent);
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.qvr-check__box svg { width: 12px; height: 12px; opacity: 0; transform: scale(0.6); transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+.qvr-check input:checked + .qvr-check__box { background: var(--accent); border-color: var(--accent); }
+.qvr-check input:checked + .qvr-check__box svg { opacity: 1; transform: scale(1); }
+.qvr-check input:focus-visible + .qvr-check__box { box-shadow: var(--ring); }
+
+/* ---------- Switch ---------- */
+.qvr-switch { display: inline-flex; align-items: center; gap: var(--space-3); cursor: pointer; font-family: var(--font-ui); font-size: var(--text-sm); color: var(--text); user-select: none; }
+.qvr-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.qvr-switch__track {
+  position: relative; width: 36px; height: 20px; flex: none;
+  background: var(--ink-700); border-radius: var(--radius-pill);
+  transition: background var(--dur-base) var(--ease-out);
+}
+.qvr-switch__thumb {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  background: var(--ink-100); border-radius: var(--radius-pill);
+  transition: transform var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+.qvr-switch input:checked + .qvr-switch__track { background: var(--accent); }
+.qvr-switch input:checked + .qvr-switch__track .qvr-switch__thumb { transform: translateX(16px); background: var(--on-accent); }
+.qvr-switch input:focus-visible + .qvr-switch__track { box-shadow: var(--ring); }
+
+/* ---------- Kbd ---------- */
+.qvr-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px;
+  font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: var(--weight-medium);
+  color: var(--text-muted); background: var(--surface-raised);
+  border: var(--border-w) solid var(--border); border-bottom-width: 2px;
+  border-radius: var(--radius-xs);
+}

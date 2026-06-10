@@ -1,0 +1,44 @@
+/* vendored from docs/Quiver Design System (tokens/base.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Base layer
+   Minimal element defaults wired to tokens. Sets the warm-ink
+   terminal canvas and sane typographic defaults.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  font-feature-settings: "ss01", "zero" 1;   /* slashed zero on Plex Mono */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Longform prose opts into the sans face */
+.prose { font-family: var(--font-body); line-height: var(--leading-relaxed); }
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+code, kbd, samp, pre { font-family: var(--font-code); }
+
+::selection { background: var(--accent-soft); color: var(--text); }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+hr { border: none; border-top: var(--border-w) solid var(--border); margin: var(--space-6) 0; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--ink-700); border-radius: var(--radius-pill); border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-600); background-clip: padding-box; }

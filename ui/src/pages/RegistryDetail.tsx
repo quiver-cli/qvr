@@ -1,16 +1,20 @@
 import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { api, useFetch, type RegistryVersion } from "../api";
+import { api, useFetch, type RegistrySkillRow, type RegistryVersion } from "../api";
 import {
+  Back,
+  Badge,
   Card,
-  Empty,
+  DetailHeader,
+  EmptyState,
   ErrorBox,
   Loading,
-  Mono,
-  PageHeader,
-  Pill,
-  short,
-} from "../components/ui";
+  Meta,
+  MetaItem,
+  Tag,
+} from "../components/qvr";
+import { short } from "../lib/format";
 
 export default function RegistryDetail() {
   const { name = "" } = useParams();
@@ -21,45 +25,50 @@ export default function RegistryDetail() {
 
   return (
     <>
-      <div className="mb-4">
-        <Link to="/registries" className="text-sm font-medium text-[#2f765d] hover:underline">
-          ← Registries
-        </Link>
-      </div>
+      <Back to="/registries" label="Registries" />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
       {data && (
         <>
-          <PageHeader
-            title={data.registry}
-            subtitle={data.url || "Git repository Quiver installs skills from."}
+          <DetailHeader
+            name={data.registry}
+            desc={data.url || "Git repository Quiver installs skills from."}
           />
-          {data.error && <ErrorBox message={data.error} />}
+          {data.defaultBranch && (
+            <Meta>
+              <MetaItem k="default branch">{data.defaultBranch}</MetaItem>
+              <MetaItem k="skills">{data.skills.length}</MetaItem>
+            </Meta>
+          )}
+          {data.error && (
+            <div style={{ marginTop: 12 }}>
+              <ErrorBox message={data.error} />
+            </div>
+          )}
 
           {/* Skills the registry offers, with install status. Expanding a skill
               lists the versions (refs/tags) it can be installed at — no repo-wide
               version tree, just the skill and its versions. */}
-          <Card title={`Skills (${data.skills.length})`}>
-            {data.skills.length === 0 ? (
-              <Empty>This registry has no indexable skills.</Empty>
-            ) : (
-              <ul className="divide-y divide-[#eef0ef]">
-                {data.skills.map((s) => (
-                  <SkillItem
-                    key={s.name}
-                    registry={name}
-                    skill={s}
-                    versions={data.versions}
-                  />
-                ))}
-              </ul>
-            )}
-            {data.defaultBranch && (
-              <p className="mt-3 text-xs text-[#708078]">
-                Default branch: <Mono>{data.defaultBranch}</Mono>
-              </p>
-            )}
-          </Card>
+          <div className="qvr-section">
+            <Card title={`skills (${data.skills.length})`}>
+              {data.skills.length === 0 ? (
+                <EmptyState title="no indexable skills" art={false}>
+                  this registry offers nothing qvr can index.
+                </EmptyState>
+              ) : (
+                <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                  {data.skills.map((s) => (
+                    <SkillItem
+                      key={s.name}
+                      registry={name}
+                      skill={s}
+                      versions={data.versions}
+                    />
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
         </>
       )}
     </>
@@ -72,50 +81,62 @@ function SkillItem({
   versions,
 }: {
   registry: string;
-  skill: import("../api").RegistrySkillRow;
+  skill: RegistrySkillRow;
   versions: RegistryVersion[];
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="py-2">
-      <div className="flex items-center gap-2">
+    <li style={{ padding: "8px 0", borderTop: "1px solid var(--border-subtle)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          aria-label={open ? "Collapse versions" : "Expand versions"}
-          className="text-[#708078] hover:text-[#22302b]"
+          aria-expanded={open}
+          aria-label={open ? "collapse versions" : "expand versions"}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            color: "var(--text-faint)",
+            display: "inline-flex",
+          }}
         >
-          {open ? "▾" : "▸"}
+          {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <Link
           to={`/registries/${encodeURIComponent(registry)}/skills/${encodeURIComponent(
             skill.name,
           )}`}
-          className="font-medium text-[#22302b] hover:text-[#2f765d] hover:underline"
+          className="qvr-skillrow__name"
         >
           {skill.name}
         </Link>
         {skill.installed ? (
-          <Pill tone="green">
+          <Badge tone="success" dot>
             installed{skill.installedRef ? ` @ ${skill.installedRef}` : ""}
-          </Pill>
+          </Badge>
         ) : (
-          <Pill tone="gray">available</Pill>
+          <Badge tone="neutral">available</Badge>
         )}
         {skill.installed && skill.installedCommit && (
-          <Mono title={skill.installedCommit}>{short(skill.installedCommit)}</Mono>
+          <Tag lead="#" title={skill.installedCommit}>
+            {short(skill.installedCommit)}
+          </Tag>
         )}
       </div>
       {skill.description && (
-        <p className="mt-0.5 pl-6 text-sm text-[#66736d]">{skill.description}</p>
+        <p className="qvr-sub" style={{ margin: "2px 0 0 24px" }}>
+          {skill.description}
+        </p>
       )}
       {open && (
-        <div className="mt-2 pl-6">
-          <div className="mb-1 text-xs font-semibold uppercase text-[#708078]">
-            Versions {skill.installed ? "(installed one highlighted)" : ""}
+        <div style={{ margin: "8px 0 0 24px" }}>
+          <div className="qvr-meta__k" style={{ marginBottom: 4 }}>
+            versions{skill.installed ? " (installed one highlighted)" : ""}
           </div>
           {versions.length === 0 ? (
-            <Empty>No branches or tags found in this registry's clone.</Empty>
+            <p className="qvr-sub">no branches or tags found in this registry's clone.</p>
           ) : (
             <SkillVersions
               versions={versions}
@@ -143,7 +164,16 @@ function SkillVersions({
   currentSha?: string;
 }) {
   return (
-    <ul className="flex flex-wrap gap-1.5">
+    <ul
+      style={{
+        listStyle: "none",
+        margin: 0,
+        padding: 0,
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 6,
+      }}
+    >
       {versions.map((v) => {
         const isCurrent =
           (currentRef && v.ref === currentRef) ||
@@ -152,19 +182,31 @@ function SkillVersions({
         return (
           <li
             key={`${v.isTag ? "tag" : "branch"}:${v.ref}`}
-            className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-sm ${
-              isCurrent
-                ? "bg-[#e8f4ef] ring-1 ring-inset ring-[#8cc8b0]"
-                : "bg-[#f7f9f8]"
-            }`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 8px",
+              borderRadius: "var(--radius-sm)",
+              background: isCurrent ? "var(--success-soft)" : "var(--surface-inset)",
+              border: `1px solid ${isCurrent ? "var(--success)" : "var(--border-subtle)"}`,
+            }}
           >
-            <Pill tone={v.isTag ? "amber" : "blue"}>{v.isTag ? "tag" : "branch"}</Pill>
+            <span className="qvr-pill">{v.isTag ? "tag" : "branch"}</span>
             <span
-              className={`font-medium ${isCurrent ? "text-[#176548]" : "text-[#22302b]"}`}
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--text-sm)",
+                color: isCurrent ? "var(--success)" : "var(--text)",
+              }}
             >
               {v.ref}
             </span>
-            {isCurrent && <Pill tone="green">current</Pill>}
+            {isCurrent && (
+              <Badge tone="success" dot>
+                current
+              </Badge>
+            )}
           </li>
         );
       })}

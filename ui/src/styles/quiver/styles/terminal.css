@@ -1,0 +1,90 @@
+/* vendored from docs/Quiver Design System (styles/terminal.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Terminal & prompt
+   The signature surface. A refined terminal window: warm-ink
+   chrome, amber prompt chevron, blinking caret.
+   ============================================================ */
+
+.qvr-term {
+  display: flex; flex-direction: column;
+  background: var(--surface-inset);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: clip;
+  box-shadow: var(--shadow-lg);
+  font-family: var(--font-code);
+}
+
+/* title bar */
+.qvr-term__bar {
+  display: flex; align-items: center; gap: var(--space-3);
+  height: 34px; padding: 0 var(--space-3);
+  background: var(--surface-raised);
+  border-bottom: var(--border-w) solid var(--border-subtle);
+  flex: none;
+}
+.qvr-term__dots { display: flex; gap: 7px; }
+.qvr-term__dot { width: 11px; height: 11px; border-radius: var(--radius-pill); background: var(--ink-600); }
+.qvr-term__dot:nth-child(1) { background: #e5605e; }
+.qvr-term__dot:nth-child(2) { background: #e6b34d; }
+.qvr-term__dot:nth-child(3) { background: #5bbb6a; }
+.qvr-term__title {
+  font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-subtle);
+  letter-spacing: var(--tracking-wide); margin: 0 auto;
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qvr-term__title svg { width: 13px; height: 13px; color: var(--text-faint); }
+
+/* body */
+.qvr-term__body {
+  padding: var(--space-4);
+  font-size: var(--text-sm); line-height: var(--leading-code);
+  color: var(--ink-100);
+  overflow: auto;
+}
+
+/* a single output / command line */
+.qvr-line { display: flex; gap: var(--space-2); white-space: pre-wrap; word-break: break-word; }
+.qvr-line + .qvr-line { margin-top: 2px; }
+.qvr-line__prompt { color: var(--prompt); font-weight: var(--weight-semibold); flex: none; user-select: none; }
+.qvr-line__path { color: var(--iris-400); flex: none; }
+.qvr-line__cmd { color: var(--text); }
+.qvr-line--muted { color: var(--text-subtle); }
+.qvr-line--add { color: var(--diff-add); }
+.qvr-line--remove { color: var(--diff-remove); }
+.qvr-line--warn { color: var(--warning); }
+.qvr-line--ok { color: var(--success); }
+
+/* inline tokens used in output */
+.qvr-tok-accent { color: var(--accent); }
+.qvr-tok-sha    { color: var(--iris-400); }
+.qvr-tok-dim    { color: var(--text-faint); }
+.qvr-tok-ok     { color: var(--success); }
+.qvr-tok-bad    { color: var(--danger); }
+
+/* blinking caret */
+.qvr-caret {
+  display: inline-block; width: 8px; height: 1.05em; vertical-align: text-bottom;
+  background: var(--accent); margin-left: 1px;
+  animation: qvr-caret-blink var(--blink) var(--ease-step) infinite;
+}
+@media (prefers-reduced-motion: reduce) { .qvr-caret { animation: none; } }
+
+/* standalone prompt (inline, e.g. on marketing pages) */
+.qvr-prompt {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-family: var(--font-code); font-size: var(--text-sm);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-inset);
+  border: var(--border-w) solid var(--border); border-radius: var(--radius-md);
+  color: var(--ink-100);
+}
+.qvr-prompt__chevron { color: var(--prompt); font-weight: var(--weight-semibold); }
+.qvr-prompt__copy {
+  margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; color: var(--text-faint);
+  background: transparent; border: none; border-radius: var(--radius-sm); cursor: pointer;
+}
+.qvr-prompt__copy:hover { color: var(--text); background: var(--surface-raised); }
+.qvr-prompt__copy svg { width: 14px; height: 14px; }

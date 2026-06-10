@@ -1,71 +1,67 @@
-import { Link } from "react-router-dom";
+import { Library } from "lucide-react";
 import { api, useFetch } from "../api";
 import {
-  Empty,
+  Badge,
+  EmptyState,
   ErrorBox,
-  fmtTime,
   Loading,
-  Mono,
-  PageHeader,
-  Pill,
-  Table,
-  Td,
-  Th,
-} from "../components/ui";
+  PageHead,
+  Prompt,
+  SkillRowItem,
+  Tag,
+} from "../components/qvr";
+import { relTime } from "../lib/format";
 
 export default function Registries() {
   const { data, error, loading } = useFetch(api.registries, "registries");
 
   return (
     <>
-      <PageHeader
-        title="Registries"
-        subtitle="Global · shared across all projects. Click a registry to see its skills and versions."
-      />
+      <PageHead title="Registries" sub="Plain Git repos. No central server." />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
       {data && data.length === 0 && (
-        <Empty>
-          No registries configured. Add one with{" "}
-              <code className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5">qvr registry add &lt;url&gt;</code>.
-        </Empty>
+        <>
+          <EmptyState title="no registries">
+            any git repo with skills in it can be a registry. add one:
+          </EmptyState>
+          <div style={{ maxWidth: 420, margin: "0 auto" }}>
+            <Prompt command="qvr registry add <git-url>" />
+          </div>
+        </>
       )}
-      {data && data.length > 0 && (
-        <Table
-          head={
-            <tr>
-              <Th>Name</Th>
-              <Th>URL</Th>
-              <Th>Skills</Th>
-              <Th>Last fetched</Th>
-            </tr>
-          }
-        >
-          {data.map((r) => (
-            <tr key={r.name} className="hover:bg-[#f7f9f8]">
-              <Td>
-                <Link
-                  to={`/registries/${encodeURIComponent(r.name)}`}
-                  className="font-medium text-[#2f765d] hover:underline"
-                >
-                  {r.name}
-                </Link>
+      <div>
+        {(data ?? []).map((r) => (
+          <SkillRowItem
+            key={r.name}
+            to={`/registries/${encodeURIComponent(r.name)}`}
+            lead={<Library size={16} style={{ color: "var(--text-faint)", flex: "none" }} />}
+            name={
+              <>
+                {r.name}{" "}
                 {r.has_upstream_changes && (
-                  <Pill tone="amber">
-                    <span className="ml-1">updates</span>
-                  </Pill>
+                  <Badge tone="accent" dot>
+                    updates
+                  </Badge>
                 )}
-                {r.error && <div className="mt-1 text-xs text-[#9a2f2f]">{r.error}</div>}
-              </Td>
-              <Td>
-                <Mono>{r.url}</Mono>
-              </Td>
-              <Td>{r.skill_count}</Td>
-              <Td>{r.last_fetched && !r.last_fetched.startsWith("0001") ? fmtTime(r.last_fetched) : "never"}</Td>
-            </tr>
-          ))}
-        </Table>
-      )}
+                {r.error && <Badge tone="danger">error</Badge>}
+              </>
+            }
+            desc={<span style={{ color: "var(--link)" }}>{r.error || r.url}</span>}
+            right={
+              <>
+                <Tag>{r.skill_count} skills</Tag>
+                <span className="qvr-skillrow__reg">
+                  fetched{" "}
+                  {r.last_fetched && !r.last_fetched.startsWith("0001")
+                    ? relTime(r.last_fetched)
+                    : "never"}
+                </span>
+              </>
+            }
+          />
+        ))}
+      </div>
     </>
   );
 }

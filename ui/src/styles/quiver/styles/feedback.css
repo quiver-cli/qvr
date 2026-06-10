@@ -1,0 +1,73 @@
+/* vendored from docs/Quiver Design System (styles/feedback.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Feedback & navigation: tabs, toast, tooltip
+   ============================================================ */
+
+/* ---------- Tabs ---------- */
+.qvr-tabs { display: flex; gap: 2px; border-bottom: var(--border-w) solid var(--border); }
+.qvr-tab {
+  position: relative;
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  height: 34px; padding: 0 var(--space-3);
+  font-family: var(--font-ui); font-size: var(--text-sm); font-weight: var(--weight-medium);
+  color: var(--text-subtle); background: transparent;
+  border: none; cursor: pointer; border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.qvr-tab:hover { color: var(--text); }
+.qvr-tab svg { width: 14px; height: 14px; }
+.qvr-tab[aria-selected="true"] { color: var(--text); }
+.qvr-tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: var(--space-2); right: var(--space-2); bottom: -1px;
+  height: 2px; background: var(--accent); border-radius: var(--radius-pill);
+}
+.qvr-tab__count {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  color: var(--text-faint); background: var(--surface-raised);
+  padding: 1px 5px; border-radius: var(--radius-xs);
+}
+
+/* ---------- Toast ---------- */
+.qvr-toast {
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  width: 340px; max-width: 100%; padding: var(--space-3) var(--space-4);
+  background: var(--surface-overlay);
+  border: var(--border-w) solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-pop);
+  font-family: var(--font-ui);
+}
+.qvr-toast--success { border-left-color: var(--success); }
+.qvr-toast--danger  { border-left-color: var(--danger); }
+.qvr-toast--info    { border-left-color: var(--info); }
+.qvr-toast--accent  { border-left-color: var(--accent); }
+.qvr-toast__icon { flex: none; margin-top: 1px; }
+.qvr-toast__icon svg { width: 16px; height: 16px; }
+.qvr-toast--success .qvr-toast__icon { color: var(--success); }
+.qvr-toast--danger  .qvr-toast__icon { color: var(--danger); }
+.qvr-toast--info    .qvr-toast__icon { color: var(--info); }
+.qvr-toast--accent  .qvr-toast__icon { color: var(--accent); }
+.qvr-toast__body { flex: 1 1 auto; min-width: 0; }
+.qvr-toast__title { font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text); margin: 0 0 2px; }
+.qvr-toast__msg { font-size: var(--text-xs); color: var(--text-muted); margin: 0; font-family: var(--font-mono); }
+.qvr-toast__close { flex: none; color: var(--text-faint); background: none; border: none; cursor: pointer; padding: 2px; border-radius: var(--radius-xs); }
+.qvr-toast__close:hover { color: var(--text); }
+.qvr-toast__close svg { width: 14px; height: 14px; }
+
+/* ---------- Tooltip ---------- */
+.qvr-tooltip-anchor { position: relative; display: inline-flex; }
+.qvr-tooltip {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  white-space: nowrap; z-index: 30;
+  padding: 5px var(--space-2); font-family: var(--font-mono); font-size: var(--text-2xs);
+  color: var(--text); background: var(--ink-800);
+  border: var(--border-w) solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.qvr-tooltip::after {
+  content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--ink-800);
+}
+.qvr-tooltip-anchor:hover .qvr-tooltip { opacity: 1; transform: translateX(-50%) translateY(-2px); }

@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, FileText, Folder } from "lucide-react";
 
 // FileTree renders a flat list of skill-relative paths (the shape both
 // SkillInfo.files and RegistrySkillDetail.files arrive in) as a nested,
-// collapsible directory tree. Dependency-free and styled to match the rest of
-// the dashboard: the same ▸/▾ disclosure glyph the registry version list uses,
-// muted mono filenames, light hover. Optionally annotates files with a scan
-// finding count so a live scan can flag exactly which files tripped a rule.
+// collapsible directory tree in the kit's .qvr-frow rhythm: mono names,
+// uppercase kind labels, hairline row separation. Optionally annotates files
+// with a scan finding count so a live scan can flag exactly which files
+// tripped a rule.
 
 export interface TreeNode {
   name: string;
@@ -88,15 +89,15 @@ export default function FileTree({
   findings,
 }: {
   paths: string[];
-  // Optional path → finding count, surfaced as a red badge on flagged files.
+  // Optional path → finding count, surfaced as a danger badge on flagged files.
   findings?: Record<string, number>;
 }) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   if (paths.length === 0) {
-    return <div className="text-sm text-[#7a8580]">No files.</div>;
+    return <p className="qvr-sub">no files.</p>;
   }
   return (
-    <ul className="space-y-0.5 text-sm">
+    <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
       {tree.map((n) => (
         <TreeRow key={n.path} node={n} depth={0} findings={findings} />
       ))}
@@ -114,7 +115,7 @@ function TreeRow({
   findings?: Record<string, number>;
 }) {
   const [open, setOpen] = useState(true);
-  const pad = { paddingLeft: `${depth * 14}px` };
+  const pad = { paddingLeft: `${depth * 16}px` };
 
   if (node.isDir) {
     return (
@@ -122,15 +123,23 @@ function TreeRow({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          style={pad}
-          className="flex w-full items-center gap-1.5 rounded-[3px] px-1 py-0.5 text-left hover:bg-[#f4f6f5]"
+          aria-expanded={open}
+          className="qvr-frow"
+          style={{
+            ...pad,
+            width: "100%",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            textAlign: "left",
+          }}
         >
-          <span className="w-3 shrink-0 text-[#708078]">{open ? "▾" : "▸"}</span>
-          <span className="font-medium text-[#34423d]">{node.name}</span>
-          <span className="text-xs text-[#9ba6a1]">/</span>
+          {open ? <ChevronDown /> : <ChevronRight />}
+          <Folder />
+          <span className="qvr-frow__name">{node.name}</span>
         </button>
         {open && (
-          <ul className="space-y-0.5">
+          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
             {node.children.map((c) => (
               <TreeRow key={c.path} node={c} depth={depth + 1} findings={findings} />
             ))}
@@ -143,19 +152,13 @@ function TreeRow({
   const count = findings?.[node.path] ?? 0;
   return (
     <li>
-      <div
-        style={pad}
-        className="flex items-center gap-1.5 rounded-[3px] px-1 py-0.5 hover:bg-[#f4f6f5]"
-        title={node.path}
-      >
-        <span className="w-3 shrink-0" />
-        <span className="font-mono text-[0.8125rem] text-[#34423d]">{node.name}</span>
-        <span className="text-[0.6875rem] uppercase text-[#9ba6a1]">
-          {fileKind(node.name)}
-        </span>
+      <div className="qvr-frow" style={pad} title={node.path}>
+        <FileText />
+        <span className="qvr-frow__name">{node.name}</span>
+        <span className="qvr-frow__kind">{fileKind(node.name)}</span>
         {count > 0 && (
-          <span className="ml-auto inline-flex items-center rounded-[3px] bg-[#f8eaea] px-1.5 text-[0.6875rem] font-semibold text-[#9a2f2f] ring-1 ring-inset ring-[#dc9a9a]">
-            {count}
+          <span className="qvr-frow__r">
+            <span className="qvr-badge qvr-badge--danger">{count}</span>
           </span>
         )}
       </div>

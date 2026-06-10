@@ -1,0 +1,39 @@
+/* vendored from docs/Quiver Design System (tokens/spacing.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Spacing & layout tokens
+   4px base grid. Terminal UIs are dense — most rhythm lives in
+   the 4–24px range.
+   ============================================================ */
+
+:root {
+  --space-0:  0;
+  --space-px: 1px;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  28px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-14: 56px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+  --space-40: 160px;
+
+  /* Component sizing */
+  --control-h-sm: 28px;
+  --control-h:    34px;   /* default button / input height */
+  --control-h-lg: 42px;
+  --tap-min:      44px;   /* minimum hit target */
+
+  /* Layout */
+  --gutter:        24px;
+  --container-max: 1200px;
+  --content-max:   720px;   /* readable prose measure */
+  --sidebar-w:     264px;
+}

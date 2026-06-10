@@ -1,0 +1,56 @@
+/* vendored from docs/Quiver Design System (tokens/typography.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Typography tokens
+   Monospace-forward. IBM Plex Mono carries brand, UI chrome & code;
+   IBM Plex Sans carries longform reading.
+   ============================================================ */
+
+:root {
+  /* Families */
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+
+  /* Semantic family roles */
+  --font-brand:   var(--font-mono);   /* logo, headings, command UI */
+  --font-ui:      var(--font-mono);   /* buttons, labels, chrome */
+  --font-code:    var(--font-mono);   /* terminal, snippets */
+  --font-body:    var(--font-sans);   /* paragraphs, docs prose */
+
+  /* Type scale (px) — tuned for a 14px UI base */
+  --text-2xs: 11px;
+  --text-xs:  12px;
+  --text-sm:  13px;
+  --text-base:14px;
+  --text-md:  15px;
+  --text-lg:  17px;
+  --text-xl:  20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --text-4xl: 38px;
+  --text-5xl: 48px;
+  --text-6xl: 60px;
+  --text-7xl: 76px;
+  --text-8xl: 96px;
+
+  /* Weights (Plex Mono ships 400/500/600/700) */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* Line heights */
+  --leading-none:    1;
+  --leading-tight:   1.15;
+  --leading-snug:    1.3;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;
+  --leading-code:    1.55;
+
+  /* Letter spacing — mono runs tighter for display, looser for labels */
+  --tracking-tighter: -0.03em;
+  --tracking-tight:   -0.015em;
+  --tracking-normal:  0em;
+  --tracking-wide:    0.04em;
+  --tracking-wider:   0.08em;
+  --tracking-caps:    0.12em;   /* uppercase eyebrows / kicker labels */
+}

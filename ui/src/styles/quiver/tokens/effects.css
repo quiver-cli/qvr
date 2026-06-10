@@ -1,0 +1,36 @@
+/* vendored from docs/Quiver Design System (tokens/effects.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Effects: radii, borders, shadows
+   Terminal aesthetic = mostly flat, hairline borders, restrained
+   shadows. Amber "glow" reserved for focus / active terminal.
+   ============================================================ */
+
+:root {
+  /* Corner radii — small & mechanical */
+  --radius-none: 0;
+  --radius-xs:   3px;
+  --radius-sm:   5px;
+  --radius-md:   7px;    /* default control radius */
+  --radius-lg:   10px;   /* cards, terminal window */
+  --radius-xl:   14px;
+  --radius-pill: 999px;
+
+  /* Border widths */
+  --border-w:     1px;
+  --border-w-2:   2px;
+
+  /* Shadows — soft, low, neutral. Dark theme keeps them subtle. */
+  --shadow-xs:  0 1px 0 rgba(0, 0, 0, 0.3);
+  --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.2);
+  --shadow-md:  0 4px 12px rgba(0, 0, 0, 0.40);
+  --shadow-lg:  0 12px 32px rgba(0, 0, 0, 0.50);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+
+  /* Lime glow — focus rings & active terminal accent */
+  --glow-amber:    0 0 0 3px rgba(163, 230, 53, 0.32);
+  --glow-amber-sm: 0 0 0 2px rgba(163, 230, 53, 0.48);
+  --glow-soft:     0 0 24px rgba(163, 230, 53, 0.18);
+
+  /* Focus ring (compose with box-shadow) */
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus-ring);
+}

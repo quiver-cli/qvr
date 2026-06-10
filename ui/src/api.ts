@@ -326,6 +326,143 @@ export interface ScanRunResult extends ScanResult {
   gate: ScanRunGate;
 }
 
+// ---- skill metrics (observability) ------------------------------------------
+// Types mirror cmd/ui_metrics.go exactly.
+
+// Overview rollup data: "N installed · M did 90% of verified work · K never fired".
+export interface SkillMetricsHeadline {
+  installed: number;
+  active: number;
+  never_fired: number;
+  verified_invocations: number;
+  total_invocations: number;
+  core_skills: string[];
+  core_share: number;
+}
+
+// One skill's usage merged with its lock identity. Token fields are
+// session-attributed: "tokens in sessions where this skill fired" (a session
+// that fired two skills counts toward both), never exclusive cost.
+export interface SkillUsageRow {
+  name: string;
+  installed: boolean;
+  registry?: string;
+  ref?: string;
+  commit?: string;
+  disabled?: boolean;
+  gate?: string;
+  installedAt?: string;
+  invocations: number;
+  sessions: number;
+  verified: number;
+  verifiedShare: number;
+  firstFired?: string;
+  lastFired?: string;
+  tokensIn: number;
+  tokensOut: number;
+  tokenSessions: number;
+}
+
+export interface SkillMetricsResponse {
+  audit_enabled: boolean;
+  scope: string;
+  headline: SkillMetricsHeadline;
+  skills: SkillUsageRow[];
+}
+
+export interface SkillReportEntry {
+  registry?: string;
+  source?: string;
+  ref?: string;
+  commit?: string;
+  subtreeHash?: string;
+  mode?: string;
+  targets?: string[];
+  gate?: string;
+  installedAt?: string;
+  disabled?: boolean;
+}
+
+export interface SkillReportTotals {
+  invocations: number;
+  sessions: number;
+  verified: number;
+  unverified: number;
+  firstFired?: string;
+  lastFired?: string;
+}
+
+export interface SkillReportAgent {
+  agent: string;
+  invocations: number;
+  verified: number;
+  sessions: number;
+  lastFired?: string;
+}
+
+export interface SkillReportSeriesPoint {
+  day: string;
+  agent: string;
+  invocations: number;
+  verified: number;
+}
+
+// One (ref, commit) the skill fired as — the lineage row. `current` marks the
+// lock's pinned commit.
+export interface SkillVersionUsage {
+  ref?: string;
+  commit?: string;
+  invocations: number;
+  sessions: number;
+  verified: number;
+  firstFired?: string;
+  lastFired?: string;
+  tokensIn: number;
+  tokensOut: number;
+  current?: boolean;
+}
+
+export interface SkillReport {
+  audit_enabled: boolean;
+  name: string;
+  installed: boolean;
+  entry?: SkillReportEntry;
+  totals: SkillReportTotals;
+  agents: SkillReportAgent[];
+  series: SkillReportSeriesPoint[];
+  tokens: { sessions: number; input: number; output: number };
+  versions: SkillVersionUsage[];
+  recentSessions: RawSession[];
+}
+
+export interface DeadweightRow {
+  name: string;
+  registry?: string;
+  ref?: string;
+  scope?: string;
+  installedAt?: string;
+  ageDays: number;
+  disabled?: boolean;
+}
+
+export interface DeadweightResponse {
+  audit_enabled: boolean;
+  scope: string;
+  rows: DeadweightRow[];
+}
+
+export interface Health {
+  ok: boolean;
+  version: string;
+  audit_enabled: boolean;
+}
+
+// Optional time window for the metrics list (YYYY-MM-DD, inclusive).
+export interface MetricsWindow {
+  since?: string;
+  until?: string;
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) {
@@ -456,9 +593,21 @@ export const api = {
       }`,
     );
   },
+  // Observability metrics — scoped like every other lock/audit panel.
+  metricsSkills: (w: MetricsWindow = {}) => {
+    const p = scopeParams();
+    if (w.since) p.set("since", w.since);
+    if (w.until) p.set("until", w.until);
+    const q = p.toString();
+    return getJSON<SkillMetricsResponse>(`/api/metrics/skills${q ? `?${q}` : ""}`);
+  },
+  skillReport: (name: string) =>
+    getJSON<SkillReport>(`/api/metrics/skills/${encodeURIComponent(name)}${scopeQuery()}`),
+  deadweight: () => getJSON<DeadweightResponse>(`/api/metrics/deadweight${scopeQuery()}`),
   // Global endpoints — not scoped.
   registries: () => getJSON<RegistryStatus[]>("/api/registries"),
   projects: () => getJSON<ProjectSummary[]>("/api/projects"),
+  health: () => getJSON<Health>("/api/health"),
 };
 
 // prettyAgent maps a harness's internal agent_name to a short display label for

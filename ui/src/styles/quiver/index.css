@@ -1,0 +1,20 @@
+/* vendored from docs/Quiver Design System (styles.css) @ 2026-06-10 — do not hand-edit; re-vendor instead.
+   Deviation: tokens/fonts.css (Google Fonts CDN) is NOT vendored — the dashboard
+   is embedded in the qvr binary and must render offline. Fonts are self-hosted
+   via @fontsource in ../fonts.css, imported by ui/src/index.css before this file.
+   ============================================================
+   Quiver Design System — global entry point.
+   ============================================================ */
+
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/effects.css";
+@import "./tokens/motion.css";
+@import "./tokens/base.css";
+
+/* Component layer — .qvr-* classes (states ship to consumers) */
+@import "./styles/controls.css";
+@import "./styles/surfaces.css";
+@import "./styles/terminal.css";
+@import "./styles/feedback.css";

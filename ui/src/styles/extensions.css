@@ -1,0 +1,175 @@
+/* Quiver Design System — qvr dashboard extensions.
+   NOT vendored: deliberate additions the DS doesn't ship, kept in one file so
+   re-vendoring the system never overwrites them. Everything here composes
+   existing tokens only. */
+
+/* Badge warning tone — the DS badge layer ships neutral/accent/success/danger/
+   info/solid but the scan gate needs a warning rung (--warning exists in the
+   token layer). Mirrors the construction of .qvr-badge--success. */
+.qvr-badge--warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+/* Sidebar nav links — the kit renders nav items as <button>; the dashboard
+   uses react-router <a>. Keep anchor styling identical (no underline). */
+a.qvr-navitem,
+a.qvr-navitem:hover {
+  text-decoration: none;
+  color: var(--ink-300);
+}
+a.qvr-navitem:hover {
+  color: var(--ink-100);
+}
+a.qvr-navitem[data-active] {
+  color: var(--ink-50);
+}
+/* react-router marks the active link with aria-current="page"; mirror the
+   kit's [data-active] treatment. */
+a.qvr-navitem[aria-current="page"] {
+  background: var(--ink-850);
+  color: var(--ink-50);
+}
+a.qvr-navitem[aria-current="page"] .qvr-navitem__bar {
+  background: var(--brand-500);
+}
+
+/* Skill rows as router links. */
+a.qvr-skillrow,
+a.qvr-skillrow:hover {
+  text-decoration: none;
+}
+
+/* Scope switcher menu — the kit has no dropdown; styled from tokens. */
+.qvr-scope-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+}
+.qvr-scope-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 9px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.qvr-scope-item:hover {
+  background: var(--ink-850);
+}
+.qvr-scope-item[data-active] {
+  background: var(--ink-850);
+  outline: 1px solid var(--accent-line);
+}
+.qvr-scope-item__name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-100);
+}
+.qvr-scope-item__sub {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The inline command prompt is a mini terminal — keep it ink-dark in BOTH
+   themes (the DS styles it with semantic tokens that wash out on paper).
+   The ink ramp and brand lime are theme-stable, so this composes tokens. */
+.qvr-prompt {
+  background: var(--ink-900);
+  border-color: var(--ink-700);
+  color: var(--ink-100);
+}
+.qvr-prompt__chevron {
+  color: var(--brand-500);
+}
+.qvr-prompt__copy {
+  color: var(--ink-400);
+}
+.qvr-prompt__copy:hover {
+  color: var(--ink-100);
+  background: var(--ink-800);
+}
+
+/* Toast viewport lives outside .qvr-app (ToastProvider wraps the shell), so
+   pin it to the viewport rather than the kit's absolute-in-app placement. */
+.qvr-toastvp {
+  position: fixed;
+}
+
+/* Sparkline / bar-row chart primitives (inline SVG, token-tinted). */
+.qvr-spark { display: block; width: 100%; height: 48px; }
+.qvr-barrow { display: flex; align-items: center; gap: 10px; }
+.qvr-barrow__label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: none;
+  width: 88px;
+}
+.qvr-barrow__track {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+.qvr-barrow__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.qvr-barrow__value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  flex: none;
+  min-width: 64px;
+  text-align: right;
+}
+
+/* The LOUD verified-share hero number on the report card. */
+.qvr-sharestat__num {
+  font-family: var(--font-brand);
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+
+/* Stat card (overview) — the kit builds these inline; named here for reuse. */
+.qvr-stat { padding: 16px; }
+.qvr-stat svg { width: 18px; height: 18px; color: var(--accent); }
+.qvr-stat__num {
+  font-family: var(--font-brand);
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 8px;
+  letter-spacing: -0.02em;
+}
+.qvr-stat__label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-subtle);
+}

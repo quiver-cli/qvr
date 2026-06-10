@@ -63,6 +63,28 @@ type Store interface {
 	// string. Sessions with no skill span are absent from the map.
 	SkillsForSessions(ctx context.Context, ids []string) (map[string][]string, error)
 
+	// --- Skill metrics (read-side aggregations over spans; see metrics.go) ---
+
+	// SkillUsageRollup aggregates SKILL spans per skill (invocations, sessions,
+	// verified count, first/last fired), most-recently-fired first.
+	SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([]*SkillUsage, error)
+
+	// SkillTokenRollup returns per-skill session-attributed token totals,
+	// keyed by skill name ("tokens in sessions where this skill fired").
+	SkillTokenRollup(ctx context.Context, f *MetricsFilter) (map[string]*TokenTotals, error)
+
+	// SkillInvocationSeries buckets one skill's invocations by UTC day and
+	// agent. f.Skill is required.
+	SkillInvocationSeries(ctx context.Context, f *MetricsFilter) ([]*SkillSeriesPoint, error)
+
+	// SkillAgentRollup aggregates one skill's invocations per agent.
+	// f.Skill is required.
+	SkillAgentRollup(ctx context.Context, f *MetricsFilter) ([]*SkillAgentUsage, error)
+
+	// SkillVersionRollup groups one skill's invocations by the (ref, commit)
+	// identity its spans carried — the lineage data. f.Skill is required.
+	SkillVersionRollup(ctx context.Context, f *MetricsFilter) ([]*SkillVersionUsage, error)
+
 	// DeleteRawBefore sweeps raw rows captured before cutoff. Returns the
 	// number of rows deleted.
 	DeleteRawBefore(ctx context.Context, cutoff time.Time) (int64, error)

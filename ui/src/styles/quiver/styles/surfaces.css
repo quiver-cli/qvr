@@ -1,0 +1,83 @@
+/* vendored from docs/Quiver Design System (styles/surfaces.css) @ 2026-06-10 — do not hand-edit; re-vendor instead */
+/* ============================================================
+   Quiver — Surfaces: card, badge, tag, table
+   ============================================================ */
+
+/* ---------- Card ---------- */
+.qvr-card {
+  background: var(--surface);
+  border: var(--border-w) solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: clip;
+}
+.qvr-card--raised { background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.qvr-card--inset { background: var(--surface-inset); }
+.qvr-card--accent { border-color: var(--accent-line); box-shadow: var(--glow-soft); }
+.qvr-card__header {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-w) solid var(--border-subtle);
+}
+.qvr-card__title { font-family: var(--font-ui); font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text); margin: 0; }
+.qvr-card__body { padding: var(--space-4); }
+.qvr-card__footer {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--border-w) solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+/* ---------- Badge ---------- */
+.qvr-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 var(--space-2);
+  font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide); line-height: 1;
+  border-radius: var(--radius-sm);
+  border: var(--border-w) solid transparent; white-space: nowrap;
+}
+.qvr-badge svg { width: 12px; height: 12px; }
+.qvr-badge--neutral { background: var(--surface-overlay); color: var(--text-muted); border-color: var(--border); }
+.qvr-badge--accent  { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+.qvr-badge--success { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+.qvr-badge--danger  { background: var(--danger-soft);  color: var(--danger);  border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.qvr-badge--info    { background: var(--info-soft);    color: var(--info);    border-color: color-mix(in srgb, var(--info) 35%, transparent); }
+.qvr-badge--solid   { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: var(--weight-semibold); }
+
+/* status dot */
+.qvr-badge__dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: currentColor; }
+
+/* ---------- Tag / chip (SHA, version, dismissible) ---------- */
+.qvr-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 var(--space-2);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-muted); background: var(--surface-inset);
+  border: var(--border-w) solid var(--border); border-radius: var(--radius-sm);
+}
+.qvr-tag--mono { color: var(--text); }
+.qvr-tag__lead { color: var(--text-faint); }
+.qvr-tag__close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: -2px; padding: 0;
+  color: var(--text-faint); background: none; border: none; cursor: pointer; border-radius: var(--radius-xs);
+}
+.qvr-tag__close:hover { color: var(--text); background: var(--surface-overlay); }
+.qvr-tag__close svg { width: 11px; height: 11px; }
+
+/* ---------- Table ---------- */
+.qvr-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--text-sm); }
+.qvr-table th {
+  text-align: left; font-weight: var(--weight-medium); color: var(--text-subtle);
+  font-size: var(--text-2xs); letter-spacing: var(--tracking-wider); text-transform: uppercase;
+  padding: var(--space-2) var(--space-3); border-bottom: var(--border-w) solid var(--border);
+  font-family: var(--font-ui);
+}
+.qvr-table td {
+  padding: var(--space-3); color: var(--text);
+  border-bottom: var(--border-w) solid var(--border-subtle);
+}
+.qvr-table tbody tr { transition: background var(--dur-fast) var(--ease-out); }
+.qvr-table tbody tr:hover { background: var(--surface-raised); }
+.qvr-table tbody tr:last-child td { border-bottom: none; }
+.qvr-table__muted { color: var(--text-faint); }

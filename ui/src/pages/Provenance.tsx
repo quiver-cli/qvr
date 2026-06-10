@@ -1,69 +1,83 @@
-import { api, useFetch } from "../api";
+import { api, scopeToken, useFetch } from "../api";
 import {
-  Empty,
+  EmptyState,
   ErrorBox,
   Loading,
-  Mono,
-  PageHeader,
-  short,
-  StatusPill,
+  PageHead,
+  StatusBadge,
   Table,
+  Tag,
   Td,
   Th,
-} from "../components/ui";
+} from "../components/qvr";
+import { short } from "../lib/format";
 
 export default function Provenance() {
-  const { data, error, loading } = useFetch(api.provenance, "provenance");
+  const { data, error, loading } = useFetch(api.provenance, `provenance:${scopeToken()}`);
 
   return (
     <>
-      <PageHeader
+      <PageHead
         title="Provenance"
-        subtitle="Where each skill came from, what it's pinned to, and what's verified."
+        sub="What's pinned, who signed it, what the gate said."
       />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
-      {data && data.length === 0 && <Empty>No installed skills.</Empty>}
+      {data && data.length === 0 && (
+        <EmptyState title="nothing pinned">
+          provenance appears per skill once the lock has entries.
+        </EmptyState>
+      )}
       {data && data.length > 0 && (
         <Table
           head={
             <tr>
-              <Th>Skill</Th>
-              <Th>Resolved</Th>
-              <Th>Tree OID</Th>
-              <Th>Signature</Th>
-              <Th>Scan</Th>
-              <Th>Status</Th>
+              <Th>skill</Th>
+              <Th>resolved</Th>
+              <Th>tree oid</Th>
+              <Th>signature</Th>
+              <Th>scan</Th>
+              <Th>status</Th>
             </tr>
           }
         >
           {data.map((p) => (
-            <tr key={p.name} className="hover:bg-[#f7f9f8]">
+            <tr key={p.name}>
               <Td>
-                <span className="font-medium">{p.name}</span>
+                <span style={{ fontWeight: "var(--weight-medium)" as never }}>{p.name}</span>
                 {p.source && (
-                  <div className="text-xs text-[#708078]">
-                    <Mono>{p.source}</Mono>
+                  <div className="qvr-scan__scanner" style={{ marginTop: 2 }}>
+                    {p.source}
                   </div>
                 )}
               </Td>
-              <Td title={p.resolved}>
-                <Mono>{short(p.resolved)}</Mono>
-                {p.requested && <span className="ml-1 text-xs text-[#708078]">@{p.requested}</span>}
-              </Td>
-              <Td title={p.treeOID}>
-                <Mono>{short(p.treeOID)}</Mono>
+              <Td>
+                <Tag lead="#" title={p.resolved}>
+                  {short(p.resolved)}
+                </Tag>
+                {p.requested && (
+                  <span className="qvr-scan__scanner" style={{ marginLeft: 4 }}>
+                    @{p.requested}
+                  </span>
+                )}
               </Td>
               <Td>
-                <StatusPill value={p.signatureStatus} />
-                {p.signer && <div className="text-xs text-[#708078]">{p.signer}</div>}
+                <Tag lead="#" title={p.treeOID}>
+                  {short(p.treeOID)}
+                </Tag>
               </Td>
               <Td>
-                <StatusPill value={p.scanDecision || "none"} />
+                <StatusBadge value={p.signatureStatus} />
+                {p.signer && (
+                  <div className="qvr-scan__scanner" style={{ marginTop: 2 }}>
+                    {p.signer}
+                  </div>
+                )}
               </Td>
               <Td>
-                <span className="text-xs text-[#52615a]">{p.status}</span>
+                <StatusBadge value={p.scanDecision || "none"} />
               </Td>
+              <Td muted>{p.status}</Td>
             </tr>
           ))}
         </Table>

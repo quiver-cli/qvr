@@ -1,0 +1,142 @@
+/* vendored from docs/Quiver Design System (ui_kits/dashboard/dashboard.css) @ 2026-06-10 — do not hand-edit; re-vendor instead.
+   Vendor extensions, each flagged inline:
+   - icon selectors widened from `i` (CDN lucide) to `i, svg` (lucide-react renders <svg>)
+   - .qvr-main__inner--wide for dense tables (sessions/provenance)
+   ============================================================
+   Quiver dashboard — kit-local chrome (sidebar, layout, detail).
+   Component visuals come from the design system; this is layout.
+   ============================================================ */
+
+.qvr-app { display: flex; height: 100%; min-height: 0; background: var(--ink-950); font-family: var(--font-ui); position: relative; }
+
+/* ---------- Sidebar (always dark) ---------- */
+.qvr-side {
+  width: 240px; flex: none; display: flex; flex-direction: column;
+  background: var(--ink-950); border-right: 1px solid var(--ink-850);
+  padding: 18px 14px; gap: 6px;
+}
+.qvr-side__brand { display: flex; align-items: center; gap: 9px; padding: 4px 6px 16px; }
+.qvr-side__word { font-family: var(--font-brand); font-weight: 600; font-size: 19px; letter-spacing: -0.02em; color: var(--ink-50); }
+.qvr-side__badge {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--brand-400); background: rgba(163,230,53,.12); border: 1px solid rgba(163,230,53,.3);
+  padding: 1px 5px; border-radius: 4px;
+}
+.qvr-side__nav { display: flex; flex-direction: column; gap: 2px; }
+.qvr-side__group { padding: 14px 6px 8px; display: flex; flex-direction: column; gap: 7px; }
+.qvr-side__label { font-family: var(--font-ui); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-500); }
+
+.qvr-navitem {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  height: 36px; padding: 0 10px; width: 100%;
+  background: transparent; border: none; cursor: pointer; border-radius: var(--radius-md);
+  font-family: var(--font-ui); font-size: 13.5px; font-weight: 500; color: var(--ink-300);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.qvr-navitem i, .qvr-navitem svg { width: 16px; height: 16px; flex: none; } /* vendor extension: svg */
+.qvr-navitem:hover { background: var(--ink-850); color: var(--ink-100); }
+.qvr-navitem[data-active] { background: var(--ink-850); color: var(--ink-50); }
+.qvr-navitem__bar { position: absolute; left: -14px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: transparent; }
+.qvr-navitem[data-active] .qvr-navitem__bar { background: var(--brand-500); }
+
+.qvr-scope {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--ink-850); border: 1px solid var(--ink-700); border-radius: var(--radius-md);
+  padding: 9px 11px; cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out);
+}
+.qvr-scope:hover { border-color: var(--ink-600); }
+.qvr-scope__name { font-family: var(--font-mono); font-size: 13px; color: var(--ink-100); flex: 1; text-align: left; }
+.qvr-scope i, .qvr-scope svg { width: 14px; height: 14px; color: var(--ink-400); flex: none; } /* vendor extension: svg */
+
+.qvr-side__foot { margin-top: auto; display: flex; align-items: center; gap: 7px; padding: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-500); }
+.qvr-side__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green-500); box-shadow: 0 0 8px rgba(76,175,110,.6); }
+
+/* ---------- Main content (light paper) ---------- */
+.qvr-main { flex: 1; min-width: 0; overflow: auto; background: var(--bg); }
+.qvr-main__inner { max-width: 860px; margin: 0 auto; padding: 32px 40px 64px; }
+/* vendor extension: wider measure for dense tables (sessions, provenance) */
+.qvr-main__inner--wide { max-width: 1080px; }
+
+/* breadcrumb / back */
+.qvr-back { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; cursor: pointer;
+  font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--accent); padding: 0 0 18px; }
+.qvr-back i, .qvr-back svg { width: 15px; height: 15px; } /* vendor extension: svg */
+
+/* detail header */
+.qvr-dh { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.qvr-dh__name { font-family: var(--font-brand); font-weight: 600; font-size: 28px; letter-spacing: -0.02em; color: var(--text); margin: 0; white-space: nowrap; }
+.qvr-dh__desc { font-family: var(--font-body); font-size: 15px; color: var(--text-muted); margin: 10px 0 0; line-height: 1.5; }
+
+/* meta grid */
+.qvr-meta { display: flex; flex-wrap: wrap; gap: 8px 26px; margin: 20px 0 4px; }
+.qvr-meta__item { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+.qvr-meta__k { font-family: var(--font-ui); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
+.qvr-meta__v { color: var(--text); }
+.qvr-copy { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-subtle); background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-xs);
+  padding: 1px 6px; cursor: pointer; transition: all var(--dur-fast) var(--ease-out); }
+.qvr-copy:hover { color: var(--text); border-color: var(--border-strong); }
+.qvr-copy i, .qvr-copy svg { width: 11px; height: 11px; } /* vendor extension: svg */
+
+/* section spacing */
+.qvr-section { margin-top: 22px; }
+.qvr-cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qvr-cardtitle { font-family: var(--font-ui); font-size: 15px; font-weight: 600; color: var(--text); margin: 0; }
+
+/* files / list rows */
+.qvr-frow { display: flex; align-items: center; gap: 10px; padding: 9px 2px; }
+.qvr-frow + .qvr-frow { border-top: 1px solid var(--border-subtle); }
+.qvr-frow i, .qvr-frow svg { width: 15px; height: 15px; color: var(--text-faint); flex: none; } /* vendor extension: svg */
+.qvr-frow__name { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+.qvr-frow__kind { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+.qvr-frow__r { margin-left: auto; }
+
+/* scan row */
+.qvr-scan { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.qvr-scan__k { font-family: var(--font-ui); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); margin-right: 2px; }
+.qvr-scan__scanner { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); }
+
+/* versions timeline */
+.qvr-ver { display: flex; gap: 12px; padding: 12px 4px; position: relative; }
+.qvr-ver + .qvr-ver { border-top: 1px solid var(--border-subtle); }
+.qvr-ver__dot { width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); margin-top: 4px; flex: none; }
+.qvr-ver--current { background: var(--success-soft); border-radius: var(--radius-md); margin: 4px 0; padding: 12px; border-top: none !important; }
+.qvr-ver--current .qvr-ver__dot { background: var(--success); }
+.qvr-ver__body { flex: 1; min-width: 0; }
+.qvr-ver__top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qvr-ver__branch { font-family: var(--font-mono); font-size: 13px; color: var(--text); font-weight: 500; }
+.qvr-ver__sha { font-family: var(--font-mono); font-size: 12px; color: var(--text-subtle); }
+.qvr-ver__when { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); flex: none; }
+.qvr-ver__msg { font-family: var(--font-body); font-size: 12.5px; color: var(--text-muted); margin: 5px 0 0; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* small branch pill */
+.qvr-pill { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); background: var(--surface-overlay);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 7px; }
+
+/* skills list */
+.qvr-listhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 16px; }
+.qvr-h1 { font-family: var(--font-brand); font-weight: 600; font-size: 24px; letter-spacing: -0.02em; color: var(--text); margin: 0; }
+.qvr-sub { font-family: var(--font-body); font-size: 13.5px; color: var(--text-muted); margin: 4px 0 0; }
+.qvr-skillrow { display: flex; align-items: center; gap: 14px; padding: 14px 16px; cursor: pointer;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--surface);
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out); }
+.qvr-skillrow + .qvr-skillrow { margin-top: 8px; }
+.qvr-skillrow:hover { border-color: var(--border-strong); background: var(--surface-raised); }
+.qvr-skillrow__name { font-family: var(--font-mono); font-size: 14px; font-weight: 500; color: var(--text); }
+.qvr-skillrow__desc { font-family: var(--font-body); font-size: 12.5px; color: var(--text-subtle); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
+.qvr-skillrow__reg { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+.qvr-skillrow i.chev, .qvr-skillrow svg.chev { width: 16px; height: 16px; color: var(--text-faint); flex: none; } /* vendor extension: svg */
+
+/* empty state */
+.qvr-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 64px 20px; text-align: center; }
+.qvr-empty__art { font-family: var(--font-mono); font-size: 11px; line-height: 1.05; letter-spacing: 1px;
+  color: var(--accent); opacity: 0.5; margin: 0 0 6px; }
+.qvr-empty i, .qvr-empty svg { width: 28px; height: 28px; color: var(--text-faint); } /* vendor extension: svg */
+.qvr-empty h3 { font-family: var(--font-ui); font-size: 16px; color: var(--text); margin: 4px 0 0; }
+.qvr-empty p { font-family: var(--font-body); font-size: 13px; color: var(--text-subtle); margin: 0; max-width: 320px; }
+
+/* toast viewport */
+.qvr-toastvp { position: absolute; right: 24px; bottom: 24px; z-index: 50; display: flex; flex-direction: column; gap: 10px; }

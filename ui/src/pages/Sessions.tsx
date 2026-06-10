@@ -2,18 +2,21 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, prettyAgent, scopeToken, useFetch } from "../api";
 import {
-  Empty,
+  Badge,
+  Button,
+  EmptyState,
   ErrorBox,
-  fmtTime,
+  Field,
   Loading,
-  PageHeader,
-  Pill,
+  PageHead,
+  Select,
   Table,
   Td,
   Th,
-} from "../components/ui";
+} from "../components/qvr";
+import { fmtTime } from "../lib/format";
 
-// The harnesses qvr can capture. The Harness filter offers these plus any agent
+// The harnesses qvr can capture. The harness filter offers these plus any agent
 // actually present in the loaded rows (so an unexpected one still shows up).
 const KNOWN_HARNESSES = ["claude-code", "codex", "cursor", "opencode", "copilot"];
 
@@ -55,15 +58,15 @@ export default function Sessions() {
 
   return (
     <>
-      <PageHeader
+      <PageHead
         title="Sessions"
-        subtitle="Recorded agent sessions, newest first. Named by the first prompt you typed."
+        sub="Recorded agent sessions, newest first. Named by the first prompt you typed."
       />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <Field label="Harness">
-          <Select value={agent} onChange={setAgent}>
-            <option value="">All</option>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 12, marginBottom: 16 }}>
+        <Field label="harness">
+          <Select value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <option value="">all</option>
             {harnessOptions.map((a) => (
               <option key={a} value={a}>
                 {prettyAgent(a)}
@@ -71,9 +74,9 @@ export default function Sessions() {
             ))}
           </Select>
         </Field>
-        <Field label="Skill">
-          <Select value={skill} onChange={setSkill}>
-            <option value="">All</option>
+        <Field label="skill">
+          <Select value={skill} onChange={(e) => setSkill(e.target.value)}>
+            <option value="">all</option>
             {skillOptions.map((n) => (
               <option key={n} value={n}>
                 {n}
@@ -81,82 +84,67 @@ export default function Sessions() {
             ))}
           </Select>
         </Field>
-        <Field label="From">
+        <Field label="from">
           <DateInput value={since} onChange={setSince} />
         </Field>
-        <Field label="To">
+        <Field label="to">
           <DateInput value={until} onChange={setUntil} />
         </Field>
         {active && (
-          <button
-            type="button"
-            onClick={clear}
-            className="rounded-[4px] border border-[#cbd2ce] bg-white px-3 py-1.5 text-sm font-medium text-[#52615a] hover:bg-[#f4f6f5]"
-          >
-            Clear
-          </button>
+          <Button variant="ghost" size="sm" onClick={clear}>
+            clear
+          </Button>
         )}
       </div>
 
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
       {data && data.length === 0 && (
-        <Empty>
-          {active ? (
-            <>No sessions match these filters.</>
-          ) : (
-            <>
-              No sessions recorded. Enable the audit pipeline with{" "}
-              <code className="rounded-[3px] bg-[#ecefed] px-1.5 py-0.5">qvr audit enable</code>.
-            </>
-          )}
-        </Empty>
+        <EmptyState title={active ? "no sessions match" : "no sessions recorded"}>
+          {active
+            ? "Loosen the filters — nothing in this window."
+            : "Agent sessions that use skills from this lock will appear here. Enable capture with qvr audit enable."}
+        </EmptyState>
       )}
       {data && data.length > 0 && (
         <Table
           head={
             <tr>
-              <Th>Session</Th>
-              <Th>Harness</Th>
-              <Th>Skills</Th>
-              <Th>Started</Th>
-              <Th>Transcript</Th>
-              <Th>Hooks</Th>
+              <Th>session</Th>
+              <Th>harness</Th>
+              <Th>skills</Th>
+              <Th>started</Th>
+              <Th>transcript</Th>
+              <Th>hooks</Th>
             </tr>
           }
         >
           {data.map((s) => (
-            <tr key={s.session_id} className="hover:bg-[#f7f9f8]">
-              <Td>
-                <Link
-                  to={`/sessions/${s.session_id}`}
-                  className="font-medium text-[#2f765d] hover:underline"
-                  title={s.title || s.session_id}
-                >
-                  {s.title || (
-                    <span className="italic text-[#7a8580]">untitled session</span>
-                  )}
+            <tr key={s.session_id}>
+              <Td title={s.title || undefined}>
+                <Link to={`/sessions/${s.session_id}`}>
+                  {s.title || <span className="qvr-table__muted">untitled session</span>}
                 </Link>
               </Td>
               <Td>
-                <Pill tone="blue">{prettyAgent(s.agent_name)}</Pill>
+                <Badge tone="info">{prettyAgent(s.agent_name)}</Badge>
               </Td>
               <Td>
                 {s.skills && s.skills.length > 0 ? (
-                  <span className="flex flex-wrap gap-1">
+                  <span style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                     {s.skills.map((n) => (
-                      <Pill key={n} tone="amber">
+                      <Badge key={n} tone="accent">
                         {n}
-                      </Pill>
+                      </Badge>
                     ))}
                   </span>
                 ) : (
-                  <span className="text-[#9ba6a1]">—</span>
+                  <span className="qvr-table__muted">—</span>
                 )}
               </Td>
-              <Td>{fmtTime(s.started_at)}</Td>
-              <Td>{s.transcript_lines}</Td>
-              <Td>{s.hook_payloads}</Td>
+              <Td muted>{fmtTime(s.started_at)}</Td>
+              <Td muted>{s.transcript_lines}</Td>
+              <Td muted>{s.hook_payloads}</Td>
             </tr>
           ))}
         </Table>
@@ -165,42 +153,15 @@ export default function Sessions() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex flex-col gap-1 text-xs font-semibold uppercase text-[#63706a]">
-      {label}
-      {children}
-    </label>
-  );
-}
-
-function Select({
-  value,
-  onChange,
-  children,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-[4px] border border-[#cbd2ce] bg-white px-2 py-1.5 text-sm text-[#22302b] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
-    >
-      {children}
-    </select>
-  );
-}
-
 function DateInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <input
-      type="date"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-[4px] border border-[#cbd2ce] bg-white px-2 py-1.5 text-sm text-[#22302b] shadow-[0_1px_0_rgba(22,32,28,0.04)]"
-    />
+    <span className="qvr-input-wrap">
+      <input
+        type="date"
+        className="qvr-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </span>
   );
 }
