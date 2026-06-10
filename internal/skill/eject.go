@@ -262,8 +262,8 @@ func repointSiblingTargets(e *model.LockEntry, req EjectRequest, canonicalTarget
 func finalizeEjectedEntry(e *model.LockEntry, editPathForLock, canonicalAbs string) {
 	e.Mode = model.ModeEdit
 	e.EditPath = editPathForLock
-	if e.SourceUpstream == "" {
-		e.SourceUpstream = e.Source
+	if p := e.EnsureProvenance(); p.Upstream == "" {
+		p.Upstream = e.Source
 	}
 	if h, err := canonical.HashSubtreeFromDisk(canonicalAbs); err == nil {
 		e.SubtreeHash = h

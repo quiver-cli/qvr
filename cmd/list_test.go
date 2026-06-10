@@ -77,7 +77,7 @@ func TestRunList_EditModeSourceColumn(t *testing.T) {
 // TestRunList_EditModeSourceColumn_AfterEjectFromRegistry is the
 // follow-up #117 regression: a skill installed via `qvr add` and then
 // ejected with `qvr edit` still has its upstream URL recorded in
-// entry.Source (preserved as SourceUpstream too). Pre-follow-up the
+// entry.Source (preserved as provenance.upstream too). Pre-follow-up the
 // SOURCE column keyed off the raw Source field, so ejected entries
 // painted identical to shared ones (`https://github.com/foo/bar.git`).
 // Mode now wins precedence over Source so the column reflects the
@@ -91,15 +91,15 @@ func TestRunList_EditModeSourceColumn_AfterEjectFromRegistry(t *testing.T) {
 	lockPath := filepath.Join(project, model.LockFileName)
 	lock := model.NewLockFile(lockPath)
 	lock.Put(&model.LockEntry{
-		Name:           "code-review",
-		Registry:       "raks",
-		Mode:           model.ModeEdit,
-		EditPath:       ".claude/skills/code-review",
-		Source:         "https://github.com/astra-sh/qvr_playground.git",
-		SourceUpstream: "https://github.com/astra-sh/qvr_playground.git",
-		Ref:            "v0.2.0",
-		Targets:        []string{"claude"},
-		InstalledAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Name:        "code-review",
+		Registry:    "raks",
+		Mode:        model.ModeEdit,
+		EditPath:    ".claude/skills/code-review",
+		Source:      "https://github.com/astra-sh/qvr_playground.git",
+		Provenance:  &model.ProvenanceRef{Upstream: "https://github.com/astra-sh/qvr_playground.git"},
+		Ref:         "v0.2.0",
+		Targets:     []string{"claude"},
+		InstalledAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	})
 	if err := lock.Write(); err != nil {
 		t.Fatalf("write lock: %v", err)

@@ -39,8 +39,11 @@ func TestLockFile_WriteRead(t *testing.T) {
 	if strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
 		t.Fatalf("lockfile should be TOML, got JSON-like content: %s", raw)
 	}
-	if !strings.Contains(string(raw), "[skills.code-review]") {
-		t.Fatalf("lockfile missing TOML skill table: %s", raw)
+	if !strings.Contains(string(raw), "[[skill]]") {
+		t.Fatalf("lockfile missing [[skill]] array-of-tables entry: %s", raw)
+	}
+	if !strings.Contains(string(raw), "name = 'code-review'") {
+		t.Fatalf("lockfile entry missing explicit name field: %s", raw)
 	}
 
 	loaded, err := model.ReadLockFile(path)
@@ -61,7 +64,7 @@ func TestLockFile_WriteRead(t *testing.T) {
 		t.Errorf("Source not preserved: %q", entry.Source)
 	}
 	if entry.Name != "code-review" {
-		t.Errorf("Name should be re-populated from map key: got %q", entry.Name)
+		t.Errorf("Name should round-trip from the entry's name field: got %q", entry.Name)
 	}
 	if entry.InstalledAt.IsZero() {
 		t.Error("InstalledAt should be set by Put")
@@ -113,22 +116,59 @@ func TestSkillScopePaths(t *testing.T) {
 	}
 }
 
-// TestLockFile_NameNotSerialized confirms the in-memory Name field
-// (json:"-") never leaks onto disk. The map key on disk is authoritative.
-func TestLockFile_NameNotSerialized(t *testing.T) {
+// TestLockFile_RejectsDuplicateNames confirms the v6 read path enforces the
+// uniqueness the v5 map shape got for free: two [[skill]] entries sharing a
+// name are a parse error, not a silent last-write-wins.
+func TestLockFile_RejectsDuplicateNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), model.LockFileName)
+	body := "version = " + itoa(model.LockFileVersion) + "\n\n" +
+		"[[skill]]\nname = 'foo'\nsource = 'git@x:y.git'\nref = 'main'\ntargets = []\ninstalledAt = 2026-06-01T00:00:00Z\nsubtreeHash = 'h1'\n\n" +
+		"[[skill]]\nname = 'foo'\nsource = 'git@x:z.git'\nref = 'main'\ntargets = []\ninstalledAt = 2026-06-01T00:00:00Z\nsubtreeHash = 'h2'\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, err := model.ReadLockFile(path)
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("expected duplicate-name error, got %v", err)
+	}
+}
+
+// TestLockFile_InstallCommitOmittedWhenRedundant confirms the v6 redundancy
+// trim: installCommit equal to commit never serialises, and the read path
+// restores it; a diverged installCommit (post Pull/Switch) round-trips.
+func TestLockFile_InstallCommitOmittedWhenRedundant(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)
 	l := model.NewLockFile(path)
-	l.Put(&model.LockEntry{Name: "foo", Source: "git@x:y.git", Ref: "main"})
+	l.Put(&model.LockEntry{
+		Name: "same", Source: "git@x:y.git", Ref: "main",
+		Commit: "abc123", InstallCommit: "abc123", Targets: []string{"claude"},
+	})
+	l.Put(&model.LockEntry{
+		Name: "moved", Source: "git@x:y.git", Ref: "main",
+		Commit: "fff999", InstallCommit: "abc123", Targets: []string{"claude"},
+	})
 	if err := l.Write(); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read raw: %v", err)
 	}
-	if strings.Contains(string(data), "name =") {
-		t.Errorf("v5 lock leaked `name` field on disk: %s", string(data))
+	if got := strings.Count(string(raw), "installCommit"); got != 1 {
+		t.Errorf("installCommit should serialise only when diverged (want 1 occurrence, got %d):\n%s", got, raw)
+	}
+	loaded, err := model.ReadLockFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	same, _ := loaded.Get("same")
+	if same.InstallCommit != "abc123" {
+		t.Errorf("redundant InstallCommit not restored on read: %q", same.InstallCommit)
+	}
+	moved, _ := loaded.Get("moved")
+	if moved.InstallCommit != "abc123" || moved.Commit != "fff999" {
+		t.Errorf("diverged InstallCommit lost: %+v", moved)
 	}
 }
 
@@ -356,19 +396,41 @@ func TestLockFile_DisabledRoundTrip(t *testing.T) {
 	}
 }
 
-func TestLockFile_ForkedFromRoundTrip(t *testing.T) {
+func TestLockFile_ProvenanceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)
 	l := model.NewLockFile(path)
 	l.Put(&model.LockEntry{
-		Name:       "auth",
-		Source:     "git@github.com:me/fork.git",
-		Ref:        "main",
-		Targets:    []string{"claude"},
-		ForkedFrom: "git@github.com:up/auth.git@abc1234",
+		Name:    "auth",
+		Source:  "git@github.com:me/fork.git",
+		Ref:     "main",
+		Targets: []string{"claude"},
+		Scan: &model.ScanRef{
+			Decision:  "allowed",
+			ReportSHA: "sha256:feed",
+			Counts:    model.SeverityCounts{High: 2},
+		},
+		Provenance: &model.ProvenanceRef{
+			CommitAuthor:    "Up Stream <up@x>",
+			SignatureStatus: model.SignatureStatusNone,
+			Upstream:        "git@github.com:up/auth.git",
+			ForkedFrom:      "git@github.com:up/auth.git@abc1234",
+		},
 	})
 	if err := l.Write(); err != nil {
 		t.Fatalf("write: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	// v6: scan and provenance are inline tables on the [[skill]] entry —
+	// no nested [skills.*.verification] sub-table headers.
+	if strings.Contains(string(raw), "verification") {
+		t.Errorf("v6 lock must not carry a verification wrapper: %s", raw)
+	}
+	if !strings.Contains(string(raw), "scan = {") || !strings.Contains(string(raw), "provenance = {") {
+		t.Errorf("scan/provenance should serialise inline on the entry: %s", raw)
 	}
 	loaded, err := model.ReadLockFile(path)
 	if err != nil {
@@ -378,11 +440,21 @@ func TestLockFile_ForkedFromRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if entry.ForkedFrom != "git@github.com:up/auth.git@abc1234" {
-		t.Errorf("ForkedFrom round-trip lost: %q", entry.ForkedFrom)
+	if entry.Provenance == nil || entry.Provenance.ForkedFrom != "git@github.com:up/auth.git@abc1234" {
+		t.Errorf("provenance.forkedFrom round-trip lost: %+v", entry.Provenance)
 	}
+	if entry.AuthorIdentity() != "Up Stream <up@x>" {
+		t.Errorf("provenance.commitAuthor round-trip lost: %q", entry.AuthorIdentity())
+	}
+	if entry.Scan == nil || entry.Scan.Counts.High != 2 || entry.Scan.Decision != "allowed" {
+		t.Errorf("scan round-trip lost: %+v", entry.Scan)
+	}
+}
 
-	// Empty ForkedFrom must omit the TOML key entirely (omitempty).
+// TestLockFile_SignallessEntryOmitsBlocks: an entry with no recorded
+// scan/provenance must omit those keys from disk entirely.
+func TestLockFile_SignallessEntryOmitsBlocks(t *testing.T) {
+	dir := t.TempDir()
 	l2 := model.NewLockFile(filepath.Join(dir, "empty.lock"))
 	l2.Put(&model.LockEntry{
 		Name:    "plain",
@@ -397,13 +469,15 @@ func TestLockFile_ForkedFromRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read raw: %v", err)
 	}
-	if strings.Contains(string(raw), "forkedFrom") {
-		t.Errorf("empty ForkedFrom should not serialise; got: %s", raw)
+	for _, key := range []string{"forkedFrom", "scan", "provenance"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("signal-less entry should not serialise %q; got: %s", key, raw)
+		}
 	}
 }
 
 func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
-	// v4 is the floor — anything older is rejected outright (qvr is
+	// v6 is the floor — anything older is rejected outright (qvr is
 	// pre-release with no users, so the only recourse is to delete the
 	// lock and reinstall). Future versions (>LockFileVersion) and missing
 	// version field all error.
@@ -412,12 +486,16 @@ func TestLockFile_RejectsUnsupportedVersion(t *testing.T) {
 		body string
 		want string // substring expected in the error message
 	}{
-		{"missing version", `[skills]`, "missing"},
-		{"version=0", "version = 0\n[skills]\n", "missing"},
+		{"missing version", `[[skill]]`, "missing"},
+		{"version=0", "version = 0\n", "missing"},
 		{"version=2 legacy", "version = 2\n[skills]\n", "delete qvr.lock"},
 		{"version=3 legacy", "version = 3\n[skills]\n", "delete qvr.lock"},
 		{"version=4 legacy", "version = 4\n[skills]\n", "delete qvr.lock"},
-		{"version=999 future", "version = 999\n[skills]\n", "upgrade qvr"},
+		// v5 keyed skills as [skills.<name>] map tables — the friendly
+		// message must fire off the version probe before the v6 array
+		// shape fails to parse.
+		{"version=5 legacy", "version = 5\n[skills.foo]\nsource = 'git@x:y.git'\n", "delete qvr.lock"},
+		{"version=999 future", "version = 999\n", "upgrade qvr"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -449,9 +527,9 @@ func TestLockFile_RejectsTypeMismatchVersion(t *testing.T) {
 		body        string
 		wantInError string
 	}{
-		{"string version", "version = \"three\"\n[skills]\n", `"three"`},
-		{"bool version", "version = true\n[skills]\n", "true"},
-		{"array version", "version = [3]\n[skills]\n", "[3]"},
+		{"string version", "version = \"three\"\n", `"three"`},
+		{"bool version", "version = true\n", "true"},
+		{"array version", "version = [3]\n", "[3]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -493,7 +571,7 @@ func contains(haystack, needle string) bool {
 func TestLockFile_AcceptsCurrentVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, model.LockFileName)
-	body := []byte("version = " + itoa(model.LockFileVersion) + "\n[skills]\n")
+	body := []byte("version = " + itoa(model.LockFileVersion) + "\n")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}

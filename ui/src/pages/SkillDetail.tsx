@@ -157,7 +157,7 @@ function ProjectScanPanel({
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const recorded = info.verification?.scan;
+  const recorded = info.scan;
 
   async function run() {
     setBusy(true);

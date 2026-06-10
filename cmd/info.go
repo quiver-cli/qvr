@@ -88,9 +88,10 @@ type skillInfo struct {
 	Targets       []string       `json:"targets"`
 	TargetDetails []targetStatus `json:"targetDetails,omitempty"`
 	Files         []string       `json:"files"`
-	// Verification surfaces real signals (scan, signature, eval, attestation,
-	// skill card) when present on the lock entry.
-	Verification *model.VerificationRecord `json:"verification,omitempty"`
+	// Scan and Provenance surface the lock entry's supply-chain signals
+	// when present (v6: inline on the entry, no verification wrapper).
+	Scan       *model.ScanRef       `json:"scan,omitempty"`
+	Provenance *model.ProvenanceRef `json:"provenance,omitempty"`
 }
 
 var infoCmd = &cobra.Command{
@@ -141,48 +142,55 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// populateInfoGitState fills the ref/commit/worktree (or link-target) block.
+// Link installs carry no upstream git state — Branch/Commit/Worktree stay
+// blank so consumers don't render placeholder columns, and LinkTarget is
+// surfaced instead. For everything else, entry.Commit is cross-checked
+// against the worktree HEAD so a tampered lockfile entry surfaces here next
+// to the recorded commit (issue #73); the warning is suppressed when HEAD
+// descends from entry.Commit — the normal "user committed locally; lockfile
+// catches up at publish time" pattern (issue #99), not tamper. HEAD-read
+// errors are non-fatal — info is read-only.
+func populateInfoGitState(info *skillInfo, entry *model.LockEntry, projectRoot string) {
+	if entry.IsLink() {
+		info.LinkTarget = entry.Source
+		return
+	}
+	info.Ref = entry.Ref
+	info.Commit = entry.Commit
+	info.Worktree = skill.EntryWorktreePath(entry)
+	if entry.Commit == "" {
+		return
+	}
+	if head, hErr := skill.ResolveEntryHeadCommit(entry, projectRoot); hErr == nil && head != "" && head != entry.Commit {
+		if ancestor, _ := skill.EntryCommitIsAncestorOfHead(entry, projectRoot); !ancestor {
+			info.CommitDrift = head
+		}
+	}
+}
+
 // buildSkillInfo gathers all the data for `qvr info` from local state only.
 // Pulled out as a top-level function so tests can call it directly with a
 // hand-built lock entry instead of going through Cobra.
 func buildSkillInfo(entry *model.LockEntry, projectRoot string, global bool) (*skillInfo, error) {
 	info := &skillInfo{
-		Name:           entry.Name,
-		Registry:       entry.Registry,
-		Source:         entry.Source,
-		SourceUpstream: entry.SourceUpstream,
-		SubtreeHash:    entry.SubtreeHash,
-		TreeOID:        entry.TreeOID,
-		Mode:           entry.Mode,
-		EditPath:       entry.EditPath,
-		Path:           entry.Path,
-		InstallCommit:  entry.InstallCommit,
-		InstalledAt:    entry.InstalledAt,
-		Verification:   entry.Verification,
+		Name:          entry.Name,
+		Registry:      entry.Registry,
+		Source:        entry.Source,
+		SubtreeHash:   entry.SubtreeHash,
+		TreeOID:       entry.TreeOID,
+		Mode:          entry.Mode,
+		EditPath:      entry.EditPath,
+		Path:          entry.Path,
+		InstallCommit: entry.InstallCommit,
+		InstalledAt:   entry.InstalledAt,
+		Scan:          entry.Scan,
+		Provenance:    entry.Provenance,
 	}
-	if entry.IsLink() {
-		// Link installs carry no upstream git state — leave Branch/Commit/
-		// Worktree blank so consumers don't render placeholder columns and
-		// surface LinkTarget instead. Source still appears for parity with
-		// remote installs.
-		info.LinkTarget = entry.Source
-	} else {
-		info.Ref = entry.Ref
-		info.Commit = entry.Commit
-		info.Worktree = skill.EntryWorktreePath(entry)
-		// Cross-check entry.Commit against the worktree HEAD so a tampered
-		// lockfile entry surfaces here next to the recorded commit (issue
-		// #73). Suppress the warning when HEAD descends from entry.Commit —
-		// that's the normal "user committed locally; lockfile catches up at
-		// publish time" pattern (issue #99), not tamper. HEAD-read errors
-		// are non-fatal — info is read-only.
-		if entry.Commit != "" {
-			if head, hErr := skill.ResolveEntryHeadCommit(entry, projectRoot); hErr == nil && head != "" && head != entry.Commit {
-				if ancestor, _ := skill.EntryCommitIsAncestorOfHead(entry, projectRoot); !ancestor {
-					info.CommitDrift = head
-				}
-			}
-		}
+	if entry.Provenance != nil {
+		info.SourceUpstream = entry.Provenance.Upstream
 	}
+	populateInfoGitState(info, entry, projectRoot)
 
 	skillDir := skill.EffectiveTarget(entry, projectRoot)
 	if skillDir != "" {
@@ -264,7 +272,7 @@ func renderInfoText(info *skillInfo) {
 	renderInfoMetadata(w, info)
 	renderInfoTargets(w, info)
 	renderInfoFiles(w, info)
-	renderVerificationSection(w, info.Verification)
+	renderVerificationSection(w, info.Scan, info.Provenance)
 }
 
 // renderInfoVersionRows prints the link-target or ref/commit/worktree block.
@@ -368,36 +376,20 @@ func renderInfoFiles(w io.Writer, info *skillInfo) {
 }
 
 // renderVerificationSection prints the supply-chain signals block in text
-// mode. Omitted entirely when nil (the default at install time, before any
-// scan/signature/eval has been recorded) so the output stays tidy.
-func renderVerificationSection(w io.Writer, v *model.VerificationRecord) {
-	if v == nil || v.IsEmpty() {
+// mode. Omitted entirely when neither scan nor provenance has been recorded
+// (the default at install time) so the output stays tidy.
+func renderVerificationSection(w io.Writer, scan *model.ScanRef, prov *model.ProvenanceRef) {
+	if scan == nil && prov.IsEmpty() {
 		return
 	}
 	fmt.Fprintln(w, "Verification:")
-	if v.Scan != nil {
+	if scan != nil {
 		fmt.Fprintf(w, "  Scan:        %s — %s (critical=%d, high=%d, medium=%d, low=%d, info=%d)\n",
-			v.Scan.Decision, v.Scan.ScannerVersion,
-			v.Scan.Counts.Critical, v.Scan.Counts.High,
-			v.Scan.Counts.Medium, v.Scan.Counts.Low, v.Scan.Counts.Info)
+			scan.Decision, scan.ScannerVersion,
+			scan.Counts.Critical, scan.Counts.High,
+			scan.Counts.Medium, scan.Counts.Low, scan.Counts.Info)
 	}
-	if v.Provenance != nil {
-		fmt.Fprintf(w, "  Provenance:  %s\n", provenanceLine(v.Provenance))
-	}
-	if v.Signature != nil {
-		fmt.Fprintf(w, "  Signature:   %s (%s)\n", v.Signature.Path, v.Signature.Algorithm)
-	}
-	if v.Eval != nil {
-		status := "failed"
-		if v.Eval.Passed {
-			status = "passed"
-		}
-		fmt.Fprintf(w, "  Eval:        %s — %s\n", status, v.Eval.HarnessVersion)
-	}
-	if v.Attestation != nil {
-		fmt.Fprintf(w, "  Attestation: %s\n", v.Attestation.Path)
-	}
-	if v.SkillCard != nil {
-		fmt.Fprintf(w, "  SkillCard:   %s\n", v.SkillCard.Path)
+	if !prov.IsEmpty() {
+		fmt.Fprintf(w, "  Provenance:  %s\n", provenanceLine(prov))
 	}
 }

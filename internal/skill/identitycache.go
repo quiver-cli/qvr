@@ -124,7 +124,6 @@ func subtreeIdentity(repoPath, commit, subpath string, rootCoexists, useCache bo
 // the repo when first computed) from a cache miss.
 type cachedProvenance struct {
 	HasProvenance   bool   `json:"hasProvenance"`
-	Provider        string `json:"provider,omitempty"`
 	Tag             string `json:"tag,omitempty"`
 	SignatureStatus string `json:"signatureStatus,omitempty"`
 	Signer          string `json:"signer,omitempty"`
@@ -167,7 +166,6 @@ func readCachedProvenance(ref, commit, path string) (prov *model.ProvenanceRef, 
 		return nil, cp.Author, true
 	}
 	return &model.ProvenanceRef{
-		Provider:        cp.Provider,
 		Tag:             cp.Tag,
 		SignatureStatus: cp.SignatureStatus,
 		Signer:          cp.Signer,
@@ -184,7 +182,6 @@ func writeCachedProvenance(ref, commit, path string, prov *model.ProvenanceRef, 
 	rec := cachedProvenance{Author: author}
 	if prov != nil {
 		rec.HasProvenance = true
-		rec.Provider = prov.Provider
 		rec.Tag = prov.Tag
 		rec.SignatureStatus = prov.SignatureStatus
 		rec.Signer = prov.Signer

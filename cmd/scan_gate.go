@@ -306,11 +306,11 @@ func gateAvailable(cfg *config.Config, disabled bool) bool {
 }
 
 // toScanRef condenses a scanGateResult into the compact form persisted on a
-// lock entry's verification block.
+// lock entry's scan field.
 //
 // Returns nil when the gate didn't run for a non-deliberate reason
 // (scan_on_install=false in config, skill failed to load, etc.) — the caller
-// leaves entry.Verification untouched.
+// leaves entry.Scan untouched.
 //
 // Returns a "skipped" sentinel when the gate was deliberately disabled via
 // `--no-scan`. The sentinel carries no ReportSHA/Counts but does set
@@ -423,41 +423,24 @@ func severityCountsFromSummary(s security.Summary) model.SeverityCounts {
 	}
 }
 
-// applyScanToEntry writes the gate's result onto entry.Verification.Scan,
-// REPLACING any existing scan block. Used by code paths (e.g. publish) where
-// the entry's commit has just advanced and any prior scan attestation is
-// stale — keeping the old block in place would attribute the old commit's
-// findings to the new commit (issue #71).
+// applyScanToEntry writes the gate's result onto entry.Scan, REPLACING any
+// existing scan block. Used by code paths (e.g. publish) where the entry's
+// commit has just advanced and any prior scan attestation is stale — keeping
+// the old block in place would attribute the old commit's findings to the
+// new commit (issue #71).
 //
 // When toScanRef returns nil (gate ran for an unattested reason — config
-// has scan_on_install=false), clears entry.Verification.Scan to nil so the
-// stale block from a previous run doesn't leak forward. Also prunes
-// entry.Verification entirely when no other signals remain so the lockfile
-// stays compact.
+// has scan_on_install=false), clears entry.Scan to nil so the stale block
+// from a previous run doesn't leak forward.
 func applyScanToEntry(entry *model.LockEntry, gate *scanGateResult) {
 	if entry == nil {
 		return
 	}
-	scan := toScanRef(gate)
-	if scan == nil {
-		// Nothing to record. Clear any prior block so it isn't attributed to
-		// the just-advanced commit.
-		if entry.Verification != nil {
-			entry.Verification.Scan = nil
-			if entry.Verification.IsEmpty() {
-				entry.Verification = nil
-			}
-		}
-		return
-	}
-	if entry.Verification == nil {
-		entry.Verification = &model.VerificationRecord{}
-	}
-	entry.Verification.Scan = scan
+	entry.Scan = toScanRef(gate)
 }
 
 // recordScanResult writes the gate's result into the named entry's
-// verification.scan slot on the lockfile at lockPath. No-op when the gate
+// scan slot on the lockfile at lockPath. No-op when the gate
 // produced no recordable signal (skipped, no result). Should be called
 // inside the same WithLock window that performed the install — otherwise a
 // concurrent qvr command could see the lock briefly without the scan
@@ -495,8 +478,7 @@ func recordScanResultInLock(lock *model.LockFile, name string, gate *scanGateRes
 	// new one, skip the write. Also refuse to downgrade a real attestation to
 	// a `--no-scan` sentinel — a no-op re-add with --no-scan should not
 	// destroy the prior commit's clean-scan record.
-	if entry.Verification != nil && entry.Verification.Scan != nil {
-		prior := entry.Verification.Scan
+	if prior := entry.Scan; prior != nil {
 		if scan.Decision == "skipped" && prior.Decision != "skipped" {
 			return nil
 		}
@@ -507,10 +489,7 @@ func recordScanResultInLock(lock *model.LockFile, name string, gate *scanGateRes
 			return nil
 		}
 	}
-	if entry.Verification == nil {
-		entry.Verification = &model.VerificationRecord{}
-	}
-	entry.Verification.Scan = scan
+	entry.Scan = scan
 	lock.Put(entry)
 	return nil
 }

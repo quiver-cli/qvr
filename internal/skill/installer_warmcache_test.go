@@ -136,8 +136,8 @@ func TestInstall_ProvenanceCacheReusedAcrossProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get B: %v", err)
 	}
-	if entry.CommitAuthor != sentinelAuthor {
-		t.Errorf("fresh-project install recomputed provenance/author (%q); expected global-cache reuse of %q", entry.CommitAuthor, sentinelAuthor)
+	if entry.AuthorIdentity() != sentinelAuthor {
+		t.Errorf("fresh-project install recomputed provenance/author (%q); expected global-cache reuse of %q", entry.AuthorIdentity(), sentinelAuthor)
 	}
 }
 

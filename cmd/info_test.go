@@ -178,9 +178,9 @@ func TestBuildSkillInfo_LinkedSkill(t *testing.T) {
 	}
 }
 
-// v5: SubtreeHash lives at the top level of LockEntry; the Verification
-// block carries optional signals (scan/signature/eval/attestation).
-// Confirm both surface through buildSkillInfo's JSON output.
+// v6: SubtreeHash lives at the top level of LockEntry; scan and provenance
+// ride directly on the entry. Confirm both surface through buildSkillInfo's
+// JSON output.
 func TestBuildSkillInfo_PropagatesSubtreeHashAndScan(t *testing.T) {
 	_ = writeFullSkill(t, "demo")
 	project := t.TempDir()
@@ -191,13 +191,11 @@ func TestBuildSkillInfo_PropagatesSubtreeHashAndScan(t *testing.T) {
 		Ref:         "v0.2.0",
 		Targets:     []string{"claude"},
 		SubtreeHash: "sha256:abc123",
-		Verification: &model.VerificationRecord{
-			Scan: &model.ScanRef{
-				ReportSHA:      "sha256:scan",
-				ScannerVersion: "0.5.2",
-				Decision:       "allowed",
-				Counts:         model.SeverityCounts{High: 1},
-			},
+		Scan: &model.ScanRef{
+			ReportSHA:      "sha256:scan",
+			ScannerVersion: "0.5.2",
+			Decision:       "allowed",
+			Counts:         model.SeverityCounts{High: 1},
 		},
 	}
 	info, err := buildSkillInfo(entry, project, false)
@@ -207,11 +205,11 @@ func TestBuildSkillInfo_PropagatesSubtreeHashAndScan(t *testing.T) {
 	if info.SubtreeHash != "sha256:abc123" {
 		t.Errorf("SubtreeHash lost: %q", info.SubtreeHash)
 	}
-	if info.Verification == nil || info.Verification.Scan == nil {
-		t.Fatal("Verification.Scan dropped")
+	if info.Scan == nil {
+		t.Fatal("Scan dropped")
 	}
-	if info.Verification.Scan.Decision != "allowed" {
-		t.Errorf("Scan.Decision lost: %q", info.Verification.Scan.Decision)
+	if info.Scan.Decision != "allowed" {
+		t.Errorf("Scan.Decision lost: %q", info.Scan.Decision)
 	}
 }
 
@@ -383,18 +381,18 @@ func TestRenderInfoText_EditModeSourceLabel(t *testing.T) {
 // shape so a list→info walker can use one parser.
 func TestSkillInfoJSONShape_MatchesListSchema(t *testing.T) {
 	entry := &model.LockEntry{
-		Name:           "demo",
-		Registry:       "raks",
-		Source:         "git@github.com:raks097/demo.git",
-		SourceUpstream: "git@github.com:raks097/demo.git",
-		Path:           "skills/demo",
-		Ref:            "v0.2.0",
-		Commit:         "abc1234567890abcdef1234567890abcdef12345",
-		InstallCommit:  "abc1234567890abcdef1234567890abcdef12345",
-		SubtreeHash:    "sha256:deadbeef",
-		Mode:           "",
-		Targets:        []string{"claude"},
-		InstalledAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Name:          "demo",
+		Registry:      "raks",
+		Source:        "git@github.com:raks097/demo.git",
+		Provenance:    &model.ProvenanceRef{Upstream: "git@github.com:raks097/demo.git"},
+		Path:          "skills/demo",
+		Ref:           "v0.2.0",
+		Commit:        "abc1234567890abcdef1234567890abcdef12345",
+		InstallCommit: "abc1234567890abcdef1234567890abcdef12345",
+		SubtreeHash:   "sha256:deadbeef",
+		Mode:          "",
+		Targets:       []string{"claude"},
+		InstalledAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	info, err := buildSkillInfo(entry, t.TempDir(), false)
 	if err != nil {

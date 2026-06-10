@@ -118,12 +118,6 @@ export interface ScanRef {
   sarifPath?: string;
 }
 
-// VerificationRecord mirrors model.VerificationRecord — the supply-chain signals
-// recorded on a skill. Only `scan` is surfaced today; the other slots
-// (signature, eval, …) are reserved and added when their writers ship.
-export interface VerificationRecord {
-  scan?: ScanRef;
-}
 
 export interface SkillInfo {
   name: string;
@@ -147,7 +141,7 @@ export interface SkillInfo {
   targets?: string[];
   targetDetails?: TargetDetail[];
   files?: string[];
-  verification?: VerificationRecord;
+  scan?: ScanRef;
 }
 
 export interface TreeSkill {
@@ -311,7 +305,7 @@ export interface ScanResult {
 }
 
 // Lock-scale severity counts (matches model.SeverityCounts / the recorded
-// gate's verification.scan.counts), so a live re-scan compares 1:1.
+// gate's recorded scan counts), so a live re-scan compares 1:1.
 export interface SeverityCounts {
   critical: number;
   high: number;

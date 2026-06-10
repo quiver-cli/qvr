@@ -101,8 +101,8 @@ func TestEjectToTarget_SingleTarget(t *testing.T) {
 	if entry.EditPath != ".claude/skills/demo" {
 		t.Errorf("entry.EditPath = %q, want %q", entry.EditPath, ".claude/skills/demo")
 	}
-	if entry.SourceUpstream != originalSource {
-		t.Errorf("entry.SourceUpstream = %q, want original Source %q", entry.SourceUpstream, originalSource)
+	if entry.Provenance == nil || entry.Provenance.Upstream != originalSource {
+		t.Errorf("entry.Provenance.Upstream = %v, want original Source %q", entry.Provenance, originalSource)
 	}
 	if !entry.IsEdit() {
 		t.Errorf("entry.IsEdit() = false, want true")
