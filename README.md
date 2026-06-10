@@ -89,16 +89,18 @@ scan report hash + decision, and the commit author, so the lock _is_ the audit
 trail.
 
 ```toml
-# qvr.lock — one resolved, vetted entry (machine-generated)
-[skills.frontend-design]
-registry     = 'anthropics/skills'
-source       = 'https://github.com/anthropics/skills.git'
-path         = 'skills/frontend-design'
-ref          = 'main'
-commit       = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'   # resolved SHA
-subtreeHash  = 'sha256:21dce9699042…'                       # exact bytes installed
-commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>'       # provenance
-targets      = ['claude']
+# qvr.lock — one resolved, vetted entry per skill package (machine-generated)
+[[skill]]
+name        = 'frontend-design'
+registry    = 'anthropics/skills'
+source      = 'https://github.com/anthropics/skills.git'
+path        = 'skills/frontend-design'
+ref         = 'main'
+commit      = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'    # resolved SHA
+subtreeHash = 'sha256:21dce9699042…'                        # exact bytes installed
+targets     = ['claude']
+scan        = {reportSHA = 'sha256:8e861d1c…', decision = 'allowed', counts = {…}}
+provenance  = {commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>', signatureStatus = 'none'}
 ```
 
 **They stay in sync — both directions.** Every mutating command (`qvr add`,

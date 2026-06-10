@@ -303,7 +303,7 @@ func runSyncReconcile(cmd *cobra.Command, cfg *config.Config, projectRoot, projP
 	// after reviewing what the scan said.
 	//
 	// Runs inside the lock window because scanRestoredSkillsAfterSync
-	// writes the scan signal into entry.Verification.Scan on the
+	// writes the scan signal into entry.Scan on the
 	// in-memory lock. The lock.Write() that follows persists those
 	// mutations alongside any reconciler-side changes; both must be
 	// inside WithLock so concurrent qvr commands see a consistent
@@ -909,7 +909,7 @@ func scanRestoredEntry(ctx context.Context, entry *model.LockEntry, cfg *config.
 	// fingerprint of what was scanned; if the hash still matches what
 	// we'd compute now, the prior scan still describes the on-disk
 	// state and the per-skill scan output is just noise.
-	if entry.Verification != nil && entry.Verification.Scan != nil && entry.SubtreeHash != "" {
+	if entry.Scan != nil && entry.SubtreeHash != "" {
 		if curHash, herr := skill.ComputeSubtreeHash(skillDir, ""); herr == nil && curHash == entry.SubtreeHash {
 			return "", false
 		}
@@ -926,14 +926,11 @@ func scanRestoredEntry(ctx context.Context, entry *model.LockEntry, cfg *config.
 	if gerr != nil || gate == nil || gate.Result == nil {
 		return "", false
 	}
-	// Persist the scan signal onto the entry's verification block.
-	// In-memory mutation only — the caller writes the lock once at
-	// the end of sync (the WithLock-held window).
+	// Persist the scan signal onto the entry. In-memory mutation only —
+	// the caller writes the lock once at the end of sync (the
+	// WithLock-held window).
 	if scan := toScanRef(gate); scan != nil {
-		if entry.Verification == nil {
-			entry.Verification = &model.VerificationRecord{}
-		}
-		entry.Verification.Scan = scan
+		entry.Scan = scan
 	}
 	if gate.Blocked {
 		return gate.Result.Summary.MaxSeverity(), true

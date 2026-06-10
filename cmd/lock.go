@@ -74,17 +74,17 @@ Tune which states are fatal with --fail-on:
 
 --frozen is a shorthand for --fail-on drift, --strict for --fail-on
 unverified; both are kept for compatibility and win over a weaker --fail-on.
---repair rewrites Verification blocks for drifting entries using current
+--repair re-seals drifting entries (subtree hash + commit) using current
 disk state (use only when you trust the current worktree).`,
 	RunE: runLockVerify,
 }
 
 var lockUpgradeCmd = &cobra.Command{
 	Use:   "upgrade",
-	Short: "Populate Verification blocks for any entries missing them",
+	Short: "Populate integrity seals for any entries missing them",
 	Long: `Read qvr.lock, compute the canonical subtree hash for every entry
-that lacks a Verification block, and write the result back. Safe to re-run
-— idempotent for entries that already have a hash.
+that lacks one, and write the result back. Safe to re-run — idempotent for
+entries that already have a hash.
 
 --dry-run reports which entries would change without writing.`,
 	RunE: runLockUpgrade,
@@ -98,7 +98,7 @@ func init() {
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyStrict, "strict", false,
 		"shorthand for --fail-on unverified (kept for compatibility)")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyRepair, "repair", false,
-		"rewrite drifting Verification blocks using current worktree state")
+		"re-seal drifting entries using current worktree state")
 	lockVerifyCmd.Flags().BoolVar(&lockVerifyGlobal, "global", false,
 		"operate on the user-global lock file instead of the project lock")
 
@@ -903,9 +903,9 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 	//   1. Fill any entry with a missing top-level SubtreeHash (e.g. installs
 	//      where the initial hash computation failed, or a hand-edited lock).
 	//   2. Re-run the configured scan gate against entries that lack a
-	//      verification.scan block, persisting the structured ScanRef so the
-	//      help text's "populate[s] Verification blocks for any entries
-	//      missing them" promise holds (issue #63). Skipped when
+	//      scan record, persisting the structured ScanRef so the help
+	//      text's "populate[s] integrity seals for any entries missing
+	//      them" promise holds (issue #63). Skipped when
 	//      security.scan_on_install isn't configured — upgrade then only
 	//      fills the hash and the status reads "upgraded (hash only)".
 	cfg, _ := config.Load()
@@ -933,7 +933,7 @@ func lockUpgradeInternal(lockPath string) (*UpgradeOutput, error) {
 }
 
 // upgradeLockEntry backfills one lock entry's missing top-level SubtreeHash and,
-// when the scan gate is configured and the entry lacks a verification.scan block,
+// when the scan gate is configured and the entry lacks a scan block,
 // restores that block too (issue #63). It mutates the entry and returns the
 // result row plus whether the lock changed. Link entries are skipped; dry-run
 // reports "would-upgrade" without mutating.
@@ -967,7 +967,7 @@ func upgradeLockEntry(entry *model.LockEntry, cfg *config.Config) (UpgradeEntryR
 		row.Status = "unchanged"
 	}
 
-	// Issue #63 — also restore the verification.scan block when the
+	// Issue #63 — also restore the scan block when the
 	// gate is configured and the entry is missing one. Runs on both
 	// freshly-hashed entries (status="upgraded") and previously
 	// unchanged entries (status="unchanged") that just lack the
@@ -980,14 +980,13 @@ func upgradeLockEntry(entry *model.LockEntry, cfg *config.Config) (UpgradeEntryR
 }
 
 // restoreUpgradeScanRecord re-runs the configured scan gate against an entry
-// missing a verification.scan block and seals the resulting ScanRef onto it
+// missing a scan block and seals the resulting ScanRef onto it
 // (issue #63). Returns whether it wrote the scan; an "unchanged" row is promoted
 // to "upgraded" so callers see the change. No-op under dry-run, for link
 // entries, when the entry already has a scan, or when no gate is configured.
 func restoreUpgradeScanRecord(entry *model.LockEntry, cfg *config.Config, row *UpgradeEntryResult) bool {
 	if lockUpgradeDryRun || entry.IsLink() || entry.SubtreeHash == "" ||
-		(entry.Verification != nil && entry.Verification.Scan != nil) ||
-		!gateAvailable(cfg, false) {
+		entry.Scan != nil || !gateAvailable(cfg, false) {
 		return false
 	}
 	worktreePath := skill.EntryWorktreePath(entry)
@@ -1007,16 +1006,13 @@ func restoreUpgradeScanRecord(entry *model.LockEntry, cfg *config.Config, row *U
 	if scan == nil {
 		return false
 	}
-	if entry.Verification == nil {
-		entry.Verification = &model.VerificationRecord{}
-	}
-	entry.Verification.Scan = scan
+	entry.Scan = scan
 	// Promote unchanged rows to "upgraded" so callers
 	// see that something happened. Hash-side upgrades
 	// stay "upgraded".
 	if row.Status == "unchanged" {
 		row.Status = "upgraded"
-		row.Message = "restored verification.scan"
+		row.Message = "restored scan record"
 	}
 	return true
 }

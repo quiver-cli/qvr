@@ -38,24 +38,26 @@ func SkillScopePaths(path string, rootCoexists bool) []string {
 
 // LockFileVersion is the current lock file schema version.
 //
-// v5 slims the v4 shape. Drops dead fields (worktree, installPath,
-// updatedAt, repoURL, linkTarget), drops duplicate fields (the verification
-// block's provenance sub-object, treeSHA, commitSHA), and hoists the
-// load-bearing integrity field (subtreeHash) to the top level. Repurposes
-// `source` from an install-method enum to the actual fetch URL (or absolute
-// local path for link installs) so the lock is self-contained across
-// machines. Renames resolvedSha → commit. The verification block becomes
-// omit-when-empty and only surfaces real signals (scan, signature, eval,
-// attestation, skill card). qvr is still pre-release; v4 locks are rejected
-// outright with a "delete and run qvr sync" message.
-const LockFileVersion = 5
+// v6 makes each skill a single cohesive entry, uv.lock-style. Skills
+// serialize as an array of tables (`[[skill]]` with an explicit `name`
+// field) instead of a map keyed by name, and the v5 verification wrapper is
+// gone: `scan` and `provenance` ride as inline tables directly on the entry.
+// Provenance now classifies everything about content origin — commitAuthor,
+// the signature check, and the sourceUpstream/forkedFrom lineage markers
+// that were top-level v5 fields. Redundancy cuts: the constant
+// provenance.provider ("git") is dropped, the writer-less reserved slots
+// (eval, signature, attestation, skillCard) are dropped, and installCommit
+// is omitted on disk when it equals commit (the read path restores it).
+// qvr is still pre-release; v5 locks are rejected outright with a "delete
+// and run qvr sync" message.
+const LockFileVersion = 6
 
 // LockFileName is the canonical lock file name.
 const LockFileName = "qvr.lock"
 
 // MinSupportedLockFileVersion is the oldest schema this binary will read.
-// v5 is a hard break — v4 and older are rejected outright.
-const MinSupportedLockFileVersion = 5
+// v6 is a hard break — v5 and older are rejected outright.
+const MinSupportedLockFileVersion = 6
 
 var (
 	ErrLockNotFound           = errors.New("lock file not found")
@@ -84,14 +86,14 @@ const LocalRegistry = "_local"
 // The on-disk shape carries only what the lock can't recover from another
 // source. Worktree paths are computed via registry.WorktreePath(...) at use
 // time, never written (the v4 absolute-path leak made the lock unsafe to
-// check in). The skill name is the LockFile.Skills map key, never duplicated
-// on the entry. Drift detection compares SubtreeHash to a recomputation
-// from disk — that's the integrity check; everything else is metadata.
+// check in). Each entry is one `[[skill]]` element identified by its Name
+// field, uv.lock-style. Drift detection compares SubtreeHash to a
+// recomputation from disk — that's the integrity check; everything else is
+// metadata.
 type LockEntry struct {
-	// Name is the in-memory map key (populated by ReadLockFile from the
-	// Skills map). Never serialised — the map key on disk is
-	// authoritative.
-	Name string `json:"-" toml:"-"`
+	// Name is the skill's lock identity — unique across the file,
+	// enforced on read. In memory it doubles as the Skills map key.
+	Name string `json:"name" toml:"name"`
 
 	// Registry is the stable display name of the registry this skill came
 	// from (e.g. "raks"). Optional: ad-hoc URL installs and link installs
@@ -137,14 +139,10 @@ type LockEntry struct {
 	// at install time. The worktree path is computed as
 	// WorktreePath(Registry, Name, ShortSHA(InstallCommit)) so that
 	// Pull/Switch advancing Commit does not move the directory out from
-	// under the symlinks. Empty for link installs and for entries
-	// pre-dating this field, in which case EntryWorktreePath falls back
-	// to Commit.
+	// under the symlinks. Usually equal to Commit — the redundant copy is
+	// omitted on disk and restored on read; it only diverges (and
+	// serializes) after Pull/Switch. Empty for link installs.
 	InstallCommit string `json:"installCommit,omitempty" toml:"installCommit,omitempty"`
-
-	// CommitAuthor is the author identity on the installed commit, formatted as
-	// `Name <email>`. Trust policy can pin allowed authors per registry.
-	CommitAuthor string `json:"commitAuthor,omitempty" toml:"commitAuthor,omitempty"`
 
 	// SubtreeHash is the canonical content hash of the installed skill
 	// subtree. Load-bearing — drift detection compares this to a fresh
@@ -158,23 +156,6 @@ type LockEntry struct {
 	// for uv-style git-native identity and future content dedup. Empty for
 	// link installs and entries whose hash computation failed.
 	TreeOID string `json:"treeOID,omitempty" toml:"treeOID,omitempty"`
-
-	// SourceUpstream records the original upstream URL when an entry has
-	// moved off its first source — set by `qvr edit` (mirrors Source at
-	// eject time) and preserved through `qvr publish --fork --migrate`
-	// (when Source flips to the fork URL). Empty for entries that never
-	// diverged. Provenance only — never used to drive pushes.
-	SourceUpstream string `json:"sourceUpstream,omitempty" toml:"sourceUpstream,omitempty"`
-
-	// ForkedFrom records the upstream this skill was forked from when
-	// published via `qvr publish --fork --migrate`. Format:
-	// "<git-url>@<commit-sha>" (short sha). Empty for skills never
-	// forked. Set on the author's local lock at migrate time; the
-	// published artifact's SKILL.md is never mutated, so downstream
-	// consumers don't carry this field unless they themselves migrate.
-	// Provenance only in v0.8; v0.9's trust layer will read this to
-	// verify fork policy.
-	ForkedFrom string `json:"forkedFrom,omitempty" toml:"forkedFrom,omitempty"`
 
 	// Mode is the install mode: "" (shared, default for `qvr add`),
 	// "edit" (`qvr edit` ejected to EditPath), or "link" (`qvr link`).
@@ -197,9 +178,64 @@ type LockEntry struct {
 	// Disabled hides the skill from agents without removing the worktree.
 	Disabled bool `json:"disabled,omitempty" toml:"disabled,omitempty"`
 
-	// Verification carries supply-chain signals: scan results, signatures,
-	// attestations, evals. Omitted entirely when there's nothing to record.
-	Verification *VerificationRecord `json:"verification,omitempty" toml:"verification,omitempty"`
+	// Scan summarises the scan-gate pass over this entry's content.
+	// Omitted when no scan has been recorded.
+	Scan *ScanRef `json:"scan,omitempty" toml:"scan,omitempty,inline"`
+
+	// Provenance classifies content origin: commit author, git-native
+	// signature check, and source-lineage markers (upstream, forkedFrom).
+	// Omitted when there's nothing to record.
+	Provenance *ProvenanceRef `json:"provenance,omitempty" toml:"provenance,omitempty,inline"`
+}
+
+// AuthorIdentity returns the recorded commit author (`Name <email>`) or ""
+// when no provenance was captured. Nil-safe accessor for the v6 location of
+// the v5 top-level commitAuthor field.
+func (e *LockEntry) AuthorIdentity() string {
+	if e == nil || e.Provenance == nil {
+		return ""
+	}
+	return e.Provenance.CommitAuthor
+}
+
+// SignatureStatus returns the recorded git signature status (verified |
+// none | invalid) or "" when the signature was never checked.
+func (e *LockEntry) SignatureStatus() string {
+	if e == nil || e.Provenance == nil {
+		return ""
+	}
+	return e.Provenance.SignatureStatus
+}
+
+// UpstreamSource returns the original upstream URL when the entry has moved
+// off its first source (provenance.upstream, written by `qvr edit` /
+// `qvr publish --fork --migrate`), falling back to Source.
+func (e *LockEntry) UpstreamSource() string {
+	if e == nil {
+		return ""
+	}
+	if e.Provenance != nil && e.Provenance.Upstream != "" {
+		return e.Provenance.Upstream
+	}
+	return e.Source
+}
+
+// EnsureProvenance returns the entry's provenance block, allocating it
+// first when nil. Use when writing a single provenance field; pair with
+// NormalizeProvenance so an all-empty block doesn't serialize.
+func (e *LockEntry) EnsureProvenance() *ProvenanceRef {
+	if e.Provenance == nil {
+		e.Provenance = &ProvenanceRef{}
+	}
+	return e.Provenance
+}
+
+// NormalizeProvenance drops an all-empty provenance block so it stays
+// omitted from disk.
+func (e *LockEntry) NormalizeProvenance() {
+	if e.Provenance.IsEmpty() {
+		e.Provenance = nil
+	}
 }
 
 // IsLink reports whether this entry is a legacy local-link install (a live
@@ -252,8 +288,19 @@ func (e *LockEntry) IsEdit() bool {
 type LockFile struct {
 	Version int `json:"version" toml:"version"`
 
-	Skills map[string]*LockEntry `json:"skills" toml:"skills"`
+	// Skills is the in-memory index, keyed by entry name. On disk (v6) it
+	// serializes as a `[[skill]]` array of tables sorted by name — each
+	// skill one cohesive uv.lock-style entry — via lockFileDisk.
+	Skills map[string]*LockEntry `json:"skills" toml:"-"`
 	path   string                // canonical write destination — not serialized
+}
+
+// lockFileDisk is the v6 on-disk TOML shape: a [[skill]] array of tables,
+// each element one skill package with an explicit `name` field, like
+// uv.lock's [[package]].
+type lockFileDisk struct {
+	Version int          `toml:"version"`
+	Skills  []*LockEntry `toml:"skill,omitempty"`
 }
 
 // NewLockFile returns an empty lock file at the given path.
@@ -286,13 +333,15 @@ func (l *LockFile) IsGlobal(quiverHome string) bool {
 // the path does not exist — this is the expected state before the first
 // install.
 //
-// Rejects any schema version other than v5 with an error wrapping
+// Rejects any schema version other than v6 with an error wrapping
 // ErrLockVersionUnsupported. qvr is pre-release with no external users, so
-// older shapes (v2, v3, v4) are not supported — delete the old lock and
-// run `qvr sync` to regenerate.
+// older shapes (v2–v5) are not supported — delete the old lock and run
+// `qvr sync` to regenerate.
 //
-// Populates each entry's in-memory Name field (`json:"-"`) from the map key
-// so consumers can rely on entry.Name without re-walking the map.
+// Builds the in-memory Skills map from the on-disk `[[skill]]` array,
+// rejecting duplicate names, and restores InstallCommit (omitted on disk
+// when it equals Commit) so in-memory consumers see the install-time
+// invariant.
 func ReadLockFile(path string) (*LockFile, error) {
 	l := NewLockFile(path)
 	data, err := os.ReadFile(path)
@@ -305,42 +354,74 @@ func ReadLockFile(path string) (*LockFile, error) {
 	if len(data) == 0 {
 		return l, nil
 	}
-	// Zero out Version before Unmarshal — NewLockFile seeds it to
-	// LockFileVersion, but toml.Unmarshal won't reset fields that aren't
-	// in the input, so we'd silently accept a missing `version` key.
-	l.Version = 0
-	if err := toml.Unmarshal(data, l); err != nil {
-		if rawVersion := extractRawVersion(data); rawVersion != "" {
-			return nil, fmt.Errorf("%w: `version` must be an integer TOML value, got %s — delete the lock and reinstall",
-				ErrLockVersionUnsupported, rawVersion)
-		}
+	// Validate the version BEFORE the strict shape unmarshal: legacy locks
+	// (v5 and older keyed skills as `[skills.<name>]` tables) can't parse
+	// into the v6 array shape, and the user should see the friendly
+	// "delete and resync" message rather than a raw TOML type error.
+	version, err := lockVersionOf(data)
+	if err != nil {
+		return nil, err
+	}
+	var disk lockFileDisk
+	if err := toml.Unmarshal(data, &disk); err != nil {
 		return nil, fmt.Errorf("parse lock file: %w", err)
 	}
-	if l.Version == 0 {
-		return nil, fmt.Errorf("%w: lock file missing `version` field — delete the lock and reinstall",
-			ErrLockVersionUnsupported)
-	}
-	if l.Version < MinSupportedLockFileVersion {
-		return nil, fmt.Errorf("%w: qvr.lock is at schema v%d; v%d introduced a slimmer shape — delete qvr.lock and run `qvr sync` to regenerate",
-			ErrLockVersionUnsupported, l.Version, MinSupportedLockFileVersion)
-	}
-	if l.Version > LockFileVersion {
-		return nil, fmt.Errorf("%w: version %d was written by a newer qvr (this binary writes v%d) — upgrade qvr",
-			ErrLockVersionUnsupported, l.Version, LockFileVersion)
-	}
+	l.Version = version
 	l.path = path
-	if l.Skills == nil {
-		l.Skills = make(map[string]*LockEntry)
-	}
-	// Populate each entry's in-memory Name from the map key so consumers can
-	// rely on entry.Name. The name is `json:"-"` on disk — the key is
-	// authoritative.
-	for name, entry := range l.Skills {
-		if entry != nil {
-			entry.Name = name
-		}
+	if err := l.indexEntries(disk.Skills); err != nil {
+		return nil, err
 	}
 	return l, nil
+}
+
+// lockVersionOf probes the raw TOML for a supported integer `version` field,
+// returning the friendly ErrLockVersionUnsupported variants for missing,
+// mistyped, legacy, and too-new values.
+func lockVersionOf(data []byte) (int, error) {
+	var probe struct {
+		Version int `toml:"version"`
+	}
+	if err := toml.Unmarshal(data, &probe); err != nil {
+		if rawVersion := extractRawVersion(data); rawVersion != "" {
+			return 0, fmt.Errorf("%w: `version` must be an integer TOML value, got %s — delete the lock and reinstall",
+				ErrLockVersionUnsupported, rawVersion)
+		}
+		return 0, fmt.Errorf("parse lock file: %w", err)
+	}
+	switch {
+	case probe.Version == 0:
+		return 0, fmt.Errorf("%w: lock file missing `version` field — delete the lock and reinstall",
+			ErrLockVersionUnsupported)
+	case probe.Version < MinSupportedLockFileVersion:
+		return 0, fmt.Errorf("%w: qvr.lock is at schema v%d; v%d made each skill a single [[skill]] entry — delete qvr.lock and run `qvr sync` to regenerate",
+			ErrLockVersionUnsupported, probe.Version, MinSupportedLockFileVersion)
+	case probe.Version > LockFileVersion:
+		return 0, fmt.Errorf("%w: version %d was written by a newer qvr (this binary writes v%d) — upgrade qvr",
+			ErrLockVersionUnsupported, probe.Version, LockFileVersion)
+	}
+	return probe.Version, nil
+}
+
+// indexEntries builds the in-memory Skills map from the on-disk [[skill]]
+// array, rejecting nameless or duplicate entries and restoring the
+// InstallCommit invariant (omitted on disk when equal to Commit).
+func (l *LockFile) indexEntries(entries []*LockEntry) error {
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.Name == "" {
+			return fmt.Errorf("parse lock file: [[skill]] entry missing `name`")
+		}
+		if _, dup := l.Skills[entry.Name]; dup {
+			return fmt.Errorf("parse lock file: duplicate [[skill]] entry %q", entry.Name)
+		}
+		if entry.InstallCommit == "" {
+			entry.InstallCommit = entry.Commit
+		}
+		l.Skills[entry.Name] = entry
+	}
+	return nil
 }
 
 // MarshalLockFile serializes a lock file using the canonical on-disk TOML
@@ -352,7 +433,21 @@ func MarshalLockFile(l *LockFile) ([]byte, error) {
 		l.Skills = make(map[string]*LockEntry)
 	}
 
-	data, err := toml.Marshal(l)
+	disk := lockFileDisk{Version: LockFileVersion}
+	for _, e := range l.Entries() {
+		// Shallow-copy so on-disk redundancy trimming never mutates the
+		// caller's live entry.
+		ec := *e
+		if ec.InstallCommit == ec.Commit {
+			ec.InstallCommit = ""
+		}
+		if ec.Provenance.IsEmpty() {
+			ec.Provenance = nil
+		}
+		disk.Skills = append(disk.Skills, &ec)
+	}
+
+	data, err := toml.Marshal(disk)
 	if err != nil {
 		return nil, fmt.Errorf("marshal lock file: %w", err)
 	}

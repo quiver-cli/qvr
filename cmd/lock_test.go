@@ -197,12 +197,12 @@ func assertUpgradeFilledHashAndScan(t *testing.T, lockPath, name string) {
 	if entry.SubtreeHash == "" {
 		t.Errorf("upgrade did not fill SubtreeHash")
 	}
-	if entry.Verification == nil || entry.Verification.Scan == nil {
-		t.Errorf("upgrade did not repopulate verification.scan: %+v", entry.Verification)
+	if entry.Scan == nil {
+		t.Errorf("upgrade did not repopulate the scan record: %+v", entry)
 	}
 	// Sanity: ScannerVersion stamp is present so `qvr lock verify`
 	// downstream can detect drift across binary upgrades.
-	if entry.Verification != nil && entry.Verification.Scan != nil && entry.Verification.Scan.ScannerVersion == "" {
+	if entry.Scan != nil && entry.Scan.ScannerVersion == "" {
 		t.Errorf("scan ref missing ScannerVersion")
 	}
 }

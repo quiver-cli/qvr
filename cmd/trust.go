@@ -281,12 +281,13 @@ func verifyTrustEntry(entry *model.LockEntry, cfg *config.Config) trustVerifyRow
 	if len(authors) == 0 {
 		return row
 	}
-	row.Author = entry.CommitAuthor
+	author := entry.AuthorIdentity()
+	row.Author = author
 	switch {
-	case entry.CommitAuthor == "":
+	case author == "":
 		row.Status = "failed"
 		row.Reason = "commit author not recorded"
-	case skill.AuthorAllowed(entry.CommitAuthor, authors):
+	case skill.AuthorAllowed(author, authors):
 		row.Status = "trusted"
 		row.Reason = "author pinned"
 	default:

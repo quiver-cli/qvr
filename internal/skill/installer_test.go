@@ -72,8 +72,8 @@ func TestInstall_BasicFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock get: %v", err)
 	}
-	if entry.CommitAuthor != "Test <t@t>" {
-		t.Errorf("commitAuthor = %q, want Test <t@t>", entry.CommitAuthor)
+	if entry.AuthorIdentity() != "Test <t@t>" {
+		t.Errorf("commitAuthor = %q, want Test <t@t>", entry.AuthorIdentity())
 	}
 }
 

@@ -40,7 +40,7 @@ func ejectedFixture(t *testing.T, name string) (*model.LockEntry, string, string
 // dispatcher picked the right URL and branch.
 func TestPublishInstalled_DryRun_ReportsRemote(t *testing.T) {
 	entry, projectRoot, _ := ejectedFixture(t, "demo")
-	expectedRemote := entry.SourceUpstream // ejectedFixture has already promoted Source → SourceUpstream
+	expectedRemote := entry.UpstreamSource() // ejectedFixture has already promoted Source → provenance.upstream
 
 	p := skill.NewPublisher(git.NewGoGitClient())
 	res, err := p.PublishInstalled(context.Background(), skill.PublishInstalledRequest{
@@ -193,7 +193,7 @@ func setupBareForkWithHEAD(t *testing.T, branch string) string {
 // the lockfile entry (ForkedFrom), not in the artifact.
 func TestPublishInstalled_Fork_LeavesSKILLMdAlone(t *testing.T) {
 	entry, projectRoot, editDir := ejectedFixture(t, "demo")
-	originalSource := entry.SourceUpstream
+	originalSource := entry.Provenance.Upstream
 
 	forkURL := filepath.Join(t.TempDir(), "fork.git")
 	if _, err := gogit.PlainInit(forkURL, true); err != nil {
@@ -237,10 +237,10 @@ func TestPublishInstalled_Fork_LeavesSKILLMdAlone(t *testing.T) {
 	if entry.Source != originalSource {
 		t.Errorf("entry.Source = %q, want unchanged %q (Migrate=false)", entry.Source, originalSource)
 	}
-	// Migrate=false → ForkedFrom must remain empty (the entry's identity
+	// Migrate=false → forkedFrom must remain empty (the entry's identity
 	// hasn't moved to the fork; this was a one-shot push).
-	if entry.ForkedFrom != "" {
-		t.Errorf("entry.ForkedFrom = %q, want empty without --migrate", entry.ForkedFrom)
+	if entry.Provenance != nil && entry.Provenance.ForkedFrom != "" {
+		t.Errorf("provenance.forkedFrom = %q, want empty without --migrate", entry.Provenance.ForkedFrom)
 	}
 }
 
@@ -288,12 +288,12 @@ func readSKILLFromBareRepo(t *testing.T, bareRepoPath, ref, file string) string 
 
 // TestPublishInstalled_ForkMigrate_RewritesSource covers the same --fork
 // flow with Migrate=true: after the successful push, entry.Source flips to
-// the fork URL, entry.SourceUpstream preserves the original, and
-// entry.ForkedFrom records the upstream + base sha as the lockfile-side
+// the fork URL, provenance.upstream preserves the original, and
+// provenance.forkedFrom records the upstream + base sha as the lockfile-side
 // fork provenance (v0.8.2 — replaces the old SKILL.md stamping).
 func TestPublishInstalled_ForkMigrate_RewritesSource(t *testing.T) {
 	entry, projectRoot, _ := ejectedFixture(t, "demo")
-	originalSource := entry.SourceUpstream
+	originalSource := entry.Provenance.Upstream
 
 	forkURL := filepath.Join(t.TempDir(), "fork.git")
 	if _, err := gogit.PlainInit(forkURL, true); err != nil {
@@ -317,14 +317,14 @@ func TestPublishInstalled_ForkMigrate_RewritesSource(t *testing.T) {
 	if entry.Source != forkURL {
 		t.Errorf("entry.Source = %q, want fork URL %q", entry.Source, forkURL)
 	}
-	if entry.SourceUpstream != originalSource {
-		t.Errorf("entry.SourceUpstream = %q, want preserved original %q", entry.SourceUpstream, originalSource)
+	if entry.Provenance == nil || entry.Provenance.Upstream != originalSource {
+		t.Errorf("provenance.upstream = %v, want preserved original %q", entry.Provenance, originalSource)
 	}
-	if entry.ForkedFrom == "" {
-		t.Errorf("entry.ForkedFrom is empty after --fork --migrate; want recorded provenance")
+	if entry.Provenance.ForkedFrom == "" {
+		t.Errorf("provenance.forkedFrom is empty after --fork --migrate; want recorded provenance")
 	}
-	if !strings.HasPrefix(entry.ForkedFrom, originalSource+"@") {
-		t.Errorf("entry.ForkedFrom = %q, want prefix %q@<sha>", entry.ForkedFrom, originalSource)
+	if !strings.HasPrefix(entry.Provenance.ForkedFrom, originalSource+"@") {
+		t.Errorf("provenance.forkedFrom = %q, want prefix %q@<sha>", entry.Provenance.ForkedFrom, originalSource)
 	}
 }
 

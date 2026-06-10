@@ -14,9 +14,9 @@ func TestVerifyTrustEntry_TrustedAuthor(t *testing.T) {
 		},
 	}}
 	entry := &model.LockEntry{
-		Name:         "review",
-		Registry:     "acme/skills",
-		CommitAuthor: "Alice <alice@example.com>",
+		Name:       "review",
+		Registry:   "acme/skills",
+		Provenance: &model.ProvenanceRef{CommitAuthor: "Alice <alice@example.com>"},
 	}
 
 	got := verifyTrustEntry(entry, cfg)
@@ -34,9 +34,9 @@ func TestVerifyTrustEntry_EmailOnlyPinMatches(t *testing.T) {
 		},
 	}}
 	entry := &model.LockEntry{
-		Name:         "review",
-		Registry:     "acme/skills",
-		CommitAuthor: "Alice Dev <alice@example.com>",
+		Name:       "review",
+		Registry:   "acme/skills",
+		Provenance: &model.ProvenanceRef{CommitAuthor: "Alice Dev <alice@example.com>"},
 	}
 
 	got := verifyTrustEntry(entry, cfg)
@@ -52,9 +52,9 @@ func TestVerifyTrustEntry_RejectsUnpinnedAuthor(t *testing.T) {
 		},
 	}}
 	entry := &model.LockEntry{
-		Name:         "review",
-		Registry:     "acme/skills",
-		CommitAuthor: "Mallory <mallory@example.com>",
+		Name:       "review",
+		Registry:   "acme/skills",
+		Provenance: &model.ProvenanceRef{CommitAuthor: "Mallory <mallory@example.com>"},
 	}
 
 	got := verifyTrustEntry(entry, cfg)

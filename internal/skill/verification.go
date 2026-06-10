@@ -81,7 +81,6 @@ func checkGitProvenanceAt(repoPath, ref, skillCommit string) *model.ProvenanceRe
 	if status, signer, err := git.VerifyTagSignature(ctx, repoPath, ref); err == nil {
 		if status == git.SigVerified || status == git.SigInvalid {
 			return &model.ProvenanceRef{
-				Provider:        "git",
 				Tag:             ref,
 				SignatureStatus: status,
 				Signer:          signer,
@@ -98,7 +97,6 @@ func checkGitProvenanceAt(repoPath, ref, skillCommit string) *model.ProvenanceRe
 		return nil
 	}
 	return &model.ProvenanceRef{
-		Provider:        "git",
 		SignatureStatus: status,
 		Signer:          signer,
 	}

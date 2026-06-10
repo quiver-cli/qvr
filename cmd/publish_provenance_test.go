@@ -75,7 +75,7 @@ func publishedEntry(t *testing.T, project string) *model.LockEntry {
 // TestPublish_ForkMigrateTag_PreservesForkedFromAndScan is the #243 guard:
 // `publish --fork --migrate --tag` graduates the entry back to consume mode
 // via auto-uneject, and the rewritten entry must keep the fork provenance
-// (forkedFrom, sourceUpstream) and the publish gate's scan attestation —
+// (provenance.forkedFrom/upstream) and the publish gate's scan attestation —
 // pre-fix the auto-uneject re-install erased all three.
 func TestPublish_ForkMigrateTag_PreservesForkedFromAndScan(t *testing.T) {
 	project := setupEjectedRegistrySkill(t)
@@ -105,17 +105,17 @@ func TestPublish_ForkMigrateTag_PreservesForkedFromAndScan(t *testing.T) {
 	if e.IsEdit() {
 		t.Errorf("entry still in edit mode — auto-uneject did not run; provenance restore untested")
 	}
-	if e.ForkedFrom == "" {
-		t.Errorf("forkedFrom empty after --fork --migrate — lineage erased (#243)")
+	if e.Provenance == nil || e.Provenance.ForkedFrom == "" {
+		t.Errorf("provenance.forkedFrom empty after --fork --migrate — lineage erased (#243)")
 	}
-	if e.SourceUpstream == "" {
-		t.Errorf("sourceUpstream empty after --fork --migrate (#243)")
+	if e.Provenance == nil || e.Provenance.Upstream == "" {
+		t.Errorf("provenance.upstream empty after --fork --migrate (#243)")
 	}
-	if e.Verification == nil || e.Verification.Scan == nil {
-		t.Fatalf("verification.scan missing after tagged publish — provenance shows 'not recorded' (#243); entry: %+v", e)
+	if e.Scan == nil {
+		t.Fatalf("scan missing after tagged publish — provenance shows 'not recorded' (#243); entry: %+v", e)
 	}
-	if e.Verification.Scan.Decision != "allowed" {
-		t.Errorf("scan decision = %q, want allowed", e.Verification.Scan.Decision)
+	if e.Scan.Decision != "allowed" {
+		t.Errorf("scan decision = %q, want allowed", e.Scan.Decision)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestPublish_SameRegistryTag_KeepsScanRecord(t *testing.T) {
 	if e.IsEdit() {
 		t.Errorf("entry still in edit mode — auto-uneject did not run")
 	}
-	if e.Verification == nil || e.Verification.Scan == nil {
-		t.Fatalf("verification.scan missing after tagged publish (#243); entry: %+v", e)
+	if e.Scan == nil {
+		t.Fatalf("scan missing after tagged publish (#243); entry: %+v", e)
 	}
 }

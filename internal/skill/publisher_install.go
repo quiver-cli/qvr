@@ -336,10 +336,7 @@ func computeForkedFrom(req PublishInstalledRequest, e *model.LockEntry) string {
 	if req.ForkURL == "" {
 		return ""
 	}
-	upstream := e.SourceUpstream
-	if upstream == "" {
-		upstream = e.Source
-	}
+	upstream := e.UpstreamSource()
 	short := e.Commit
 	if len(short) > 7 {
 		short = short[:7]
@@ -630,14 +627,16 @@ func commitPublishStage(stagedRepo *gogit.Repository, stagedWt *gogit.Worktree, 
 
 // finalizePublishedEntry mutates the lock entry in place after a successful
 // push: Commit advances to the eject dir's HEAD, --fork --migrate flips
-// Source/SourceUpstream/Registry/ForkedFrom, and SubtreeHash is recomputed.
+// Source/Registry and records the upstream + forkedFrom lineage in the
+// provenance block, and SubtreeHash is recomputed.
 func finalizePublishedEntry(e *model.LockEntry, req PublishInstalledRequest, editAbs, forkedFromValue string) {
 	if head, hErr := readRepoHead(editAbs); hErr == nil && head != "" {
 		e.Commit = head
 	}
 	if req.ForkURL != "" && req.Migrate {
-		if e.SourceUpstream == "" {
-			e.SourceUpstream = e.Source
+		p := e.EnsureProvenance()
+		if p.Upstream == "" {
+			p.Upstream = e.Source
 		}
 		e.Source = req.ForkURL
 		e.Registry = ""
@@ -646,7 +645,7 @@ func finalizePublishedEntry(e *model.LockEntry, req PublishInstalledRequest, edi
 		// captures "this fork was based on <upstream>@<sha>" — read at
 		// trust-policy time in v0.9.
 		if forkedFromValue != "" {
-			e.ForkedFrom = forkedFromValue
+			p.ForkedFrom = forkedFromValue
 		}
 	}
 	if h, hErr := canonical.HashSubtreeFromDisk(editAbs); hErr == nil {

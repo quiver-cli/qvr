@@ -117,9 +117,9 @@ func buildProvenanceView(entry *model.LockEntry) *provenanceView {
 		v.SignatureStatus = model.SignatureStatusNone
 	}
 
-	if entry.Verification != nil && entry.Verification.Scan != nil {
-		v.ScanDecision = entry.Verification.Scan.Decision
-		v.ScannerVersion = entry.Verification.Scan.ScannerVersion
+	if entry.Scan != nil {
+		v.ScanDecision = entry.Scan.Decision
+		v.ScannerVersion = entry.Scan.ScannerVersion
 	}
 
 	v.Status = provenanceStatus(v)
@@ -127,11 +127,13 @@ func buildProvenanceView(entry *model.LockEntry) *provenanceView {
 }
 
 // provenanceFor returns the recorded provenance block, or computes one live
-// from the installed worktree when none was recorded. Live checks are skipped
-// for link/edit installs, which have no upstream git revision to verify.
+// from the installed worktree when no signature status was recorded (a block
+// holding only the commit author means the signature was never checked).
+// Live checks are skipped for link/edit installs, which have no upstream git
+// revision to verify.
 func provenanceFor(entry *model.LockEntry) *model.ProvenanceRef {
-	if entry.Verification != nil && entry.Verification.Provenance != nil {
-		return entry.Verification.Provenance
+	if entry.SignatureStatus() != "" {
+		return entry.Provenance
 	}
 	if entry.IsLink() || entry.IsEdit() {
 		return nil
@@ -166,8 +168,8 @@ func provenanceStatus(v *provenanceView) string {
 // without a live Git check (cheap — for table columns in list/outdated).
 // Defaults to "none" when no provenance was recorded.
 func recordedSigStatus(e *model.LockEntry) string {
-	if e != nil && e.Verification != nil && e.Verification.Provenance != nil {
-		return e.Verification.Provenance.SignatureStatus
+	if s := e.SignatureStatus(); s != "" {
+		return s
 	}
 	return model.SignatureStatusNone
 }

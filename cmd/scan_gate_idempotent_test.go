@@ -39,7 +39,7 @@ func TestHashScanResult_deterministic(t *testing.T) {
 // a "skipped" sentinel block in the lockfile so downstream attestation
 // pipelines can distinguish "scanned and clean" from "scan was skipped".
 // Previously the gate emitted nil and the lockfile entry had no
-// verification block at all — indistinguishable from a clean scan when
+// scan block at all — indistinguishable from a clean scan when
 // scan_on_install was off.
 func TestToScanRef_sentinelOnNoScan(t *testing.T) {
 	gate := &scanGateResult{
@@ -81,19 +81,17 @@ func TestToScanRef_nilWhenConfigDisabled(t *testing.T) {
 func TestApplyScanToEntry_clearsStaleBlockOnNoSignal(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "foo",
-		Verification: &model.VerificationRecord{
-			Scan: &model.ScanRef{
-				ReportSHA:      "sha256:stale-from-previous-commit",
-				ScannerVersion: "0.6.1",
-				Decision:       "allowed",
-			},
+		Scan: &model.ScanRef{
+			ReportSHA:      "sha256:stale-from-previous-commit",
+			ScannerVersion: "0.6.1",
+			Decision:       "allowed",
 		},
 	}
 	// Gate produced no signal — config has scan_on_install off, or skill
 	// failed to load. Stale block must be cleared.
 	applyScanToEntry(entry, &scanGateResult{Skipped: true, DisabledByFlag: false})
-	if entry.Verification != nil && entry.Verification.Scan != nil {
-		t.Errorf("expected nil scan block, got %+v", entry.Verification.Scan)
+	if entry.Scan != nil {
+		t.Errorf("expected nil scan block, got %+v", entry.Scan)
 	}
 }
 
@@ -104,21 +102,19 @@ func TestApplyScanToEntry_clearsStaleBlockOnNoSignal(t *testing.T) {
 func TestApplyScanToEntry_writesSentinelOnNoScan(t *testing.T) {
 	entry := &model.LockEntry{
 		Name: "foo",
-		Verification: &model.VerificationRecord{
-			Scan: &model.ScanRef{
-				ReportSHA: "sha256:stale-from-previous-commit",
-				Decision:  "allowed",
-			},
+		Scan: &model.ScanRef{
+			ReportSHA: "sha256:stale-from-previous-commit",
+			Decision:  "allowed",
 		},
 	}
 	applyScanToEntry(entry, &scanGateResult{Skipped: true, DisabledByFlag: true})
-	if entry.Verification == nil || entry.Verification.Scan == nil {
+	if entry.Scan == nil {
 		t.Fatal("--no-scan publish should keep a sentinel scan block")
 	}
-	if entry.Verification.Scan.Decision != "skipped" {
-		t.Errorf("Decision = %q, want %q", entry.Verification.Scan.Decision, "skipped")
+	if entry.Scan.Decision != "skipped" {
+		t.Errorf("Decision = %q, want %q", entry.Scan.Decision, "skipped")
 	}
-	if entry.Verification.Scan.ReportSHA != "" {
-		t.Errorf("sentinel must not carry the stale ReportSHA, got %q", entry.Verification.Scan.ReportSHA)
+	if entry.Scan.ReportSHA != "" {
+		t.Errorf("sentinel must not carry the stale ReportSHA, got %q", entry.Scan.ReportSHA)
 	}
 }

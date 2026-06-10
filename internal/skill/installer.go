@@ -61,7 +61,7 @@ type InstallRequest struct {
 	Force       bool   // allow overwriting an existing lock entry of the same name
 	// Frozen pins installs to the lockfile's recorded state. The skill must
 	// already have an entry; its Branch is reused and the computed subtree
-	// hash must match the recorded VerificationRecord.SubtreeHash. Drift or
+	// hash must match the recorded LockEntry.SubtreeHash. Drift or
 	// missing entries are hard errors.
 	Frozen bool
 	// PinCommit materializes the worktree at this exact commit SHA instead of
@@ -211,7 +211,7 @@ func (in *Installer) Install(req InstallRequest) (*InstallResult, error) {
 // lock loaded via model.ReadLockFile, and call lock.Write() once after all
 // installs in the batch complete. Mutations land via lock.Put on the shared
 // in-memory map, so later skills in the same batch observe earlier ones (the
-// same-commit priorVerification preservation and alias handling rely on this).
+// same-commit scan/provenance preservation and alias handling rely on this).
 // On any error the lock is left unwritten; the caller decides whether to write
 // the partial batch or discard it.
 func (in *Installer) InstallInto(req InstallRequest, lock *model.LockFile) (*InstallResult, error) {
@@ -495,10 +495,10 @@ func (in *Installer) linkInstallTargets(req InstallRequest, plan *installPlan, s
 }
 
 // buildLockEntry assembles the in-memory lock entry for the install: it merges
-// targets with any existing entry (preserving a prior Verification on a
-// same-commit no-op — issue #77), resolves the subtree identity, folds in the
-// freshly-computed provenance, and enforces the --frozen drift check. Returns
-// the merged targets and the entry to Put.
+// targets with any existing entry (preserving prior scan/provenance signals on
+// a same-commit no-op — issue #77), resolves the subtree identity, folds in
+// the freshly-computed provenance, and enforces the --frozen drift check.
+// Returns the merged targets and the entry to Put.
 func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock *model.LockFile, commit, commitAuthor string, provenance *model.ProvenanceRef) ([]string, *model.LockEntry, error) {
 	loc := plan.loc
 	localName := plan.localName
@@ -511,17 +511,19 @@ func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock 
 	// still usable and a subsequent install will reconcile state. The caller
 	// persists the lock once after the batch (see InstallInto's contract).
 	targets := req.Targets
-	var priorVerification *model.VerificationRecord
+	var priorScan *model.ScanRef
+	var priorProvenance *model.ProvenanceRef
 	if existing, err := lock.Get(localName); err == nil {
 		targets = mergeTargets(existing.Targets, req.Targets)
-		// Preserve the prior Verification when the install is a no-op
-		// (same commit). Without this, a re-add wipes the scan attestation
-		// before the gate rewrites it — even when the new SHA matches, the
-		// intermediate "no verification" lockfile state churns concurrent
-		// readers, and any code path that doesn't re-run the gate would
-		// permanently lose the prior signal. Issue #77.
-		if existing.Commit == commit && existing.Verification != nil {
-			priorVerification = existing.Verification
+		// Preserve the prior scan/provenance signals when the install is a
+		// no-op (same commit). Without this, a re-add wipes the scan
+		// attestation before the gate rewrites it — even when the new SHA
+		// matches, the intermediate "no signal" lockfile state churns
+		// concurrent readers, and any code path that doesn't re-run the
+		// gate would permanently lose the prior signal. Issue #77.
+		if existing.Commit == commit {
+			priorScan = existing.Scan
+			priorProvenance = existing.Provenance
 		}
 	}
 	// Resolve the subtree identity. The canonical hash of an immutable git
@@ -544,17 +546,6 @@ func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock 
 	// the missing seal.
 	subtreeHash, treeOID := subtreeIdentity(loc.RepoPath, commit, loc.Entry.Path, rootCoexists, !req.Frozen)
 
-	// Merge the freshly-computed provenance into the verification record,
-	// preserving any prior signal (e.g. a scan attestation) carried over from
-	// a same-commit no-op re-add.
-	verification := priorVerification
-	if provenance != nil {
-		if verification == nil {
-			verification = &model.VerificationRecord{}
-		}
-		verification.Provenance = provenance
-	}
-
 	entry := &model.LockEntry{
 		Name:          localName,
 		Registry:      loc.RegistryName,
@@ -564,11 +555,11 @@ func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock 
 		Ref:           version,
 		Commit:        commit,
 		InstallCommit: commit,
-		CommitAuthor:  commitAuthor,
 		SubtreeHash:   subtreeHash,
 		TreeOID:       treeOID,
 		Targets:       targets,
-		Verification:  verification,
+		Scan:          priorScan,
+		Provenance:    mergeProvenance(priorProvenance, provenance, commitAuthor),
 	}
 	// Record the canonical (registry-side) skill name when the user
 	// installed under an alias, so `qvr list` / `qvr upgrade` can map
@@ -590,6 +581,28 @@ func (in *Installer) buildLockEntry(req InstallRequest, plan *installPlan, lock 
 	}
 
 	return targets, entry, nil
+}
+
+// mergeProvenance folds the freshly-computed signature check and commit
+// author into the provenance carried over from a same-commit no-op re-add.
+// Fresh signals win; lineage markers (upstream, forkedFrom) survive from the
+// prior block. Returns nil when there is nothing to record so the block
+// stays omitted from the lock.
+func mergeProvenance(prior, fresh *model.ProvenanceRef, commitAuthor string) *model.ProvenanceRef {
+	var merged model.ProvenanceRef
+	if prior != nil {
+		merged = *prior
+	}
+	if fresh != nil {
+		merged.Tag = fresh.Tag
+		merged.SignatureStatus = fresh.SignatureStatus
+		merged.Signer = fresh.Signer
+	}
+	merged.CommitAuthor = commitAuthor
+	if merged.IsEmpty() {
+		return nil
+	}
+	return &merged
 }
 
 // resolveSkill picks the SkillLocation for a (name, version, registry) tuple

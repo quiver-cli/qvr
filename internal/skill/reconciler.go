@@ -116,7 +116,7 @@ func (r *Reconciler) restoreFromLock(lock *model.LockFile, projectRoot string, g
 			editDir := EffectiveTarget(entry, projectRoot)
 			if _, err := os.Stat(editDir); err != nil {
 				res.Errors = append(res.Errors, fmt.Sprintf("%s: edit dir %s missing — re-run `qvr edit %s` to re-materialize from %s@%s",
-					entry.Name, editDir, entry.Name, entry.SourceUpstream, shortHashOrFull(entry.InstallCommit)))
+					entry.Name, editDir, entry.Name, entry.UpstreamSource(), shortHashOrFull(entry.InstallCommit)))
 				continue
 			}
 			if err := r.fixSymlinks(entry, projectRoot, global, opts, res); err != nil {

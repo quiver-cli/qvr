@@ -596,7 +596,7 @@ func autoUnejectAfterPublish(cmd *cobra.Command, name, projectRoot, lockPath str
 // which wrote a brand-new entry from the registry install path — and restores
 // the provenance + scan attestation the publish just established (#243).
 // Without this, the one operation sold on preserving lineage (--fork
-// --migrate) erased ForkedFrom/SourceUpstream, and every tagged publish
+// --migrate) erased provenance.forkedFrom/upstream, and every tagged publish
 // dropped the gate's scan record (provenance flipped to "Scan: not recorded").
 // The gate scanned the edit dir whose bytes are exactly the published (and
 // re-installed) tree, so re-applying its ScanRef attributes the right content.
@@ -615,20 +615,21 @@ func restoreUnejectProvenance(lockPath, name string, prior *model.LockEntry, gat
 		return
 	}
 	changed := false
-	if fresh.ForkedFrom == "" && prior.ForkedFrom != "" {
-		fresh.ForkedFrom = prior.ForkedFrom
-		changed = true
+	if prior.Provenance != nil {
+		p := fresh.EnsureProvenance()
+		if p.ForkedFrom == "" && prior.Provenance.ForkedFrom != "" {
+			p.ForkedFrom = prior.Provenance.ForkedFrom
+			changed = true
+		}
+		if p.Upstream == "" && prior.Provenance.Upstream != "" {
+			p.Upstream = prior.Provenance.Upstream
+			changed = true
+		}
+		fresh.NormalizeProvenance()
 	}
-	if fresh.SourceUpstream == "" && prior.SourceUpstream != "" {
-		fresh.SourceUpstream = prior.SourceUpstream
-		changed = true
-	}
-	if fresh.Verification == nil || fresh.Verification.Scan == nil {
+	if fresh.Scan == nil {
 		if scan := toScanRef(gate); scan != nil {
-			if fresh.Verification == nil {
-				fresh.Verification = &model.VerificationRecord{}
-			}
-			fresh.Verification.Scan = scan
+			fresh.Scan = scan
 			changed = true
 		}
 	}

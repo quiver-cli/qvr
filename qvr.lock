@@ -1,242 +1,113 @@
-version = 5
+version = 6
 
-[skills]
-[skills.create-readme]
+[[skill]]
+name = 'create-readme'
 registry = 'github/awesome-copilot'
 source = 'https://github.com/github/awesome-copilot.git'
 path = 'skills/create-readme'
 ref = 'main'
 commit = '07b34ec9cf66c55c1deae1f1ac7248dca6d3fa9e'
-installCommit = '07b34ec9cf66c55c1deae1f1ac7248dca6d3fa9e'
-commitAuthor = 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
 subtreeHash = 'sha256:c1bd300b8d2b2d16e3eece70840222127fd2fdefb359ca2fab17c465c5407d28'
 treeOID = 'f65537a3461b663121fe195697979c17a8004ea5'
 targets = ['claude']
 installedAt = 2026-06-06T05:49:41.276013Z
+scan = {reportSHA = 'sha256:8e861d1c0c08bc27596a10dcfb4b644e044073e1fc760b047f09e143e872b6ea', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>', signatureStatus = 'none'}
 
-[skills.create-readme.verification]
-[skills.create-readme.verification.scan]
-reportSHA = 'sha256:8e861d1c0c08bc27596a10dcfb4b644e044073e1fc760b047f09e143e872b6ea'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.create-readme.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.create-readme.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.diagnose]
+[[skill]]
+name = 'diagnose'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/diagnose'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:47b6d191b566070a0c492be41df6fecfdea7dcfcbd0c0ea400402cccd59c4428'
 treeOID = '43d464d0e9d1049b9d525975c0f7367ab7e01a5f'
 targets = ['claude']
 installedAt = 2026-06-09T20:07:35.743163Z
+scan = {reportSHA = 'sha256:06611b93d0c4703352485b2036a684b275175b4820e0e6011d3d6495c57b864c', scannerVersion = '0.7.0', counts = {critical = 0, high = 3, medium = 1, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
 
-[skills.diagnose.verification]
-[skills.diagnose.verification.scan]
-reportSHA = 'sha256:06611b93d0c4703352485b2036a684b275175b4820e0e6011d3d6495c57b864c'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.diagnose.verification.scan.counts]
-critical = 0
-high = 3
-medium = 1
-low = 0
-info = 0
-
-[skills.diagnose.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.frontend-design]
+[[skill]]
+name = 'frontend-design'
 registry = 'anthropics/skills'
 source = 'https://github.com/anthropics/skills.git'
 path = 'skills/frontend-design'
 ref = 'main'
 commit = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'
-installCommit = 'da20c92503b2e8ff1cf28ca81a0df4673debdbf7'
-commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>'
 subtreeHash = 'sha256:21dce9699042cfdbff0ba122d1ecf9fe95583e53c7d42b790c550ca9279f0d43'
 treeOID = '928950704df8a8b885c03de5da626331e6f29cf8'
 targets = ['claude']
 installedAt = 2026-06-03T13:03:00.652324Z
+scan = {reportSHA = 'sha256:7c2ab91df883d443d31b0702a060981c1b471e56a37ef433343c5423b697f94c', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>', signatureStatus = 'none'}
 
-[skills.frontend-design.verification]
-[skills.frontend-design.verification.scan]
-reportSHA = 'sha256:7c2ab91df883d443d31b0702a060981c1b471e56a37ef433343c5423b697f94c'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.frontend-design.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.frontend-design.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.grill-with-docs]
+[[skill]]
+name = 'grill-with-docs'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/grill-with-docs'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:5d425aad4043d23fdc1dee8447f00e9b12af3e7b87392453c694a9e6f565d2e5'
 treeOID = '2c3a4e48571bfe42203ed7b49cae85f31ef4b6f2'
 targets = ['claude']
 installedAt = 2026-06-09T20:07:35.762384Z
+scan = {reportSHA = 'sha256:e54773522600c328903f041efd202b20a3e80673dec5a807ce16f50d18cf76dd', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
 
-[skills.grill-with-docs.verification]
-[skills.grill-with-docs.verification.scan]
-reportSHA = 'sha256:e54773522600c328903f041efd202b20a3e80673dec5a807ce16f50d18cf76dd'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.grill-with-docs.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.grill-with-docs.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.improve-codebase-architecture]
+[[skill]]
+name = 'improve-codebase-architecture'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/improve-codebase-architecture'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:c3ae4d9af8afb2d4a58e84e46bd5b32b3acb98cee74e060140e3215f2d9c9803'
 treeOID = '688c17ec27fe9309d84987716aca37b5ce7f3a88'
 targets = ['claude']
 installedAt = 2026-06-09T20:08:24.403325Z
+scan = {reportSHA = 'sha256:9731f365fd9547a5777a48e2e0c006fb1724442fd1a41fd4366ee8da040107fd', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
 
-[skills.improve-codebase-architecture.verification]
-[skills.improve-codebase-architecture.verification.scan]
-reportSHA = 'sha256:9731f365fd9547a5777a48e2e0c006fb1724442fd1a41fd4366ee8da040107fd'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.improve-codebase-architecture.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.improve-codebase-architecture.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.tdd]
+[[skill]]
+name = 'tdd'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/tdd'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:577c97f1c6b6e5f304d62fc945ea2b736b58b4ba4b016a01b9265c7b2b61cf6e'
 treeOID = '75beb3030b4c979205dd771ff85ac600baeb68f4'
 targets = ['claude']
 installedAt = 2026-06-09T20:08:24.450872Z
+scan = {reportSHA = 'sha256:b172683cd763f84ff3d8bd408c4818413272ea887fbd7c021d50004b46018a39', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 1}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
 
-[skills.tdd.verification]
-[skills.tdd.verification.scan]
-reportSHA = 'sha256:b172683cd763f84ff3d8bd408c4818413272ea887fbd7c021d50004b46018a39'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.tdd.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 1
-
-[skills.tdd.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.triage]
+[[skill]]
+name = 'triage'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/triage'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:930e92126f794b099e49ea6a79dc05c040a26ddfeb8d8b27ed2917df39237bc3'
 treeOID = 'de4f182c30876a2460ca307e2f601b9b892527e5'
 targets = ['claude']
 installedAt = 2026-06-09T20:08:24.47Z
+scan = {reportSHA = 'sha256:e5be9bf6044c8ca775567cff7d98a5ea981e7ed33a744305f0bdd1fcbb85171c', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
 
-[skills.triage.verification]
-[skills.triage.verification.scan]
-reportSHA = 'sha256:e5be9bf6044c8ca775567cff7d98a5ea981e7ed33a744305f0bdd1fcbb85171c'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.triage.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.triage.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
-
-[skills.zoom-out]
+[[skill]]
+name = 'zoom-out'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
 path = 'skills/engineering/zoom-out'
 ref = 'main'
 commit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-installCommit = 'e3d8b735ef92ec9554b07f11f408089d81289eed'
-commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>'
 subtreeHash = 'sha256:5112a2c02f4d06f27c0bd8183312400c8ae444bb699ec60ac9a2aaf64ecf88a7'
 treeOID = '6ecebabdea814d12888f56a611da7bf182b5fb26'
 targets = ['claude']
 installedAt = 2026-06-09T20:08:24.502501Z
-
-[skills.zoom-out.verification]
-[skills.zoom-out.verification.scan]
-reportSHA = 'sha256:2d32aba3d6f588b316bf8bc8757b49a8ad54a666aad7badad3a1553fb7799439'
-scannerVersion = '0.7.0'
-decision = 'allowed'
-
-[skills.zoom-out.verification.scan.counts]
-critical = 0
-high = 0
-medium = 0
-low = 0
-info = 0
-
-[skills.zoom-out.verification.provenance]
-provider = 'git'
-signatureStatus = 'none'
+scan = {reportSHA = 'sha256:2d32aba3d6f588b316bf8bc8757b49a8ad54a666aad7badad3a1553fb7799439', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 0, low = 0, info = 0}, decision = 'allowed'}
+provenance = {commitAuthor = 'Matt Pocock <mattpocockvoice@gmail.com>', signatureStatus = 'none'}
