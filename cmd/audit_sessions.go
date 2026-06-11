@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/astra-sh/qvr/internal/config"
+	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/ops/store"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -18,16 +21,17 @@ var (
 var auditSessionsCmd = &cobra.Command{
 	Use:   "sessions [show <id>]",
 	Short: "List recorded agent sessions",
-	Long: `Lists agent sessions newest-first with per-session row counts derived
-from captured raw traces. Use 'qvr audit sessions show <id>' to print one
-session's verbatim raw lines (equivalent to 'qvr audit raw --session <id>').`,
+	Long: `Lists recorded agent sessions newest-first from the unified session model
+(title, model, turn/tool counts, skills used). Use 'qvr audit sessions show
+<id>' to print one session's verbatim raw lines (equivalent to
+'qvr audit raw --session <id>').`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runAuditSessions,
 }
 
 func init() {
 	auditSessionsCmd.Flags().StringVar(&sessionsSince, "since", "", "only sessions started since this time (e.g. 7d, 24h, or RFC3339)")
-	auditSessionsCmd.Flags().StringVar(&sessionsAgent, "agent", "", "filter by agent name (e.g. claude-code, codex)")
+	auditSessionsCmd.Flags().StringVar(&sessionsAgent, "agent", "", "filter by agent name (e.g. claude, codex)")
 	auditSessionsCmd.Flags().IntVar(&sessionsLimit, "limit", 50, "maximum sessions to show (0 = no limit)")
 	auditCmd.AddCommand(auditSessionsCmd)
 }
@@ -62,7 +66,7 @@ func runAuditSessions(cmd *cobra.Command, args []string) error {
 	}
 	defer s.Close()
 
-	f := &store.RawSessionFilter{Agent: sessionsAgent, Limit: sessionsLimit}
+	f := &store.SessionMetaFilter{Agent: canonicalAgentFlag(sessionsAgent), Limit: sessionsLimit}
 	if sessionsSince != "" {
 		t, perr := parseTimeFlag(sessionsSince)
 		if perr != nil {
@@ -71,7 +75,7 @@ func runAuditSessions(cmd *cobra.Command, args []string) error {
 		f.Since = &t
 	}
 
-	sessions, err := s.ListRawSessions(cmd.Context(), f)
+	sessions, err := s.ListSessionMeta(cmd.Context(), f)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -80,7 +84,7 @@ func runAuditSessions(cmd *cobra.Command, args []string) error {
 }
 
 // renderSessions emits the session list as JSON or a newest-first table.
-func renderSessions(sessions []*store.RawSession) error {
+func renderSessions(sessions []*store.SessionMetaRow) error {
 	if outputFormat == "json" {
 		if len(sessions) == 0 {
 			return printer.JSON([]any{})
@@ -91,20 +95,42 @@ func renderSessions(sessions []*store.RawSession) error {
 		printer.Info("No sessions recorded yet")
 		return nil
 	}
-	headers := []string{"STARTED", "AGENT", "LINES", "HOOKS", "ROWS", "SESSION ID"}
+	headers := []string{"STARTED", "AGENT", "TITLE", "TURNS", "TOOLS", "SKILLS", "SESSION ID"}
 	rows := make([][]string, 0, len(sessions))
 	for _, sess := range sessions {
 		rows = append(rows, []string{
-			sess.StartedAt.Local().Format("01-02 15:04"),
+			time.UnixMilli(sess.StartedMs).Local().Format("01-02 15:04"),
 			sess.AgentName,
-			fmt.Sprintf("%d", sess.TranscriptLines),
-			fmt.Sprintf("%d", sess.HookPayloads),
-			fmt.Sprintf("%d", sess.TotalRows),
+			clipCell(sess.Title, 48),
+			fmt.Sprintf("%d", sess.Turns),
+			fmt.Sprintf("%d", sess.Tools),
+			strings.Join(sess.Skills, ","),
 			sess.SessionID.String(),
 		})
 	}
 	printer.Table(headers, rows)
 	return nil
+}
+
+// clipCell truncates a table cell to n runes with an ellipsis.
+func clipCell(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// canonicalAgentFlag normalizes a user-supplied agent name/alias to its
+// canonical target name, so filters match the stored unified model.
+func canonicalAgentFlag(name string) string {
+	if name == "" {
+		return ""
+	}
+	if c, ok := model.CanonicalTarget(name); ok {
+		return c
+	}
+	return name
 }
 
 // showSession prints one session's verbatim raw lines.

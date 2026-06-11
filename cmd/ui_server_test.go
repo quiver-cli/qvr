@@ -73,7 +73,7 @@ func seedUIEnv(t *testing.T, withStore bool) (projectRoot string, sessionID uuid
 	// Skill-bearing so the UI's SkillsOnly filter surfaces it. Uses a different
 	// skill than addSkillSession's "code-review" so the per-skill filter tests
 	// stay unambiguous.
-	seedRawSession(t, st, sessionID, projectRoot, "claude-code", "code-reviewer")
+	seedRawSession(t, st, sessionID, projectRoot, "claude", "code-reviewer")
 	if err := st.Close(); err != nil {
 		t.Fatalf("close seed store: %v", err)
 	}
@@ -103,13 +103,16 @@ func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDi
 	if err := st.AppendRawTraces(ctx, rows, nil); err != nil {
 		t.Fatalf("seed raw traces: %v", err)
 	}
-	spans, _ := derive.DeriveSession(rows)
-	srows := make([]*store.SpanRow, 0, len(spans)+len(skills))
-	for _, sp := range spans {
+	d, err := derive.DeriveSession(rows)
+	if err != nil || d == nil {
+		t.Fatalf("DeriveSession: %v", err)
+	}
+	srows := make([]*store.SpanRow, 0, len(d.Spans)+len(skills))
+	for _, sp := range d.Spans {
 		attrs, _ := json.Marshal(sp.Attributes)
 		srows = append(srows, &store.SpanRow{
 			SpanID: sp.SpanID, TraceID: sp.TraceID, ParentSpanID: sp.ParentSpanID,
-			SessionID: sessionID, AgentName: agent, Kind: sp.Kind, Name: sp.Name,
+			SessionID: sessionID, AgentName: d.Meta.Agent, Kind: sp.Kind, Name: sp.Name,
 			StartMs: sp.StartMs, EndMs: sp.EndMs, Attributes: string(attrs),
 			DeriverVersion: derive.Version,
 		})
@@ -118,13 +121,27 @@ func seedRawSession(t *testing.T, st store.Store, sessionID uuid.UUID, workingDi
 		attrs, _ := json.Marshal(map[string]any{"skill.name": sk})
 		srows = append(srows, &store.SpanRow{
 			SpanID: fmt.Sprintf("skillspan-%s-%d", sessionID, i), TraceID: "tr",
-			SessionID: sessionID, AgentName: agent, Kind: "SKILL",
+			SessionID: sessionID, AgentName: d.Meta.Agent, Kind: "SKILL",
 			Name: "execute_tool", StartMs: 1, EndMs: 2,
 			Attributes: string(attrs), DeriverVersion: derive.Version,
 		})
 	}
-	if err := st.ReplaceSessionSpans(ctx, sessionID, srows); err != nil {
-		t.Fatalf("seed spans: %v", err)
+	meta := &store.SessionMetaRow{
+		SessionID:       sessionID,
+		AgentName:       d.Meta.Agent,
+		SourceSessionID: d.Meta.SourceSessionID,
+		WorkingDir:      workingDir,
+		Model:           d.Meta.Model,
+		Title:           d.Meta.Title,
+		StartedMs:       d.Meta.StartedMs,
+		EndedMs:         d.Meta.EndedMs,
+		Turns:           d.Meta.Turns,
+		Tools:           d.Meta.Tools,
+		Skills:          skills,
+		DeriverVersion:  derive.Version,
+	}
+	if err := st.ReplaceSessionDerivation(ctx, meta, srows); err != nil {
+		t.Fatalf("seed derivation: %v", err)
 	}
 }
 
@@ -197,13 +214,13 @@ func TestUI_Sessions(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var sessions []*store.RawSession
+	var sessions []*store.SessionMetaRow
 	mustJSON(t, rec, &sessions)
 	if len(sessions) < 1 {
 		t.Fatalf("sessions empty, want >=1")
 	}
-	if sessions[0].AgentName != "claude-code" {
-		t.Errorf("agent = %q, want claude-code", sessions[0].AgentName)
+	if sessions[0].AgentName != "claude" {
+		t.Errorf("agent = %q, want claude", sessions[0].AgentName)
 	}
 	// The session is named by its first prompt (seeded as "hi"), not its agent.
 	if sessions[0].Title != "hi" {
@@ -389,7 +406,7 @@ func TestUI_DBAbsentDegrades(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("sessions status = %d, want 200", rec.Code)
 	}
-	var sessions []*store.RawSession
+	var sessions []*store.SessionMetaRow
 	mustJSON(t, rec, &sessions)
 	if len(sessions) != 0 {
 		t.Errorf("sessions = %d, want 0", len(sessions))
@@ -432,7 +449,7 @@ func addSession(t *testing.T, workingDir, agentSessionID string) {
 		t.Fatalf("open store: %v", err)
 	}
 	defer func() { _ = st.Close() }()
-	seedRawSession(t, st, uuid.NewSHA1(uuid.NameSpaceOID, []byte(agentSessionID)), workingDir, "claude-code")
+	seedRawSession(t, st, uuid.NewSHA1(uuid.NameSpaceOID, []byte(agentSessionID)), workingDir, "claude")
 }
 
 // insertRawSession writes a raw_traces row with a non-UUID session id, for the
@@ -508,7 +525,7 @@ func TestUI_AuditScope(t *testing.T) {
 	}
 
 	// The Sessions list endpoint must rescope identically to the overview count.
-	var projList []*store.RawSession
+	var projList []*store.SessionMetaRow
 	mustJSON(t, do(t, newUITestServerScoped(t, root, false, false), http.MethodGet, "/api/sessions"), &projList)
 	if len(projList) != 1 {
 		t.Errorf("project sessions list = %d, want 1", len(projList))
@@ -527,7 +544,7 @@ func TestUI_SessionsMalformedID(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (one bad row must not fail the list); body: %s",
 			rec.Code, rec.Body.String())
 	}
-	var sessions []*store.RawSession
+	var sessions []*store.SessionMetaRow
 	mustJSON(t, rec, &sessions)
 	// The malformed row is skipped; the good one survives.
 	if len(sessions) != 1 {
@@ -554,12 +571,17 @@ func addSkillSession(t *testing.T, workingDir string) {
 		t.Fatalf("seed raw: %v", err)
 	}
 	attrs, _ := json.Marshal(map[string]any{"skill.name": "code-review"})
-	if err := st.ReplaceSessionSpans(ctx, id, []*store.SpanRow{{
+	meta := &store.SessionMetaRow{
+		SessionID: id, AgentName: "codex", WorkingDir: workingDir,
+		Title: "review", StartedMs: 1, EndedMs: 2,
+		Skills: []string{"code-review"}, DeriverVersion: derive.Version,
+	}
+	if err := st.ReplaceSessionDerivation(ctx, meta, []*store.SpanRow{{
 		SpanID: "skillspan", TraceID: "tr", SessionID: id, AgentName: "codex",
 		Kind: "SKILL", Name: "execute_tool exec_command", StartMs: 1, EndMs: 2,
 		Attributes: string(attrs), DeriverVersion: derive.Version,
 	}}); err != nil {
-		t.Fatalf("seed span: %v", err)
+		t.Fatalf("seed derivation: %v", err)
 	}
 }
 
@@ -570,21 +592,21 @@ func TestUI_SessionsFilters(t *testing.T) {
 	addSkillSession(t, root)      // one codex session that used code-review
 	h := newUITestServer(t, root)
 
-	var all []*store.RawSession
+	var all []*store.SessionMetaRow
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions"), &all)
 	if len(all) != 2 {
 		t.Fatalf("unfiltered sessions = %d, want 2", len(all))
 	}
 
 	// Harness filter narrows to the codex session.
-	var codexOnly []*store.RawSession
+	var codexOnly []*store.SessionMetaRow
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions?agent=codex"), &codexOnly)
 	if len(codexOnly) != 1 || codexOnly[0].AgentName != "codex" {
 		t.Errorf("agent filter = %+v, want one codex session", codexOnly)
 	}
 
 	// Skill filter narrows to the skill-using session, with skills populated.
-	var skillOnly []*store.RawSession
+	var skillOnly []*store.SessionMetaRow
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions?skill=code-review"), &skillOnly)
 	if len(skillOnly) != 1 {
 		t.Fatalf("skill filter = %d sessions, want 1", len(skillOnly))
@@ -594,7 +616,7 @@ func TestUI_SessionsFilters(t *testing.T) {
 	}
 
 	// A skill nobody used returns nothing.
-	var none []*store.RawSession
+	var none []*store.SessionMetaRow
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions?skill=nope"), &none)
 	if len(none) != 0 {
 		t.Errorf("unknown skill filter = %d, want 0", len(none))
@@ -613,16 +635,16 @@ func TestUI_SessionsExcludeSkilless(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	// A skill-less session in scope — present in the DB, must not surface.
-	seedRawSession(t, st, uuid.New(), root, "claude-code")
+	seedRawSession(t, st, uuid.New(), root, "claude")
 	// A multi-skill session in scope — surfaces, tagged with both skills.
 	multiID := uuid.New()
-	seedRawSession(t, st, multiID, root, "claude-code", "alpha-skill", "beta-skill")
+	seedRawSession(t, st, multiID, root, "claude", "alpha-skill", "beta-skill")
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
 
 	h := newUITestServer(t, root)
-	var sessions []*store.RawSession
+	var sessions []*store.SessionMetaRow
 	mustJSON(t, do(t, h, http.MethodGet, "/api/sessions"), &sessions)
 
 	// Exactly the two skill-bearing sessions (seedUIEnv's + the multi-skill one);
@@ -630,7 +652,7 @@ func TestUI_SessionsExcludeSkilless(t *testing.T) {
 	if len(sessions) != 2 {
 		t.Fatalf("sessions = %d, want 2 (skill-less hidden)", len(sessions))
 	}
-	var multi *store.RawSession
+	var multi *store.SessionMetaRow
 	for _, s := range sessions {
 		if s.SessionID == multiID {
 			multi = s
@@ -883,5 +905,85 @@ func TestUI_RegistrySkill_UnknownRegistry(t *testing.T) {
 	rec := do(t, h, http.MethodGet, "/api/registries/nope/skills/demo")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// TestUI_StaleLockDegrades pins the lenient-lock contract: a lock from an old
+// schema version must not take any dashboard page down — handlers answer 200
+// with the lock-derived panels empty, and the overview names the skipped lock
+// (carrying the regeneration hint) instead of surfacing a 500.
+func TestUI_StaleLockDegrades(t *testing.T) {
+	root, _ := seedUIEnv(t, true)
+	// Overwrite the project lock with an old-schema file the reader rejects.
+	if err := os.WriteFile(filepath.Join(root, "qvr.lock"),
+		[]byte("version = 5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newUITestServer(t, root)
+
+	rec := do(t, h, http.MethodGet, "/api/overview")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, want 200 despite stale lock", rec.Code)
+	}
+	var ov overviewResponse
+	mustJSON(t, rec, &ov)
+	if len(ov.LockWarnings) == 0 || !strings.Contains(ov.LockWarnings[0], "unsupported lock file version") {
+		t.Errorf("lock_warnings = %v, want the unreadable-lock reason surfaced", ov.LockWarnings)
+	}
+	if ov.Skills != 0 {
+		t.Errorf("skills = %d, want 0 (stale lock contributes nothing)", ov.Skills)
+	}
+	// Sessions don't need the lock; the audit panels must still be live.
+	if ov.Sessions < 1 || len(ov.RecentSessions) < 1 {
+		t.Errorf("sessions = %d / recent %d, want audit data despite stale lock", ov.Sessions, len(ov.RecentSessions))
+	}
+
+	// Every other lock-backed page degrades too, never 500s.
+	for _, path := range []string{"/api/skills", "/api/tree", "/api/provenance", "/api/scan", "/api/metrics/skills", "/api/metrics/deadweight"} {
+		if rec := do(t, h, http.MethodGet, path); rec.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want 200 despite stale lock", path, rec.Code)
+		}
+	}
+}
+
+// TestUI_GlobalScopeIsMachineView pins the machine-view semantics: global
+// scope unions the global lock with every project recorded in projects.json,
+// so the overview reflects everything on the machine — and a second project's
+// skills appear with their scope label.
+func TestUI_GlobalScopeIsMachineView(t *testing.T) {
+	root, _ := seedUIEnv(t, true) // launch project: 2 skills
+
+	// A second project, recorded in projects.json the way `qvr add` does.
+	other := t.TempDir()
+	otherLock := model.NewLockFile(filepath.Join(other, model.LockFileName))
+	otherLock.Put(&model.LockEntry{
+		Name: "other-skill", Registry: "acme", Source: "git@x:acme.git",
+		Ref: "v9", Commit: "ffff1111222", Targets: []string{"claude"},
+		InstalledAt: time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC),
+	})
+	if err := otherLock.Write(); err != nil {
+		t.Fatal(err)
+	}
+	registry.TouchProject(otherLock.Path())
+
+	h := newUITestServer(t, root)
+
+	var ov overviewResponse
+	mustJSON(t, do(t, h, http.MethodGet, "/api/overview?scope=global"), &ov)
+	if ov.Skills != 3 {
+		t.Errorf("global skills = %d, want 3 (2 launch-project + 1 recorded project)", ov.Skills)
+	}
+
+	var rows []scopedListEntry
+	mustJSON(t, do(t, h, http.MethodGet, "/api/skills?scope=global"), &rows)
+	scopes := map[string]string{}
+	for _, r := range rows {
+		scopes[r.Name] = r.Scope
+	}
+	if scopes["other-skill"] != filepath.Base(other) {
+		t.Errorf("other-skill scope = %q, want project dir label %q", scopes["other-skill"], filepath.Base(other))
+	}
+	if scopes["code-reviewer"] == "" {
+		t.Errorf("machine view rows should carry scope labels: %v", scopes)
 	}
 }

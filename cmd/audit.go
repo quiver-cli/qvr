@@ -3,41 +3,32 @@ package cmd
 import (
 	"context"
 	"os"
-	"time"
 
 	"github.com/astra-sh/qvr/internal/config"
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/store"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
-
-	// Side-effect imports: register the per-agent hook installers so the
-	// install/status tooling can see them.
-	_ "github.com/astra-sh/qvr/internal/ops/claudecode"
-	_ "github.com/astra-sh/qvr/internal/ops/codex"
-	_ "github.com/astra-sh/qvr/internal/ops/copilot"
-	_ "github.com/astra-sh/qvr/internal/ops/cursor"
-	_ "github.com/astra-sh/qvr/internal/ops/opencode"
 )
 
 // auditCmd is the parent for the SkillOps audit-trail surface: enabling
-// capture, wiring agent hooks, and querying the recorded events.
+// capture, importing agent session stores, and querying the recorded events.
 var auditCmd = &cobra.Command{
 	Use:   "audit",
 	Short: "[experimental] Record and query skill-attributed agent activity",
 	Long: `[EXPERIMENTAL] The audit subsystem is opt-in and its command surface,
 storage format, and output shapes may change without notice. It is disabled by
-default; nothing is captured until you run 'qvr audit enable' and wire an
-agent's hooks with 'qvr audit install-hooks'.
+default; nothing is recorded until you run 'qvr audit enable'.
 
-Audit captures an atomic trace of every tool, file, and command an agent runs
-— attributed to the skill that was active — into a local SQLite database. Once
-enabled, query it with 'qvr audit logs' / 'qvr audit sessions'.
+Agents already persist their own session transcripts on disk; audit reads
+those native stores directly — no agent configuration is touched. Run
+'qvr audit discover' to scan them (months of existing history back-fill
+instantly). Each session's verbatim trace lands in a local SQLite database,
+attributed to the exact locked skill version that ran. Query it with
+'qvr audit logs' / 'qvr audit sessions'.
 
-The everyday surface is enable/disable, install-hooks/uninstall-hooks, status,
-logs, sessions, and export. The remaining subcommands (ingest, raw, spans,
-rederive, gc) are low-level plumbing the hooks and maintenance paths use and
-are hidden from this list.`,
+The everyday surface is enable/disable, discover, status, sessions, logs, and
+export. The remaining subcommands (ingest, raw, spans, rederive, gc) are
+low-level plumbing the maintenance paths use and are hidden from this list.`,
 	// Reject a typo'd subcommand (`qvr audit enabel`) with a non-zero exit
 	// instead of silently printing help (issue #169 — the #120 fix missed this
 	// parent). No args still prints help.
@@ -70,19 +61,4 @@ func renderEmptyEvents() error {
 	}
 	printer.Info("Nothing recorded yet")
 	return nil
-}
-
-// recordSelfAudit best-effort writes an install/uninstall row. Errors are
-// returned so callers can warn, but they should not fail the command on a
-// self-audit write failure.
-func recordSelfAudit(ctx context.Context, s store.Store, action, actor, result, errMsg string, details map[string]any) error {
-	return s.AppendSelfAudit(ctx, &store.SelfAudit{
-		ID:        uuid.New(),
-		Timestamp: time.Now().UTC(),
-		Action:    action,
-		Actor:     actor,
-		Result:    result,
-		ErrorMsg:  errMsg,
-		Details:   details,
-	})
 }

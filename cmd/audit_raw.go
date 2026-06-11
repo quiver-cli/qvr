@@ -218,18 +218,18 @@ func deriveGrouped(rows []*ops.RawTrace) ([]derive.Span, error) {
 		if len(batch) == 0 {
 			return nil
 		}
-		s, err := derive.DeriveSession(batch)
+		d, err := derive.DeriveSession(batch)
 		if err != nil {
 			// Non-fatal by design: a session whose agent has no registered
 			// deriver (or otherwise fails) is skipped so the remaining
 			// sessions still derive. Surface it as a warning rather than
 			// dropping it silently, so a failed derivation is visible.
 			printer.Warning(fmt.Sprintf("skip session %s: %v", cur, err))
-		} else {
+		} else if d != nil {
 			// Promote skill identity from qvr.lock so name collisions across
 			// registries/versions stay distinguishable in the output (#146).
-			derive.EnrichSkillIdentity(s, batch)
-			spans = append(spans, s...)
+			derive.EnrichSkillIdentity(d.Spans, batch)
+			spans = append(spans, d.Spans...)
 		}
 		batch = nil
 		return nil

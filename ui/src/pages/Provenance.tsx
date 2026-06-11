@@ -4,6 +4,7 @@ import {
   ErrorBox,
   Loading,
   PageHead,
+  RefreshButton,
   StatusBadge,
   Table,
   Tag,
@@ -13,13 +14,14 @@ import {
 import { short } from "../lib/format";
 
 export default function Provenance() {
-  const { data, error, loading } = useFetch(api.provenance, `provenance:${scopeToken()}`);
+  const { data, error, loading, reload } = useFetch(api.provenance, `provenance:${scopeToken()}`);
 
   return (
     <>
       <PageHead
         title="Provenance"
         sub="What's pinned, who signed it, what the gate said."
+        actions={<RefreshButton onClick={reload} busy={loading} />}
       />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}

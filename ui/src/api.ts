@@ -4,23 +4,27 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-// RawSession mirrors store.RawSession: a per-session summary derived on the fly
-// from the raw_traces rows that share a session_id. `title` is the first prompt
-// the user typed (the session's human name); `agent_name` is the harness that
-// produced it (claude-code, codex, …).
-export interface RawSession {
+// SessionMeta mirrors store.SessionMetaRow: the unified session model every
+// page lists sessions from. Constructed by each agent's deriver from the
+// verbatim raw rows — `title` is the first prompt the user typed, `agent_name`
+// is the canonical target name (claude, codex, …), times are epoch ms.
+export interface SessionMeta {
   session_id: string;
-  title?: string;
   agent_name: string;
-  agent_session_id?: string;
+  source_session_id?: string;
+  source_path?: string;
   working_directory?: string;
-  started_at: string;
-  last_at: string;
-  transcript_lines: number;
-  hook_payloads: number;
-  total_rows: number;
-  // Distinct skills this session used (from its SKILL-attributed spans).
+  git_branch?: string;
+  model?: string;
+  title?: string;
+  started_ms: number;
+  ended_ms: number;
+  turns: number;
+  tools: number;
+  // Distinct skills this session used, first-use order.
   skills?: string[];
+  deriver_version: number;
+  derived_at: string;
 }
 
 // SessionFilter narrows the Sessions list server-side. All fields optional; an
@@ -65,7 +69,7 @@ export interface RawTraceView {
 // SessionDetail carries both representations of a session so the detail page can
 // toggle between the processed span timeline and the lossless raw rows.
 export interface SessionDetail {
-  session: RawSession;
+  session: SessionMeta;
   spans: SpanRow[];
   traces: RawTraceView[];
 }
@@ -83,7 +87,10 @@ export interface Overview {
   gate_allowed: number;
   gate_blocked: number;
   gate_unscanned: number;
-  recent_sessions: RawSession[];
+  recent_sessions: SessionMeta[];
+  // Locks that had to be skipped (e.g. an old schema version) — explains why
+  // lock-derived panels may look empty, with the regeneration hint inline.
+  lock_warnings?: string[];
 }
 
 export interface SkillRow {
@@ -432,7 +439,7 @@ export interface SkillReport {
   series: SkillReportSeriesPoint[];
   tokens: { sessions: number; input: number; output: number };
   versions: SkillVersionUsage[];
-  recentSessions: RawSession[];
+  recentSessions: SessionMeta[];
 }
 
 export interface DeadweightRow {
@@ -455,6 +462,78 @@ export interface Health {
   ok: boolean;
   version: string;
   audit_enabled: boolean;
+}
+
+// ---- activity analytics (overview) ------------------------------------------
+// Types mirror cmd/ui_activity.go exactly.
+
+// One (day, agent) cell of the sessions-over-time series. Days are YYYY-MM-DD
+// (UTC); skill_sessions counts the sessions that used at least one skill.
+export interface ActivityBucket {
+  day: string;
+  agent: string;
+  sessions: number;
+  skill_sessions: number;
+  turns: number;
+  duration_ms: number;
+}
+
+export interface AgentActivity {
+  agent: string;
+  sessions: number;
+  // Sessions that used at least one skill (per-agent coverage numerator).
+  skill_sessions: number;
+  turns: number;
+  tools: number;
+  duration_ms: number;
+  avg_session_ms: number;
+}
+
+export interface ActivitySummary {
+  sessions: number;
+  skill_sessions: number;
+  turns: number;
+  tools: number;
+  duration_ms: number;
+  // Real token usage summed from the scoped sessions' LLM spans.
+  tokens_in: number;
+  tokens_out: number;
+  agents: AgentActivity[];
+}
+
+// Sessions the discovery scan proved skill-less and did NOT store, counted
+// from the scan ledger (machine-global; absent in project scope).
+export interface SkippedBucket {
+  day: string;
+  agent: string;
+  sessions: number;
+}
+
+export interface ActivityResponse {
+  audit_enabled: boolean;
+  scope: string;
+  summary: ActivitySummary;
+  series: ActivityBucket[];
+  skipped?: SkippedBucket[];
+}
+
+// ---- discovery ---------------------------------------------------------------
+// Mirrors discover.Report / discover.AgentReport.
+
+export interface DiscoverAgentReport {
+  agent: string;
+  seen: number;
+  unchanged: number;
+  ingested: number;
+  skipped: number;
+  errors: number;
+  lines: number;
+  spans: number;
+}
+
+export interface DiscoverReport {
+  agents: DiscoverAgentReport[] | null;
+  dry_run?: boolean;
 }
 
 // Optional time window for the metrics list (YYYY-MM-DD, inclusive).
@@ -567,7 +646,7 @@ export const api = {
   // Scoped endpoints carry the active project/scope.
   overview: () => getJSON<Overview>(`/api/overview${scopeQuery()}`),
   sessions: (f: SessionFilter = {}) =>
-    getJSON<RawSession[]>(`/api/sessions${sessionsQuery(f)}`),
+    getJSON<SessionMeta[]>(`/api/sessions${sessionsQuery(f)}`),
   session: (id: string) => getJSON<SessionDetail>(`/api/sessions/${id}`),
   skills: () => getJSON<SkillRow[]>(`/api/skills${scopeQuery()}`),
   skill: (name: string) =>
@@ -604,23 +683,31 @@ export const api = {
   skillReport: (name: string) =>
     getJSON<SkillReport>(`/api/metrics/skills/${encodeURIComponent(name)}${scopeQuery()}`),
   deadweight: () => getJSON<DeadweightResponse>(`/api/metrics/deadweight${scopeQuery()}`),
+  activity: (w: MetricsWindow = {}) => {
+    const p = scopeParams();
+    if (w.since) p.set("since", w.since);
+    if (w.until) p.set("until", w.until);
+    const q = p.toString();
+    return getJSON<ActivityResponse>(`/api/metrics/activity${q ? `?${q}` : ""}`);
+  },
+  // Discover: scan the agents' native session stores (a write action — the
+  // one deliberate exception to the read-only dashboard, since it only
+  // imports what agents already recorded).
+  discover: () => postJSON<DiscoverReport>(`/api/discover`),
   // Global endpoints — not scoped.
   registries: () => getJSON<RegistryStatus[]>("/api/registries"),
   projects: () => getJSON<ProjectSummary[]>("/api/projects"),
   health: () => getJSON<Health>("/api/health"),
 };
 
-// prettyAgent maps a harness's internal agent_name to a short display label for
-// the "Harness" column (claude-code → claude, etc.). Unknown agents pass through.
+// prettyAgent maps an agent name to its display label. Agents are stored as
+// canonical target names already (claude, codex, …); the map only folds the
+// legacy aliases older databases may still carry.
 export function prettyAgent(agent?: string): string {
   if (!agent) return "—";
   const map: Record<string, string> = {
     "claude-code": "claude",
     claudecode: "claude",
-    codex: "codex",
-    cursor: "cursor",
-    opencode: "opencode",
-    copilot: "copilot",
   };
   return map[agent] ?? agent;
 }
@@ -633,8 +720,12 @@ export interface AsyncState<T> {
 }
 
 // useFetch runs an async loader on mount (and when `key` changes) and tracks
-// loading/error state. Returns a reload() for manual refresh.
-export function useFetch<T>(loader: () => Promise<T>, key: string): AsyncState<T> {
+// loading/error state. Returns a reload() for manual refresh. Re-runs after
+// the first load are SILENT (loading stays false while stale data shows), so
+// live polling never flashes a spinner over a populated page. pollMs > 0
+// re-runs the loader on that interval for as long as the component is
+// mounted — the live-tracking mode the dashboard uses.
+export function useFetch<T>(loader: () => Promise<T>, key: string, pollMs = 0): AsyncState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -644,11 +735,13 @@ export function useFetch<T>(loader: () => Promise<T>, key: string): AsyncState<T
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    setLoading(data === null);
     loader()
       .then((d) => {
-        if (!cancelled) setData(d);
+        if (!cancelled) {
+          setData(d);
+          setError(null);
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -662,6 +755,12 @@ export function useFetch<T>(loader: () => Promise<T>, key: string): AsyncState<T
     // loader identity changes per render; key is the real dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, nonce]);
+
+  useEffect(() => {
+    if (pollMs <= 0) return;
+    const id = setInterval(() => setNonce((n) => n + 1), pollMs);
+    return () => clearInterval(id);
+  }, [pollMs]);
 
   return { data, error, loading, reload };
 }

@@ -41,7 +41,7 @@ import {
   Td,
   Th,
 } from "../components/qvr";
-import { fmtCount, fmtShare, fmtTime, relTime, short } from "../lib/format";
+import { fmtCount, fmtShare, fmtTime, relTime, relTimeMs, short } from "../lib/format";
 import { toneFor } from "../lib/tones";
 
 // SkillView is the skill workbench, used from two routes:
@@ -334,7 +334,7 @@ function ReportTab({ report }: { report: SkillReport | null }) {
                   </Link>
                   <span style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
                     <Badge tone="info">{prettyAgent(s.agent_name)}</Badge>
-                    <span className="qvr-ver__when">{relTime(s.started_at)}</span>
+                    <span className="qvr-ver__when">{relTimeMs(s.started_ms)}</span>
                   </span>
                 </li>
               ))}

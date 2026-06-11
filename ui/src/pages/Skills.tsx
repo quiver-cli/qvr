@@ -9,6 +9,7 @@ import {
   Loading,
   PageHead,
   Prompt,
+  RefreshButton,
   SkillRowItem,
   StatusBadge,
   Tag,
@@ -20,9 +21,10 @@ import { fmtCount, fmtShare, relTime } from "../lib/format";
 // Skills that fired historically but are no longer installed stay listed
 // (installed:false) so history reads honestly.
 export default function Skills() {
+  const [nonce, setNonce] = useState(0);
   const { data, error, loading } = useFetch(
     () => api.metricsSkills(),
-    `skills-metrics:${scopeToken()}`,
+    `skills-metrics:${scopeToken()}:${nonce}`,
   );
   const [filter, setFilter] = useState("");
 
@@ -48,12 +50,15 @@ export default function Skills() {
             : "Installed skills recorded in the lock file."
         }
         actions={
-          <Input
+          <>
+            <RefreshButton onClick={() => setNonce((n) => n + 1)} busy={loading} />
+            <Input
             icon={<Search size={15} />}
             placeholder="filter skills…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
+          </>
         }
       />
       {loading && <Loading />}

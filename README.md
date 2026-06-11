@@ -32,8 +32,8 @@ server to run and no runtime in the read path.
 
 `qvr` is to agent skills what `uv` is to Python packages: a Git-native,
 zero-service CLI to install, version, lint, scan, and govern [agent skills] across
-every coding agent — Claude Code, Cursor, Copilot, Codex, Windsurf, anything
-that reads skills from a directory.
+every coding agent — Claude Code, Cursor, Copilot, Codex, OpenClaw, Hermes,
+anything that reads skills from a directory.
 
 ---
 
@@ -329,15 +329,20 @@ current ref to its upstream tip. (`qvr upgrade` is separate — it updates the
 
 ### Audit & trace — `qvr audit`
 
+Agents already keep their own session history on disk; qvr reads those native
+stores directly — zero agent configuration, and months of existing history
+back-fill on the first scan.
+
 ```bash
 qvr audit enable                    # opt in (creates ~/.quiver/skillops.db)
-qvr audit install-hooks             # wire your agents' native hooks
-qvr audit sessions                  # recorded agent sessions
+qvr audit discover                  # scan your agents' session stores (incremental)
+qvr audit sessions                  # recorded skill-using sessions
 qvr audit logs                      # turn / tool / skill spans
 qvr audit export > traces.jsonl     # raw traces as JSONL (OTLP-ready)
 ```
 
-The capture is verbatim and projects to OpenTelemetry spans — see the
+Sessions that provably used no skill are counted but never stored. The capture
+is verbatim and projects to OpenTelemetry spans — see the
 [audit & tracing guide](documentation/audit-and-tracing.md).
 
 ### Inspect & verify
@@ -403,11 +408,12 @@ sourced from each tool's official docs; many newer CLIs share the AGENTS.md
 | Target   | Local dir          | Global dir                    | Aliases          |
 | -------- | ------------------ | ----------------------------- | ---------------- |
 | claude   | `.claude/skills`   | `~/.claude/skills`            | `claude-code`    |
-| codex    | `.agents/skills`   | `~/.codex/skills`             |                  |
+| codex    | `.agents/skills`   | `~/.agents/skills`            |                  |
 | cursor   | `.agents/skills`   | `~/.cursor/skills`            |                  |
 | copilot  | `.github/skills`   | `~/.copilot/skills`           | `github-copilot` |
 | gemini   | `.agents/skills`   | `~/.gemini/skills`            | `antigravity`    |
-| windsurf | `.windsurf/skills` | `~/.codeium/windsurf/skills`  |                  |
+| hermes   | `.hermes/skills`   | `~/.hermes/skills`            | `hermes-agent`   |
+| openclaw | `.agents/skills`   | `~/.openclaw/skills`          | `clawdbot`       |
 | project  | `.agents/skills`   | `~/.agents/skills`            | `agents`         |
 
 Pick which agents a project installs into with `qvr target add <name>...`; the

@@ -68,6 +68,54 @@ func loadScopedLocks(projectRoot string, global, all bool) ([]scopedLock, error)
 	return []scopedLock{{Scope: scope, Lock: lock}}, nil
 }
 
+// loadScopedLocksLenient mirrors loadScopedLocks but never fails on a bad
+// lock file: an unreadable lock (e.g. an old schema version) becomes an empty
+// lock plus a warning. The dashboard uses this — one stale qvr.lock anywhere
+// must not take down pages whose real data (sessions, analytics) doesn't even
+// need the lock. CLI commands keep the strict loader so the regeneration hint
+// in the error reaches the user as a failure they must act on.
+func loadScopedLocksLenient(projectRoot string, global, all bool) ([]scopedLock, []string) {
+	quiverHome := config.Dir()
+	if all {
+		project, warn1 := readLockOrWarn(model.DefaultLockPath(projectRoot, quiverHome, false), "project")
+		globalLock, warn2 := readLockOrWarn(model.DefaultLockPath(projectRoot, quiverHome, true), "global")
+		return []scopedLock{
+			{Scope: "project", Lock: project},
+			{Scope: "global", Lock: globalLock},
+		}, compactWarnings(warn1, warn2)
+	}
+	scope := "project"
+	if global {
+		scope = "global"
+	}
+	lock, warn := readLockOrWarn(model.DefaultLockPath(projectRoot, quiverHome, global), scope)
+	return []scopedLock{{Scope: scope, Lock: lock}}, compactWarnings(warn)
+}
+
+// readLockOrWarn reads one lock leniently: a missing file is a normal empty
+// lock; an unreadable one is an empty lock plus a warning naming the scope.
+func readLockOrWarn(path, scope string) (*model.LockFile, string) {
+	lock, err := model.ReadLockFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return model.NewLockFile(path), fmt.Sprintf("%s lock skipped: %v", scope, err)
+	}
+	if lock == nil {
+		lock = model.NewLockFile(path)
+	}
+	return lock, ""
+}
+
+// compactWarnings drops empty entries.
+func compactWarnings(warns ...string) []string {
+	var out []string
+	for _, w := range warns {
+		if w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // findEntryAcrossLocks looks up name in each of locks and returns the first
 // match alongside its scope. Returns an "ambiguous" error when name resolves
 // in more than one lock — the caller has to drop --all and pick a scope.

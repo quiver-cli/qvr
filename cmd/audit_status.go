@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/astra-sh/qvr/internal/config"
@@ -13,18 +14,14 @@ import (
 
 var auditStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show per-agent hook + capture status",
-	Long: `Reports, for every installable agent: whether it's detected on this
-machine, whether Quiver's hooks are installed and valid, whether a span deriver
-exists for it (DERIVES), how many events and sessions have been recorded, how
-many hook errors were logged, and when the last event for that agent was
-recorded. DERIVES=no means the agent is raw-only — hooks fire and traces land,
-but the derived views (logs, spans, UI timeline) stay empty. RECORDED counts
-individual events
-(tool calls, file ops, …); SESSIONS counts the runs they group into, so
-RECORDED is normally several times SESSIONS. ERRORS counts hook parse/ingest
-failures — a non-zero value means events are reaching qvr but failing to
-record.`,
+	Short: "Show per-agent capture status",
+	Long: `Reports, for every agent qvr can derive (plus any agent with recorded
+data): whether a span deriver exists for it (DERIVES), how many raw rows and
+sessions have been recorded, and when the last event for that agent landed.
+DERIVES=no means the agent is raw-only — its traces are stored verbatim, but
+the derived views (logs, spans, UI timeline) stay empty until a deriver ships.
+RECORDED counts individual raw rows (transcript lines); SESSIONS counts the
+runs they group into, so RECORDED is normally several times SESSIONS.`,
 	Args: cobra.NoArgs,
 	RunE: runAuditStatus,
 }
@@ -34,19 +31,11 @@ func init() {
 }
 
 type agentStatus struct {
-	Agent       string   `json:"agent"`
-	DisplayName string   `json:"display_name"`
-	Detected    bool     `json:"detected"`
-	ConfigPath  string   `json:"config_path,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	Installed   bool     `json:"installed"`
-	Valid       bool     `json:"valid"`
-	Derives     bool     `json:"derives"` // a span deriver exists for this agent
-	Recorded    int64    `json:"recorded"`
-	Sessions    int64    `json:"sessions"`
-	Errors      int64    `json:"errors"`
-	LastEvent   string   `json:"last_event,omitempty"`
-	Issues      []string `json:"issues,omitempty"`
+	Agent     string `json:"agent"`
+	Derives   bool   `json:"derives"` // a span deriver exists for this agent
+	Recorded  int64  `json:"recorded"`
+	Sessions  int64  `json:"sessions"`
+	LastEvent string `json:"last_event,omitempty"`
 }
 
 func runAuditStatus(cmd *cobra.Command, args []string) error {
@@ -55,8 +44,8 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Open the store read-only for last-event lookups, but only if it
-	// exists (a fresh setup has no DB yet).
+	// Open the store read-only for counters, but only if it exists (a fresh
+	// setup has no DB yet).
 	var s store.Store
 	if auditDBExists(cfg) {
 		s, err = openAuditStore(cmd.Context(), cfg, true)
@@ -66,38 +55,31 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 		defer s.Close()
 	}
 
-	installers := ops.ListInstallers()
-	statuses := make([]agentStatus, 0, len(installers))
-	for _, inst := range installers {
-		statuses = append(statuses, collectAgentStatus(cmd, s, inst))
+	statuses := make([]agentStatus, 0, 8)
+	for _, agent := range statusAgents(cmd, s) {
+		statuses = append(statuses, collectAgentStatus(cmd, s, agent))
 	}
 
 	if outputFormat == "json" {
 		return printer.JSON(map[string]any{"enabled": ops.Enabled(cfg), "agents": statuses})
 	}
 
-	// Always surface the global pipeline switch. Without this, a disabled
-	// pipeline looked identical to a healthy one — every agent still showed
-	// INSTALLED=yes/VALID=yes (the hooks are wired) while `qvr _hook` silently
-	// no-op'd, so a user had no way to tell capture was globally off.
+	// Always surface the global pipeline switch: a disabled pipeline records
+	// nothing, and without the banner that looks identical to a healthy idle one.
 	if ops.Enabled(cfg) {
 		printer.Info("Audit pipeline: enabled")
 	} else {
-		printer.Info("Audit pipeline: DISABLED — hooks are wired but no events are recorded")
+		printer.Info("Audit pipeline: DISABLED — no sessions are recorded")
 		printer.Hint("run `qvr audit enable` to start recording")
 	}
-	headers := []string{"AGENT", "DETECTED", "INSTALLED", "VALID", "DERIVES", "RECORDED", "SESSIONS", "ERRORS", "LAST EVENT"}
+	headers := []string{"AGENT", "DERIVES", "RECORDED", "SESSIONS", "LAST EVENT"}
 	rows := make([][]string, 0, len(statuses))
 	for _, as := range statuses {
 		rows = append(rows, []string{
 			as.Agent,
-			yesNo(as.Detected),
-			yesNo(as.Installed),
-			yesNo(as.Valid),
 			yesNo(as.Derives),
 			fmt.Sprintf("%d", as.Recorded),
 			fmt.Sprintf("%d", as.Sessions),
-			fmt.Sprintf("%d", as.Errors),
 			orDash(as.LastEvent),
 		})
 	}
@@ -105,45 +87,38 @@ func runAuditStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// collectAgentStatus assembles the per-agent status row from the installer's
-// detect/status probes plus the (optional) store's recorded-trace counters.
-func collectAgentStatus(cmd *cobra.Command, s store.Store, inst ops.HookInstaller) agentStatus {
-	as := agentStatus{Agent: inst.Name(), DisplayName: inst.DisplayName()}
-
-	if det, dErr := inst.Detect(); dErr == nil {
-		as.Detected = det.Detected
-		as.ConfigPath = det.ConfigPath
-		as.Version = det.Version
-	}
-	if st, sErr := inst.Status(); sErr == nil {
-		as.Installed = st.Installed
-		as.Valid = st.Valid
-		as.Issues = st.Issues
-	}
-	// Whether captured raw traces for this agent can be projected into
-	// spans. Without a deriver the agent is raw-only: hooks fire and rows
-	// land, but `qvr audit logs`/`spans` and the UI timeline stay empty, so
-	// "installed+valid" alone overstates how observable it is (#143).
-	_, as.Derives = derive.Get(inst.Name())
+// statusAgents merges the deriver registry with any agents that have recorded
+// rows, so legacy / raw-only data stays visible alongside derivable agents.
+func statusAgents(cmd *cobra.Command, s store.Store) []string {
+	agents := derive.Registered()
 	if s != nil {
-		if ts, lErr := s.LatestRawAt(cmd.Context(), inst.Name()); lErr == nil && ts != nil {
+		if recorded, err := s.DistinctRawAgents(cmd.Context()); err == nil {
+			for _, a := range recorded {
+				if !slices.Contains(agents, a) {
+					agents = append(agents, a)
+				}
+			}
+		}
+	}
+	slices.Sort(agents)
+	return agents
+}
+
+// collectAgentStatus assembles the per-agent status row from the deriver
+// registry plus the (optional) store's recorded-trace counters.
+func collectAgentStatus(cmd *cobra.Command, s store.Store, agent string) agentStatus {
+	as := agentStatus{Agent: agent}
+	_, as.Derives = derive.Get(agent)
+	if s != nil {
+		if ts, lErr := s.LatestRawAt(cmd.Context(), agent); lErr == nil && ts != nil {
 			as.LastEvent = ts.Local().Format(time.RFC3339)
 		}
-		if n, cErr := s.CountRawSessions(cmd.Context(), nil, inst.Name()); cErr == nil {
+		if n, cErr := s.CountRawSessions(cmd.Context(), nil, agent); cErr == nil {
 			as.Sessions = n
 		}
-		if n, cErr := s.CountRawTraces(cmd.Context(), nil, inst.Name()); cErr == nil {
+		if n, cErr := s.CountRawTraces(cmd.Context(), nil, agent); cErr == nil {
 			as.Recorded = n
 		}
-		if n, cErr := s.CountSelfAuditErrors(cmd.Context(), inst.Name()); cErr == nil {
-			as.Errors = n
-		}
-	}
-	// Flag raw-only agents that are actually capturing: the user sees rows
-	// pile up but no derived views, so name the cause instead of letting
-	// INSTALLED=yes imply full observability.
-	if as.Installed && !as.Derives && as.Recorded > 0 {
-		as.Issues = append(as.Issues, "raw-only: no span deriver — logs/spans/UI timeline stay empty")
 	}
 	return as
 }

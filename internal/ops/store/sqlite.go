@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -139,6 +138,9 @@ func (s *sqliteStore) DeleteSession(ctx context.Context, sessionID uuid.UUID) (i
 	if _, err := tx.ExecContext(ctx, `DELETE FROM spans WHERE session_id = ?`, id); err != nil {
 		return 0, fmt.Errorf("store: delete session spans: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_meta WHERE session_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("store: delete session meta: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM trace_cursors WHERE session_id = ?`, id); err != nil {
 		return 0, fmt.Errorf("store: delete session cursor: %w", err)
 	}
@@ -146,61 +148,6 @@ func (s *sqliteStore) DeleteSession(ctx context.Context, sessionID uuid.UUID) (i
 		return 0, fmt.Errorf("store: delete session commit: %w", err)
 	}
 	return n, nil
-}
-
-// --- self-audit ---
-
-func (s *sqliteStore) CountSelfAuditErrors(ctx context.Context, agent string) (int64, error) {
-	var n int64
-	var err error
-	if agent == "" {
-		err = s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM self_audits WHERE result = ?`, ResultAudit_Error,
-		).Scan(&n)
-	} else {
-		err = s.db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM self_audits WHERE result = ? AND actor = ?`,
-			ResultAudit_Error, agent,
-		).Scan(&n)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("store: count self-audit errors: %w", err)
-	}
-	return n, nil
-}
-
-const appendSelfAuditSQL = `INSERT INTO self_audits(
-  id, timestamp, action, actor, result, error_msg, details
-) VALUES (?,?,?,?,?,?,?)`
-
-func (s *sqliteStore) AppendSelfAudit(ctx context.Context, entry *SelfAudit) error {
-	if entry == nil {
-		return errors.New("store: nil self audit")
-	}
-	if entry.ID == uuid.Nil {
-		entry.ID = uuid.New()
-	}
-	if entry.Timestamp.IsZero() {
-		entry.Timestamp = time.Now().UTC()
-	}
-	var details sql.NullString
-	if len(entry.Details) > 0 {
-		b, err := json.Marshal(entry.Details)
-		if err != nil {
-			return fmt.Errorf("store: marshal self audit details: %w", err)
-		}
-		details = sql.NullString{String: string(b), Valid: true}
-	}
-	_, err := s.db.ExecContext(ctx, appendSelfAuditSQL,
-		entry.ID.String(), entry.Timestamp.UTC(),
-		entry.Action, nullableString(entry.Actor),
-		entry.Result, nullableString(entry.ErrorMsg),
-		details,
-	)
-	if err != nil {
-		return fmt.Errorf("store: append self audit: %w", err)
-	}
-	return nil
 }
 
 // Stats reports raw-trace counts and DB size for `qvr audit db stats`.

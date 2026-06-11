@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, scopeToken, useFetch, type SkillUsageRow } from "../api";
 import {
@@ -7,6 +7,7 @@ import {
   Loading,
   PageHead,
   Prompt,
+  RefreshButton,
   Section,
   Table,
   Tag,
@@ -23,8 +24,9 @@ const STALE_DAYS = 30;
 // upon a time, silent for 30+ days). The UI never prunes; every row hands you
 // the exact command.
 export default function Deadweight() {
-  const dw = useFetch(api.deadweight, `deadweight:${scopeToken()}`);
-  const metrics = useFetch(() => api.metricsSkills(), `deadweight-metrics:${scopeToken()}`);
+  const [nonce, setNonce] = useState(0);
+  const dw = useFetch(api.deadweight, `deadweight:${scopeToken()}:${nonce}`);
+  const metrics = useFetch(() => api.metricsSkills(), `deadweight-metrics:${scopeToken()}:${nonce}`);
 
   const stale = useMemo(() => staleRows(metrics.data?.skills), [metrics.data]);
 
@@ -32,7 +34,10 @@ export default function Deadweight() {
     <>
       <PageHead
         title="Dead weight"
-        sub="Skills that take up lock space but do no observed work. Evidence first, prune second."
+        sub="Skills that take up lock space but do no observed work in any recorded
+session. Counts cover the sessions qvr has discovered — a back-filled history
+can predate an install, so check the installed date before pruning."
+        actions={<RefreshButton onClick={() => setNonce((n) => n + 1)} busy={dw.loading} />}
       />
       {dw.loading && <Loading />}
       {dw.error && <ErrorBox message={dw.error} />}

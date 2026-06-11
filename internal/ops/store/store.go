@@ -49,7 +49,20 @@ type Store interface {
 	// LatestRawAt returns the newest capture time for an agent, or nil.
 	LatestRawAt(ctx context.Context, agent string) (*time.Time, error)
 
-	// --- Derived spans (a regenerable projection persisted for parity) ---
+	// DistinctRawAgents returns every agent name present in raw_traces, sorted.
+	DistinctRawAgents(ctx context.Context) ([]string, error)
+
+	// --- Derived projections (regenerable; see session_meta.go / spans.go) ---
+
+	// ReplaceSessionDerivation atomically replaces a session's whole derived
+	// projection — its unified session_meta row and all its spans — in one tx.
+	ReplaceSessionDerivation(ctx context.Context, meta *SessionMetaRow, rows []*SpanRow) error
+
+	// ListSessionMeta returns unified session rows newest-first by start time.
+	ListSessionMeta(ctx context.Context, f *SessionMetaFilter) ([]*SessionMetaRow, error)
+
+	// GetSessionMeta returns one session's unified row, or nil when absent.
+	GetSessionMeta(ctx context.Context, sessionID uuid.UUID) (*SessionMetaRow, error)
 
 	// ReplaceSessionSpans atomically replaces a session's stored spans with
 	// the given rows (the result of re-deriving that session).
@@ -62,6 +75,19 @@ type Store interface {
 	// each given session (from its SKILL-attributed spans), keyed by session id
 	// string. Sessions with no skill span are absent from the map.
 	SkillsForSessions(ctx context.Context, ids []string) (map[string][]string, error)
+
+	// --- Activity analytics (read-side aggregations over session_meta and
+	// the scan ledger; see activity.go) ---
+
+	// ActivitySummary aggregates headline totals + per-agent slices.
+	ActivitySummary(ctx context.Context, f *ActivityFilter) (*ActivitySummary, error)
+
+	// ActivitySeries returns per-day per-agent buckets, oldest first.
+	ActivitySeries(ctx context.Context, f *ActivityFilter) ([]*ActivityBucket, error)
+
+	// SkippedSkilllessSeries counts scan-skipped skill-less sessions per
+	// (day, agent) from the scan ledger (machine-global; never project-scoped).
+	SkippedSkilllessSeries(ctx context.Context, since, until *time.Time) ([]*SkippedBucket, error)
 
 	// --- Skill metrics (read-side aggregations over spans; see metrics.go) ---
 
@@ -89,22 +115,29 @@ type Store interface {
 	// number of rows deleted.
 	DeleteRawBefore(ctx context.Context, cutoff time.Time) (int64, error)
 
-	// DeleteSession removes a whole session — its raw rows, derived spans, and
-	// tailing cursor — in one tx. Returns the number of raw rows deleted. Used
-	// by the skill-only retention policy to drop sessions with no skill usage;
-	// deleting the cursor means a session that later resumes re-tails from the
-	// start and is re-captured in full.
+	// DeleteSession removes a whole session — its raw rows, derived spans,
+	// session_meta row, and tailing cursor — in one tx. Returns the number of
+	// raw rows deleted. Used by the skill-only retention policy to drop
+	// sessions with no skill usage; deleting the cursor means a session that
+	// later resumes re-tails from the start and is re-captured in full. The
+	// scanned_files ledger is deliberately NOT touched: it is keyed by file,
+	// and a pruned file must not be re-examined while unchanged.
 	DeleteSession(ctx context.Context, sessionID uuid.UUID) (int64, error)
 
-	// --- Self-audit (install/uninstall provenance + status) ---
+	// --- Discovery scan ledger (see scanned_files.go) ---
 
-	// CountSelfAuditErrors returns the number of self_audit rows with an
-	// error result for an agent (empty agent = all agents).
-	CountSelfAuditErrors(ctx context.Context, agent string) (int64, error)
+	// GetScannedFiles returns one agent's whole scan ledger, keyed by path.
+	GetScannedFiles(ctx context.Context, agent string) (map[string]*ScannedFile, error)
 
-	// AppendSelfAudit records an internal-state event (install/uninstall,
-	// config_change, purge).
-	AppendSelfAudit(ctx context.Context, entry *SelfAudit) error
+	// UpsertScannedFile records (or refreshes) one file's ledger row.
+	UpsertScannedFile(ctx context.Context, f *ScannedFile) error
+
+	// DeleteRawBySourcePath removes every raw row ingested from one source file.
+	DeleteRawBySourcePath(ctx context.Context, agent, sourcePath string) (int64, error)
+
+	// ReplaceSourceRawTraces atomically replaces one source file's raw rows
+	// (the document-layout re-ingest primitive: delete + insert in one tx).
+	ReplaceSourceRawTraces(ctx context.Context, agent, sourcePath string, rows []*ops.RawTrace) error
 
 	// Stats returns counts and DB size, suitable for `qvr audit db stats`.
 	Stats(ctx context.Context) (*StoreStats, error)
@@ -122,26 +155,3 @@ type StoreStats struct {
 	OldestTrace    *time.Time
 	NewestTrace    *time.Time
 }
-
-// SelfAudit is the internal-audit row written by AppendSelfAudit.
-type SelfAudit struct {
-	ID        uuid.UUID
-	Timestamp time.Time
-	Action    string
-	Actor     string
-	Result    string
-	ErrorMsg  string
-	Details   map[string]any
-}
-
-// Common self-audit actions. Kept as constants so callers don't typo.
-const (
-	ActionAdapterInstall   = "adapter_install"
-	ActionAdapterUninstall = "adapter_uninstall"
-)
-
-// Common self-audit result values.
-const (
-	ResultAudit_Success = "success"
-	ResultAudit_Error   = "error"
-)

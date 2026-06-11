@@ -52,7 +52,15 @@ func (s *sqliteStore) ReplaceSessionSpans(ctx context.Context, sessionID uuid.UU
 		return fmt.Errorf("store: spans tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := replaceSessionSpansTx(ctx, tx, sessionID, rows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// replaceSessionSpansTx is the shared span-replacement body, run inside the
+// caller's tx (ReplaceSessionSpans and ReplaceSessionDerivation).
+func replaceSessionSpansTx(ctx context.Context, tx *sql.Tx, sessionID uuid.UUID, rows []*SpanRow) error {
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM spans WHERE session_id = ?`, sessionID.String()); err != nil {
 		return fmt.Errorf("store: clear session spans: %w", err)
@@ -88,7 +96,7 @@ func (s *sqliteStore) ReplaceSessionSpans(ctx context.Context, sessionID uuid.UU
 			return fmt.Errorf("store: insert span: %w", err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 const spanColumns = `span_id, trace_id, parent_span_id, session_id, agent_name,

@@ -2,13 +2,69 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/astra-sh/qvr/internal/config"
+	"github.com/astra-sh/qvr/internal/ops"
+	"github.com/astra-sh/qvr/internal/ops/store"
 )
+
+// isolatedHome returns a fresh $QUIVER_HOME with config (ops.enabled per the
+// flag) plus a reader over the captured raw_traces.
+func isolatedHome(t *testing.T, opsEnabled bool) (home string, readRaw func() []*ops.RawTrace) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("QUIVER_HOME", home)
+
+	cfg := &config.Config{}
+	cfg.Ops.Enabled = opsEnabled
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	readRaw = func() []*ops.RawTrace {
+		s, err := store.Open(context.Background(), store.OpenOptions{Path: ops.DBPath(cfg)})
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer s.Close()
+		rows, err := s.QueryRawTraces(context.Background(), &store.RawTraceFilter{})
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		return rows
+	}
+	return home, readRaw
+}
+
+// writeTranscript drops a Claude-style transcript JSONL and returns its path +
+// session id. The transcript carries its own session id and cwd (as the agent
+// writes them), and the assistant turn loads a skill (a "Skill" tool-call) so
+// the captured session is skill-attributed — the common case these tests
+// exercise.
+func writeTranscript(t *testing.T, dir string) (path, sessionID string) {
+	t.Helper()
+	sessionID = "550e8400-e29b-41d4-a716-446655440000"
+	path = filepath.Join(dir, "session.jsonl")
+	lines := []string{
+		`{"type":"user","sessionId":"` + sessionID + `","cwd":"/tmp/proj","timestamp":"2026-06-02T00:00:00.000Z","message":{"role":"user","content":"do the thing"}}`,
+		`{"type":"assistant","timestamp":"2026-06-02T00:00:01.000Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":3},"content":[{"type":"tool_use","id":"toolu_skill","name":"Skill","input":{"command":"code-review"}},{"type":"text","text":"done"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(joinLines(lines)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path, sessionID
+}
+
+func joinLines(lines []string) string {
+	return strings.Join(lines, "\n") + "\n"
+}
 
 // runRoot drives the root command, capturing stdout/stderr. The output.Printer
 // writes to os.Stdout directly, so we swap it for a pipe and drain it.
@@ -37,17 +93,24 @@ func runRoot(t *testing.T, stdin []byte, args ...string) (string, string, error)
 	t.Cleanup(func() {
 		rootCmd.SetIn(os.Stdin)
 		rootCmd.SetArgs(nil)
+		// Flag values persist on package-level commands between Execute calls;
+		// reset the audit ingest/discover flags so a later test that omits them
+		// isn't polluted by an earlier run.
+		ingestAgent, ingestSession, ingestCwd = "", "", ""
+		discoverAgents, discoverSince = nil, ""
+		discoverKeepAll, discoverDryRun = false, false
 	})
 	return stdout, stderr, err
 }
 
-// captureSession runs a hook against a fresh transcript and returns the
-// canonical session id.
+// captureSession ingests a fresh transcript and returns the canonical session
+// id (the transcript's own session id drives correlation). The --agent value
+// deliberately uses the legacy alias to pin alias→canonical normalization.
 func captureSession(t *testing.T) string {
 	t.Helper()
 	transcript, sid := writeTranscript(t, t.TempDir())
-	if _, _, err := runHookCmd(t, payloadFor(sid, transcript), "claude-code", "Stop"); err != nil {
-		t.Fatalf("hook: %v", err)
+	if _, stderr, err := runRoot(t, nil, "audit", "ingest", "--agent", "claude-code", transcript); err != nil {
+		t.Fatalf("ingest: err=%v stderr=%q", err, stderr)
 	}
 	return sid
 }
@@ -69,8 +132,8 @@ func TestAudit_RawCommand(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 transcript rows; got %d", len(rows))
 	}
-	if rows[0]["agent_name"] != "claude-code" {
-		t.Errorf("agent_name=%v want claude-code", rows[0]["agent_name"])
+	if rows[0]["agent_name"] != "claude" {
+		t.Errorf("agent_name=%v want claude (canonical)", rows[0]["agent_name"])
 	}
 	// The stored raw is emitted inline as native JSON (a "type" field present).
 	if raw, ok := rows[0]["raw"].(map[string]any); !ok || raw["type"] != "user" {
@@ -106,8 +169,8 @@ func TestAudit_SessionsAndExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit sessions: %v", err)
 	}
-	if !strings.Contains(stdout, "claude-code") {
-		t.Errorf("sessions output missing agent: %s", stdout)
+	if !strings.Contains(stdout, `"agent_name": "claude"`) {
+		t.Errorf("sessions output missing canonical agent: %s", stdout)
 	}
 
 	out := filepath.Join(t.TempDir(), "trail.jsonl")
@@ -141,48 +204,47 @@ func TestAudit_LogsCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit logs: err=%v stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stdout, "claude-code") {
+	if !strings.Contains(stdout, "claude") {
 		t.Errorf("logs missing agent: %s", stdout)
 	}
 }
 
-// TestAudit_StatusRuns verifies the status command lists every adapter.
+// TestAudit_StatusRuns verifies the status command lists every deriver-backed
+// agent plus any agent with recorded data, with correct derives flags.
 func TestAudit_StatusRuns(t *testing.T) {
 	_, _ = isolatedHome(t, true)
+	captureSession(t)
+
 	stdout, _, err := runRoot(t, nil, "audit", "status", "--output", "json")
 	if err != nil {
 		t.Fatalf("audit status: %v", err)
-	}
-	for _, agent := range []string{"claude-code", "cursor", "codex", "opencode", "copilot"} {
-		if !strings.Contains(stdout, agent) {
-			t.Errorf("status missing agent %q in: %s", agent, stdout)
-		}
 	}
 
 	// #143: status must report whether each agent has a span deriver, so a
 	// raw-only agent isn't presented as fully observable.
 	var resp struct {
 		Agents []struct {
-			Agent   string `json:"agent"`
-			Derives bool   `json:"derives"`
+			Agent    string `json:"agent"`
+			Derives  bool   `json:"derives"`
+			Sessions int64  `json:"sessions"`
 		} `json:"agents"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("decode status json: %v (%s)", err, stdout)
 	}
-	derives := map[string]bool{}
+	agents := map[string]bool{}
+	sessions := map[string]int64{}
 	for _, a := range resp.Agents {
-		derives[a.Agent] = a.Derives
+		agents[a.Agent] = a.Derives
+		sessions[a.Agent] = a.Sessions
 	}
-	for _, a := range []string{"claude-code", "codex"} {
-		if !derives[a] {
-			t.Errorf("%s should report derives=true (it has a deriver)", a)
+	for _, a := range []string{"claude", "codex"} {
+		if derives, ok := agents[a]; !ok || !derives {
+			t.Errorf("%s should be listed with derives=true (it has a deriver); got %v", a, agents)
 		}
 	}
-	for _, a := range []string{"copilot", "opencode"} {
-		if derives[a] {
-			t.Errorf("%s should report derives=false (raw-only, no deriver)", a)
-		}
+	if sessions["claude"] != 1 {
+		t.Errorf("claude sessions = %d, want 1 (the ingested session)", sessions["claude"])
 	}
 }
 
@@ -249,7 +311,7 @@ func TestAudit_Ingest(t *testing.T) {
 }
 
 // TestAudit_IngestSniffsAgent confirms the agent format is inferred from the
-// transcript when --agent is omitted (a claude transcript → claude-code).
+// transcript when --agent is omitted (a claude transcript → claude).
 func TestAudit_IngestSniffsAgent(t *testing.T) {
 	_, _ = isolatedHome(t, true)
 	transcript, _ := writeTranscript(t, t.TempDir())
@@ -268,8 +330,8 @@ func TestAudit_IngestSniffsAgent(t *testing.T) {
 	if e := json.Unmarshal([]byte(out), &resp); e != nil {
 		t.Fatalf("decode: %v\n%s", e, out)
 	}
-	if resp.Failed != 0 || len(resp.Ingested) != 1 || resp.Ingested[0].Agent != "claude-code" {
-		t.Errorf("expected sniffed agent claude-code, got %+v", resp)
+	if resp.Failed != 0 || len(resp.Ingested) != 1 || resp.Ingested[0].Agent != "claude" {
+		t.Errorf("expected sniffed agent claude, got %+v", resp)
 	}
 }
 

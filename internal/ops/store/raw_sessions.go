@@ -251,6 +251,25 @@ func (s *sqliteStore) CountRawTraces(ctx context.Context, dirs []string, agent s
 	return n, nil
 }
 
+// DistinctRawAgents returns every agent name present in raw_traces, sorted.
+func (s *sqliteStore) DistinctRawAgents(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT agent_name FROM raw_traces ORDER BY agent_name`)
+	if err != nil {
+		return nil, fmt.Errorf("store: distinct raw agents: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("store: distinct raw agents: %w", err)
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
 // LatestRawAt returns the newest capture time for an agent, or nil if none.
 func (s *sqliteStore) LatestRawAt(ctx context.Context, agent string) (*time.Time, error) {
 	where, args := rawScopeWhere(nil, agent)

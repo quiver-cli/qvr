@@ -14,9 +14,10 @@ point into the SHA-keyed worktree store at
 | Claude Code | `claude` | `.claude/skills` | `~/.claude/skills` |
 | Cursor | `cursor` | `.agents/skills` | `~/.cursor/skills` |
 | GitHub Copilot | `copilot` | `.github/skills` | `~/.copilot/skills` |
-| OpenAI Codex CLI | `codex` | `.agents/skills` | `~/.codex/skills` |
+| OpenAI Codex CLI | `codex` | `.agents/skills` | `~/.agents/skills` |
 | Gemini CLI / Antigravity | `gemini` | `.agents/skills` | `~/.gemini/skills` |
-| Windsurf | `windsurf` | `.windsurf/skills` | `~/.codeium/windsurf/skills` |
+| Hermes | `hermes` | `.hermes/skills` | `~/.hermes/skills` |
+| OpenClaw | `openclaw` | `.agents/skills` | `~/.openclaw/skills` |
 | Generic AGENTS.md | `project` | `.agents/skills` | `~/.agents/skills` |
 
 > Many newer CLIs share the AGENTS.md `.agents/skills` project location, so one
@@ -55,11 +56,27 @@ see the table). Installing for several at once is a single symlink set.
 qvr add code-review --target copilot     # -> .github/skills/code-review
 ```
 
-## Windsurf
+## OpenClaw
 
 ```bash
-qvr add code-review --target windsurf    # -> .windsurf/skills/code-review
+qvr add code-review --target openclaw            # -> .agents/skills/code-review
+qvr add code-review --target openclaw --global   # -> ~/.openclaw/skills/code-review
 ```
+
+OpenClaw loads `<workspace>/.agents/skills` as project agent skills; the global
+lane targets `~/.openclaw/skills`, its shared managed-skills directory
+([docs](https://docs.openclaw.ai/tools/skills)).
+
+## Hermes
+
+```bash
+qvr add code-review --target hermes --global     # -> ~/.hermes/skills/code-review
+```
+
+`~/.hermes/skills` is Hermes' single source of truth, so global installs work
+out of the box. For project-local installs (`.hermes/skills`), add that
+directory to Hermes' `skills.external_dirs` config so it gets scanned
+([docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)).
 
 ## Generic / Other Agents
 

@@ -21,13 +21,11 @@ var (
 var auditIngestCmd = &cobra.Command{
 	Use:    "ingest <transcript|rollout|dir> [more...]",
 	Hidden: true, // low-level plumbing — see `qvr audit --help`
-	Short:  "Record a session from an existing transcript, no live hook",
-	Long: `Capture one or more already-produced transcripts as audit sessions WITHOUT
-installing hooks into a live agent config. This is the qvr-native path for
-QA / CI / sandboxed capture: a hook firing only points qvr at the agent's
-transcript, so a transcript on its own is enough to record the session, derive
-spans, and view it in 'qvr ui' — no need to mutate ~/.claude/settings.json or
-$CODEX_HOME.
+	Short:  "Record a session from an existing transcript",
+	Long: `Capture one or more already-produced transcripts as audit sessions. Agents
+persist their own session transcripts on disk; a transcript on its own is
+enough to record the session, derive spans, and view it in 'qvr ui' — no agent
+configuration is touched.
 
 Pass a codex rollout, a claude session transcript (a .jsonl file), or a
 directory of them (every *.jsonl inside is ingested as its own session). The
@@ -69,7 +67,7 @@ func runAuditIngest(cmd *cobra.Command, args []string) error {
 	}
 
 	// Open read-write so the DB is created+migrated on demand — ingest is a
-	// deliberate import that should work even before the first hook event.
+	// deliberate import that should work even before `qvr audit enable`.
 	s, err := openAuditStore(cmd.Context(), cfg, false)
 	if err != nil {
 		return fmt.Errorf("open audit store: %w", err)
@@ -113,9 +111,11 @@ type ingestedResult struct {
 }
 
 // ingestOneFile sniffs the agent (unless forced) and ingests a single
-// transcript, returning the outcome row (with Error set on failure).
+// transcript, returning the outcome row (with Error set on failure). The
+// reported agent is always the canonical target name, regardless of whether
+// the user passed an alias.
 func ingestOneFile(cmd *cobra.Command, s store.Store, path string) ingestedResult {
-	agent := ingestAgent
+	agent := canonicalAgentFlag(ingestAgent)
 	if agent == "" {
 		agent = rawtrace.SniffAgent(path)
 	}

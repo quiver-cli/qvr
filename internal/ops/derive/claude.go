@@ -4,12 +4,11 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/astra-sh/qvr/internal/ops"
 )
 
-func init() { Register("claude-code", claudeDeriver{}) }
+func init() { Register("claude", claudeDeriver{}) }
 
 // claudeDeriver reconstructs the Turn→Tool/Skill hierarchy from Claude Code
 // transcript lines. Reconstruction (not a live hook stream) is what makes the
@@ -23,9 +22,12 @@ func init() { Register("claude-code", claudeDeriver{}) }
 type claudeDeriver struct{}
 
 // claudeLine is the subset of a Claude transcript JSONL line we read.
+// gitBranch rides on every line (per Claude Code's transcript format) and
+// feeds the unified session meta.
 type claudeLine struct {
 	Type      string          `json:"type"`
 	Timestamp string          `json:"timestamp"`
+	GitBranch string          `json:"gitBranch"`
 	Message   json.RawMessage `json:"message"`
 }
 
@@ -54,28 +56,13 @@ type claudeBlock struct {
 	IsError   bool            `json:"is_error"`
 }
 
-// turn accumulates one user→assistant exchange while we walk the transcript.
-type turn struct {
-	index     int
-	startMs   int64
-	endMs     int64
-	prompt    string
-	output    string
-	model     string
-	inTokens  int
-	outTokens int
-	traceID   string
-	llmSpanID string
-	tools     []Span         // TOOL + SKILL children, parented to llmSpanID
-	pending   map[string]int // tool_use_id → index into tools (awaiting result)
-}
-
-func (claudeDeriver) Derive(rows []*ops.RawTrace) ([]Span, error) {
+func (claudeDeriver) Derive(rows []*ops.RawTrace) (*Derivation, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	sessionID := rows[0].SessionID.String()
 
+	out := &Derivation{}
 	var spans []Span
 	var cur *turn
 	turnIdx := 0
@@ -97,7 +84,10 @@ func (claudeDeriver) Derive(rows []*ops.RawTrace) ([]Span, error) {
 		if err := json.Unmarshal(r.Raw, &ln); err != nil {
 			continue // a non-JSON / unexpected line is skipped, never fatal
 		}
-		ts := parseClaudeTime(ln.Timestamp)
+		if out.Meta.GitBranch == "" && ln.GitBranch != "" {
+			out.Meta.GitBranch = ln.GitBranch
+		}
+		ts := parseISOMs(ln.Timestamp)
 
 		switch ln.Type {
 		case "user":
@@ -142,7 +132,8 @@ func (claudeDeriver) Derive(rows []*ops.RawTrace) ([]Span, error) {
 		}
 	}
 	flush()
-	return spans, nil
+	out.Spans = spans
+	return out, nil
 }
 
 // absorbAssistant folds one assistant line into the current turn: appends text,
@@ -405,16 +396,4 @@ func clip(s string, n int) string {
 		return s
 	}
 	return s[:n]
-}
-
-// parseClaudeTime parses an ISO-8601 transcript timestamp to epoch ms, or 0.
-func parseClaudeTime(s string) int64 {
-	if s == "" {
-		return 0
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return 0
-	}
-	return t.UnixMilli()
 }

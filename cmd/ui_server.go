@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +43,9 @@ type uiServer struct {
 	cfg         *config.Config
 	store       store.Store // nil when the audit DB is absent
 	version     string
+	// assets overrides the embedded dashboard bundle (set by `qvr ui --build`
+	// to serve the freshly built dist from disk). nil = embedded bundle.
+	assets fs.FS
 }
 
 // buildUIServer bootstraps the server: loads config and opens the audit store
@@ -96,6 +101,8 @@ func (s *uiServer) handler() http.Handler {
 	mux.HandleFunc("GET /api/metrics/skills", s.handleSkillMetrics)
 	mux.HandleFunc("GET /api/metrics/skills/{name}", s.handleSkillReport)
 	mux.HandleFunc("GET /api/metrics/deadweight", s.handleDeadweight)
+	mux.HandleFunc("GET /api/metrics/activity", s.handleActivity)
+	mux.HandleFunc("POST /api/discover", s.handleDiscover)
 	mux.HandleFunc("GET /api/provenance", s.handleProvenance)
 	mux.HandleFunc("GET /api/scan", s.handleScanSummary)
 	mux.HandleFunc("POST /api/scan/{name}", s.handleScanRun)
@@ -217,13 +224,73 @@ func indexedProjectRoots() map[string]time.Time {
 
 // ---- shared lock access ----------------------------------------------------
 
-// entriesForScope returns every lock entry in the given scope, flattened across
-// project/global per the resolved flags.
-func (s *uiServer) entriesForScope(sc uiScope) ([]*model.LockEntry, error) {
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		return nil, err
+// locksForScope resolves the locks a UI request reads, leniently (a lock
+// that can't be read — e.g. an old schema version — becomes a warning, never
+// a dead page).
+//
+// Project scope reads the project lock. Global and all are the MACHINE view:
+// the user-global lock plus every project recorded in projects.json (plus the
+// launch root, which may not be recorded yet) — matching how the audit panels
+// already treat those scopes as "every session on this machine". Each lock
+// carries a scope label ("global" or the project directory name).
+func (s *uiServer) locksForScope(sc uiScope) ([]scopedLock, []string) {
+	if !sc.global && !sc.all {
+		return loadScopedLocksLenient(sc.projectRoot, false, false)
 	}
+
+	var locks []scopedLock
+	var warnings []string
+	add := func(path, label string) {
+		lock, warn := readLockOrWarn(path, label)
+		locks = append(locks, scopedLock{Scope: label, Lock: lock})
+		if warn != "" {
+			warnings = append(warnings, warn)
+		}
+	}
+
+	add(model.DefaultLockPath(s.projectRoot, config.Dir(), true), "global")
+
+	roots := indexedProjectRoots()
+	roots[s.projectRoot] = time.Time{} // the launch root may not be recorded yet
+	// Skip temp-dir debris only when the quiver home is a real one — a
+	// sandboxed home (tests, throwaway QUIVER_HOME) legitimately holds
+	// temp-dir projects.
+	skipTemp := !isThrowawayRoot(config.Dir())
+	for _, root := range slices.Sorted(maps.Keys(roots)) {
+		if root != s.projectRoot && skipTemp && isThrowawayRoot(root) {
+			continue // test/scratch debris recorded in projects.json
+		}
+		add(filepath.Join(root, model.LockFileName), filepath.Base(root))
+	}
+	return locks, capWarnings(warnings, 3)
+}
+
+// isThrowawayRoot reports whether a recorded project root lives in a temp
+// directory — e2e/scratch runs leave these in projects.json, and the machine
+// view shouldn't drown real projects (or the warnings list) in their debris.
+// They stay reachable through the explicit project switcher.
+func isThrowawayRoot(root string) bool {
+	for _, tmp := range []string{os.TempDir(), "/tmp/", "/private/tmp/"} {
+		if tmp != "" && strings.HasPrefix(root, strings.TrimSuffix(tmp, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// capWarnings keeps the first n warnings and folds the rest into a count, so
+// a machine full of stale locks doesn't render a wall of red.
+func capWarnings(warnings []string, n int) []string {
+	if len(warnings) <= n {
+		return warnings
+	}
+	return append(warnings[:n], fmt.Sprintf("…and %d more locks skipped", len(warnings)-n))
+}
+
+// entriesForScope returns every lock entry in the given scope, flattened
+// across the scope's locks, plus the lenient-load warnings.
+func (s *uiServer) entriesForScope(sc uiScope) ([]*model.LockEntry, []string) {
+	locks, warnings := s.locksForScope(sc)
 	var out []*model.LockEntry
 	for _, sl := range locks {
 		if sl.Lock == nil {
@@ -231,7 +298,24 @@ func (s *uiServer) entriesForScope(sc uiScope) ([]*model.LockEntry, error) {
 		}
 		out = append(out, sl.Lock.Entries()...)
 	}
-	return out, nil
+	return out, warnings
+}
+
+// firstEntryAcrossLocks resolves name to its first match across locks, in
+// scope order. The dashboard is a viewer: in the machine view a name that
+// exists in several projects should render the first hit (its scope label
+// says where it came from) rather than erroring like the CLI's strict
+// ambiguity rule.
+func firstEntryAcrossLocks(name string, locks []scopedLock) (*model.LockEntry, scopedLock, error) {
+	for _, sl := range locks {
+		if sl.Lock == nil {
+			continue
+		}
+		if entry, err := sl.Lock.Get(name); err == nil {
+			return entry, sl, nil
+		}
+	}
+	return nil, scopedLock{}, fmt.Errorf("%w: skill %q not found in any lock", model.ErrLockSkillMissing, name)
 }
 
 // ---- handlers --------------------------------------------------------------
@@ -338,11 +422,10 @@ func (s *uiServer) handleRegistrySkills(w http.ResponseWriter, r *http.Request) 
 	// install annotations rather than failing the (global) registry page.
 	installed := map[string]*model.LockEntry{}
 	if sc, err := s.resolveScope(r); err == nil {
-		if entries, err := s.entriesForScope(sc); err == nil {
-			for _, e := range entries {
-				if e.Registry == name {
-					installed[e.Name] = e
-				}
+		entries, _ := s.entriesForScope(sc)
+		for _, e := range entries {
+			if e.Registry == name {
+				installed[e.Name] = e
 			}
 		}
 	}
@@ -502,10 +585,7 @@ func (s *uiServer) markRegistrySkillInstalled(r *http.Request, resp *registrySki
 	if err != nil {
 		return
 	}
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		return
-	}
+	entries, _ := s.entriesForScope(sc)
 	for _, e := range entries {
 		if e.Registry == name && e.Name == skillName {
 			resp.Installed = true
@@ -650,16 +730,19 @@ type overviewResponse struct {
 	// through — including the sessions/events counts below — so the UI can
 	// label "this project" vs "global" instead of presenting project-scoped
 	// gate data and global audit data as if they share scope (issue #141).
-	Scope          string              `json:"scope"`
-	ProjectRoot    string              `json:"project_root,omitempty"`
-	Sessions       int64               `json:"sessions"`
-	Events         int64               `json:"events"`
-	Skills         int                 `json:"skills"`
-	Registries     int                 `json:"registries"`
-	GateAllowed    int                 `json:"gate_allowed"`
-	GateBlocked    int                 `json:"gate_blocked"`
-	GateUnscanned  int                 `json:"gate_unscanned"`
-	RecentSessions []*store.RawSession `json:"recent_sessions"`
+	Scope          string                  `json:"scope"`
+	ProjectRoot    string                  `json:"project_root,omitempty"`
+	Sessions       int64                   `json:"sessions"`
+	Events         int64                   `json:"events"`
+	Skills         int                     `json:"skills"`
+	Registries     int                     `json:"registries"`
+	GateAllowed    int                     `json:"gate_allowed"`
+	GateBlocked    int                     `json:"gate_blocked"`
+	GateUnscanned  int                     `json:"gate_unscanned"`
+	RecentSessions []*store.SessionMetaRow `json:"recent_sessions"`
+	// LockWarnings names any lock that had to be skipped (e.g. an old schema
+	// version) so the dashboard can say why lock-derived panels look empty.
+	LockWarnings []string `json:"lock_warnings,omitempty"`
 }
 
 func (s *uiServer) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -672,7 +755,7 @@ func (s *uiServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 	resp := overviewResponse{
 		AuditEnabled:   s.store != nil,
 		Scope:          sc.label(),
-		RecentSessions: []*store.RawSession{},
+		RecentSessions: []*store.SessionMetaRow{},
 	}
 	if resp.Scope == "project" {
 		resp.ProjectRoot = sc.projectRoot
@@ -688,18 +771,13 @@ func (s *uiServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if n, err := s.store.CountRawTraces(ctx, dirs, ""); err == nil {
 			resp.Events = n
 		}
-		if recent, err := s.store.ListRawSessions(ctx, &store.RawSessionFilter{Dirs: dirs, SkillsOnly: true, Limit: 5}); err == nil && recent != nil {
-			s.populateTitles(ctx, recent)
-			s.populateSessionSkills(ctx, recent)
+		if recent, err := s.store.ListSessionMeta(ctx, &store.SessionMetaFilter{Dirs: dirs, SkillsOnly: true, Limit: 5}); err == nil && recent != nil {
 			resp.RecentSessions = recent
 		}
 	}
 
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	entries, lockWarnings := s.entriesForScope(sc)
+	resp.LockWarnings = lockWarnings
 	resp.Skills = len(entries)
 	regs := map[string]struct{}{}
 	for _, e := range entries {
@@ -721,7 +799,7 @@ func (s *uiServer) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *uiServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
-		writeJSON(w, http.StatusOK, []*store.RawSession{})
+		writeJSON(w, http.StatusOK, []*store.SessionMetaRow{})
 		return
 	}
 	sc, err := s.resolveScope(r)
@@ -736,13 +814,13 @@ func (s *uiServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	filter := &store.RawSessionFilter{
+	filter := &store.SessionMetaFilter{
 		Dirs:  sc.auditDirs(),
-		Agent: q.Get("agent"),
+		Agent: canonicalAgentFlag(q.Get("agent")),
 		Skill: q.Get("skill"),
 		// The dashboard only surfaces skill-attributed sessions; skill-less ones
-		// that escaped capture's retention gate (in-flight, no deriver, ingested)
-		// stay in the DB but never show in the UI.
+		// that escaped the retention gate (in-flight, explicitly ingested) stay
+		// in the DB but never show in the UI.
 		SkillsOnly: true,
 		Limit:      limit,
 	}
@@ -756,20 +834,18 @@ func (s *uiServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 		filter.Until = until
 	}
 
-	sessions, err := s.store.ListRawSessions(r.Context(), filter)
+	sessions, err := s.store.ListSessionMeta(r.Context(), filter)
 	if err != nil {
 		if schemaNotReady(err) {
-			writeJSON(w, http.StatusOK, []*store.RawSession{})
+			writeJSON(w, http.StatusOK, []*store.SessionMetaRow{})
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if sessions == nil {
-		sessions = []*store.RawSession{}
+		sessions = []*store.SessionMetaRow{}
 	}
-	s.populateTitles(r.Context(), sessions)
-	s.populateSessionSkills(r.Context(), sessions)
 	writeJSON(w, http.StatusOK, sessions)
 }
 
@@ -795,38 +871,6 @@ func parseDateParam(s string, endOfDay bool) *time.Time {
 	return nil
 }
 
-// populateSessionSkills fills each session's Skills with the distinct skills it
-// used, looked up from its derived spans in one batched query. Best-effort: a
-// lookup error leaves Skills empty rather than failing the list.
-func (s *uiServer) populateSessionSkills(ctx context.Context, sessions []*store.RawSession) {
-	if s.store == nil || len(sessions) == 0 {
-		return
-	}
-	ids := make([]string, 0, len(sessions))
-	for _, sess := range sessions {
-		ids = append(ids, sess.SessionID.String())
-	}
-	bySession, err := s.store.SkillsForSessions(ctx, ids)
-	if err != nil {
-		return
-	}
-	for _, sess := range sessions {
-		if skills := bySession[sess.SessionID.String()]; len(skills) > 0 {
-			sess.Skills = skills
-		}
-	}
-}
-
-// titlePromptRows is how many leading transcript rows we read per session to
-// derive its title. The first user prompt is essentially always within the
-// first few rows, so a small window keeps the sessions list cheap (the deriver
-// runs over just these rows, not the whole session).
-const titlePromptRows = 20
-
-// titleMaxLen clips derived session titles so a long first prompt stays a tidy
-// single-line table cell.
-const titleMaxLen = 100
-
 // schemaNotReady reports whether err is the "raw-trace tables don't exist yet"
 // condition — a DB that predates v0.10.0 and hasn't had a write-mode capture
 // apply migration 0002 (the read-only UI open can't create tables). The
@@ -838,43 +882,18 @@ func schemaNotReady(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "no such table: raw_traces") ||
-		strings.Contains(msg, "no such table: spans")
-}
-
-// populateTitles fills each session's Title with its first user prompt, derived
-// from a small leading window of its transcript rows. Best-effort: a session we
-// can't derive (no deriver for its agent, no transcript, query error) keeps an
-// empty Title and the UI falls back to a placeholder. The store is required;
-// callers only invoke this when s.store != nil.
-func (s *uiServer) populateTitles(ctx context.Context, sessions []*store.RawSession) {
-	if s.store == nil {
-		return
-	}
-	for _, sess := range sessions {
-		if sess == nil || sess.TranscriptLines == 0 {
-			continue
-		}
-		id := sess.SessionID
-		rows, err := s.store.QueryRawTraces(ctx, &store.RawTraceFilter{
-			SessionID: &id,
-			Sources:   []string{ops.RawSourceTranscript},
-			Limit:     titlePromptRows,
-		})
-		if err != nil || len(rows) == 0 {
-			continue
-		}
-		sess.Title = derive.FirstPrompt(rows, titleMaxLen)
-	}
+		strings.Contains(msg, "no such table: spans") ||
+		strings.Contains(msg, "no such table: session_meta")
 }
 
 // sessionDetail bundles both representations of a session so the UI can toggle
 // between them: the derived span timeline (the processed view) and the verbatim
-// raw rows (the lossless source). Session carries the summary + derived title so
+// raw rows (the lossless source). Session carries the unified session model so
 // the detail header names the session by its first prompt, not by its agent.
 type sessionDetail struct {
-	Session *store.RawSession `json:"session"`
-	Spans   []*store.SpanRow  `json:"spans"`
-	Traces  []rawTraceView    `json:"traces"`
+	Session *store.SessionMetaRow `json:"session"`
+	Spans   []*store.SpanRow      `json:"spans"`
+	Traces  []rawTraceView        `json:"traces"`
 }
 
 // rawTraceView is one raw row rendered for the dashboard. Raw holds the verbatim
@@ -904,7 +923,7 @@ func (s *uiServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Pull the full set of raw rows for this session once: they drive the raw
-	// view, the derived title, and the summary, so we read them a single time.
+	// view; the header comes from the unified session model.
 	rawRows, err := s.store.QueryRawTraces(ctx, &store.RawTraceFilter{
 		SessionID: &id,
 		Limit:     100000,
@@ -912,7 +931,7 @@ func (s *uiServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if schemaNotReady(err) {
 			writeJSON(w, http.StatusOK, sessionDetail{
-				Session: &store.RawSession{SessionID: id},
+				Session: &store.SessionMetaRow{SessionID: id},
 				Spans:   []*store.SpanRow{},
 				Traces:  []rawTraceView{},
 			})
@@ -931,48 +950,73 @@ func (s *uiServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		spans = []*store.SpanRow{}
 	}
 
+	meta, err := s.store.GetSessionMeta(ctx, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if meta == nil {
+		// A session without a derivation (raw-only agent, legacy rows) still
+		// gets a minimal header from its raw rows.
+		meta = fallbackSessionMeta(id, rawRows)
+	}
+
 	detail := sessionDetail{
-		Session: summarizeRawSession(id, rawRows),
+		Session: meta,
 		Spans:   spans,
 		Traces:  toRawTraceViews(rawRows),
 	}
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// summarizeRawSession builds the session summary the detail header renders from
-// the session's own raw rows — the same fields ListRawSessions computes in SQL,
-// recomputed here in Go so the detail page never needs a second scan over every
-// session. Includes the derived title.
-func summarizeRawSession(id uuid.UUID, rows []*ops.RawTrace) *store.RawSession {
-	sess := &store.RawSession{SessionID: id, TotalRows: int64(len(rows))}
-	for i, r := range rows {
+// fallbackSessionMeta builds a session header for sessions that have no
+// persisted projection yet (e.g. opened by direct URL before a discover or
+// rederive ran): a best-effort in-memory derivation supplies the full meta
+// (title included); an underivable agent gets a minimal header from its rows.
+func fallbackSessionMeta(id uuid.UUID, rows []*ops.RawTrace) *store.SessionMetaRow {
+	if d, err := derive.DeriveSession(rows); err == nil && d != nil {
+		return &store.SessionMetaRow{
+			SessionID:       id,
+			AgentName:       d.Meta.Agent,
+			SourceSessionID: d.Meta.SourceSessionID,
+			SourcePath:      d.Meta.SourcePath,
+			WorkingDir:      d.Meta.WorkingDir,
+			GitBranch:       d.Meta.GitBranch,
+			Model:           d.Meta.Model,
+			Title:           d.Meta.Title,
+			StartedMs:       d.Meta.StartedMs,
+			EndedMs:         d.Meta.EndedMs,
+			Turns:           d.Meta.Turns,
+			Tools:           d.Meta.Tools,
+			Skills:          d.Meta.Skills,
+		}
+	}
+	meta := &store.SessionMetaRow{SessionID: id}
+	for _, r := range rows {
 		if r == nil {
 			continue
 		}
-		if r.AgentName != "" {
-			sess.AgentName = r.AgentName
+		if meta.AgentName == "" {
+			meta.AgentName = r.AgentName
 		}
-		if r.AgentSessionID != "" {
-			sess.AgentSessionID = r.AgentSessionID
+		if meta.SourceSessionID == "" {
+			meta.SourceSessionID = r.AgentSessionID
 		}
-		if r.WorkingDirectory != "" {
-			sess.WorkingDirectory = r.WorkingDirectory
+		if meta.SourcePath == "" {
+			meta.SourcePath = r.SourcePath
 		}
-		switch r.Source {
-		case ops.RawSourceTranscript:
-			sess.TranscriptLines++
-		case ops.RawSourceHookPayload:
-			sess.HookPayloads++
+		if meta.WorkingDir == "" {
+			meta.WorkingDir = r.WorkingDirectory
 		}
-		if i == 0 || r.CapturedAt.Before(sess.StartedAt) {
-			sess.StartedAt = r.CapturedAt
+		ts := r.CapturedAt.UnixMilli()
+		if meta.StartedMs == 0 || ts < meta.StartedMs {
+			meta.StartedMs = ts
 		}
-		if r.CapturedAt.After(sess.LastAt) {
-			sess.LastAt = r.CapturedAt
+		if ts > meta.EndedMs {
+			meta.EndedMs = ts
 		}
 	}
-	sess.Title = derive.FirstPrompt(rows, titleMaxLen)
-	return sess
+	return meta
 }
 
 // toRawTraceViews renders raw rows for the dashboard's raw toggle, decoding each
@@ -1018,11 +1062,7 @@ func (s *uiServer) handleSkills(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	locks, _ := s.locksForScope(sc)
 	rows := []scopedListEntry{}
 	for _, sl := range locks {
 		if sl.Lock == nil {
@@ -1034,7 +1074,7 @@ func (s *uiServer) handleSkills(w http.ResponseWriter, r *http.Request) {
 				Worktree:  skill.EntryWorktreePath(e),
 				LockEntry: e,
 			}
-			if sc.all {
+			if len(locks) > 1 {
 				row.Scope = sl.Scope
 			}
 			rows = append(rows, row)
@@ -1050,12 +1090,8 @@ func (s *uiServer) handleSkill(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	entry, scope, err := findEntryAcrossLocks(name, locks)
+	locks, _ := s.locksForScope(sc)
+	entry, scope, err := firstEntryAcrossLocks(name, locks)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
@@ -1074,12 +1110,8 @@ func (s *uiServer) handleTree(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	groups := buildTreeGroups(locks, sc.all)
+	locks, _ := s.locksForScope(sc)
+	groups := buildTreeGroups(locks, sc.all || sc.global)
 	if groups == nil {
 		groups = []treeGroup{}
 	}
@@ -1092,11 +1124,7 @@ func (s *uiServer) handleProvenance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	entries, _ := s.entriesForScope(sc)
 	views := make([]*provenanceView, 0, len(entries))
 	for _, e := range entries {
 		views = append(views, buildProvenanceView(e))
@@ -1120,11 +1148,7 @@ func (s *uiServer) handleScanSummary(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	entries, _ := s.entriesForScope(sc)
 	rows := make([]scanSummaryRow, 0, len(entries))
 	for _, e := range entries {
 		v := buildProvenanceView(e)
@@ -1178,12 +1202,8 @@ func (s *uiServer) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	entry, _, err := findEntryAcrossLocks(name, locks)
+	locks, _ := s.locksForScope(sc)
+	entry, _, err := firstEntryAcrossLocks(name, locks)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
@@ -1242,11 +1262,14 @@ func (s *uiServer) handleStatic(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no such endpoint: %s", r.URL.Path))
 		return
 	}
-	if !ui.HasIndex() {
-		serveStub(w)
-		return
+	dist := s.assets
+	if dist == nil {
+		if !ui.HasIndex() {
+			serveStub(w)
+			return
+		}
+		dist = ui.Dist()
 	}
-	dist := ui.Dist()
 	name := path.Clean("/" + r.URL.Path)[1:] // strip leading slash, clean traversal
 	if name == "" {
 		name = "index.html"

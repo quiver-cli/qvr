@@ -285,7 +285,9 @@ var targetRegistry = []Target{
 		Name: "hermes", Display: "Hermes",
 		LocalDir: ".hermes/skills", GlobalDir: "~/.hermes/skills",
 		Aliases: []string{"hermes-agent"},
-		// docs: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/skills-catalog.md
+		// docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
+		// (~/.hermes/skills is the documented single source of truth; project dirs are
+		// only read via the skills.external_dirs config — local dir is convention)
 	},
 	{
 		Name: "kode", Display: "Kode",
@@ -337,8 +339,11 @@ var targetRegistry = []Target{
 	},
 	{
 		Name: "openclaw", Display: "OpenClaw",
-		LocalDir: "skills", GlobalDir: "~/.openclaw/skills",
-		// docs: https://docs.openclaw.ai/cli/skills
+		LocalDir: ".agents/skills", GlobalDir: "~/.openclaw/skills",
+		Aliases: []string{"clawdbot"},
+		// docs: https://docs.openclaw.ai/tools/skills (<workspace>/.agents/skills is the
+		// documented project-agent dir; ~/.openclaw/skills is the shared managed dir —
+		// it also reads <workspace>/skills and ~/.agents/skills, per its precedence order)
 	},
 	{
 		Name: "pi", Display: "Pi",

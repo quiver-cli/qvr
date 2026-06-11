@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Library, MessagesSquare, Package, ScrollText } from "lucide-react";
+import { Clock, Coins, Layers, Library, MessagesSquare, Package } from "lucide-react";
 import { api, prettyAgent, scopeToken, useFetch, type SkillUsageRow } from "../api";
 import {
   Badge,
@@ -10,19 +11,27 @@ import {
   PageHead,
   Prompt,
   SkillRowItem,
+  RefreshButton,
   StatCard,
   StatusBadge,
 } from "../components/qvr";
-import { fmtCount, fmtShare, relTime } from "../lib/format";
+import { ActivityCharts, activityCoverage, avgSessionMs } from "../components/ActivityPanel";
+import { fmtCount, fmtCountWhole, fmtDuration, fmtShare, relTimeMs } from "../lib/format";
 
 // Overview — the dashboard home: stat tiles, the verified-work headline
 // ("N installed · M do 90% of verified work · K never fired"), the scan-gate
 // rollup, what needs attention, and the latest sessions.
 export default function Overview() {
-  const ov = useFetch(api.overview, `overview:${scopeToken()}`);
-  const metrics = useFetch(() => api.metricsSkills(), `overview-metrics:${scopeToken()}`);
+  const [nonce, setNonce] = useState(0);
+  // 10s polling keeps the dashboard live while the server's background scan
+  // ingests new sessions — no manual refresh needed.
+  const ov = useFetch(api.overview, `overview:${scopeToken()}:${nonce}`, 10_000);
+  const metrics = useFetch(() => api.metricsSkills(), `overview-metrics:${scopeToken()}:${nonce}`, 10_000);
+  const act = useFetch(() => api.activity(), `overview-activity:${scopeToken()}:${nonce}`, 10_000);
   const data = ov.data;
   const m = metrics.data;
+  const activity = act.data?.audit_enabled && act.data.summary.sessions > 0 ? act.data : null;
+  const cov = activity ? activityCoverage(activity) : null;
 
   return (
     <>
@@ -42,6 +51,7 @@ export default function Overview() {
             "What Quiver has recorded on this machine."
           )
         }
+        actions={<RefreshButton onClick={() => setNonce((n) => n + 1)} busy={ov.loading} />}
       />
       {ov.loading && <Loading />}
       {ov.error && <ErrorBox message={ov.error} />}
@@ -56,18 +66,50 @@ export default function Overview() {
             </div>
           )}
 
+          {data.lock_warnings && data.lock_warnings.length > 0 && (
+            <div style={{ margin: "0 0 18px" }}>
+              {data.lock_warnings.map((w) => (
+                <ErrorBox key={w} message={w} />
+              ))}
+            </div>
+          )}
+
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
+              gridTemplateColumns: activity
+                ? "repeat(6, minmax(0, 1fr))"
+                : "repeat(2, minmax(0, 1fr))",
               gap: 12,
               marginBottom: 18,
             }}
           >
             <StatCard icon={<Package />} value={data.skills} label="skills pinned" />
             <StatCard icon={<Library />} value={data.registries} label="registries" />
-            <StatCard icon={<MessagesSquare />} value={data.sessions} label="sessions" />
-            <StatCard icon={<ScrollText />} value={data.events} label="raw traces" />
+            {activity && cov && (
+              <>
+                <StatCard
+                  icon={<Layers />}
+                  value={fmtCount(cov.totalSessions)}
+                  label={`sessions · ${fmtShare(cov.taggedShare)} used skills`}
+                />
+                <StatCard
+                  icon={<MessagesSquare />}
+                  value={fmtCount(activity.summary.turns)}
+                  label={`turns · ${fmtCount(activity.summary.tools)} tool calls`}
+                />
+                <StatCard
+                  icon={<Coins />}
+                  value={fmtCountWhole(activity.summary.tokens_in + activity.summary.tokens_out)}
+                  label={`tokens · ${fmtCount(activity.summary.tokens_in)} in / ${fmtCount(activity.summary.tokens_out)} out`}
+                />
+                <StatCard
+                  icon={<Clock />}
+                  value={fmtDuration(activity.summary.duration_ms)}
+                  label={`session time · ${fmtDuration(avgSessionMs(activity))} avg`}
+                />
+              </>
+            )}
           </div>
 
           {m?.audit_enabled && m.headline.total_invocations > 0 && (
@@ -96,10 +138,12 @@ export default function Overview() {
             </Card>
           )}
 
+          {activity && <ActivityCharts data={activity} skills={m?.skills ?? []} />}
+
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "1fr 1fr",
+              gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)",
               gap: 12,
               marginTop: 18,
             }}
@@ -138,7 +182,7 @@ export default function Overview() {
                       </Link>
                       <span style={{ display: "flex", gap: 8, alignItems: "center", flex: "none" }}>
                         <Badge tone="info">{prettyAgent(s.agent_name)}</Badge>
-                        <span className="qvr-ver__when">{relTime(s.started_at)}</span>
+                        <span className="qvr-ver__when">{relTimeMs(s.started_ms)}</span>
                       </span>
                     </li>
                   ))}

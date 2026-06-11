@@ -37,10 +37,11 @@ func TestClaudeDerive_TurnToolSkill(t *testing.T) {
 		row(sid, 3, `{"type":"assistant","timestamp":"2026-06-02T00:00:03.000Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"output_tokens":5},"content":[{"type":"text","text":"done"}]}}`),
 	}
 
-	spans, err := derive.DeriveSession(rows)
+	d, err := derive.DeriveSession(rows)
 	if err != nil {
 		t.Fatalf("derive: %v", err)
 	}
+	spans := d.Spans
 
 	llm, tool, skill := splitSpanKinds(spans)
 	if llm == nil || tool == nil || skill == nil {
@@ -81,7 +82,34 @@ func TestClaudeDerive_TurnToolSkill(t *testing.T) {
 
 	// Determinism: re-derivation reproduces identical ids.
 	again, _ := derive.DeriveSession(rows)
-	if again[0].SpanID != spans[0].SpanID || again[0].TraceID != spans[0].TraceID {
+	if again.Spans[0].SpanID != spans[0].SpanID || again.Spans[0].TraceID != spans[0].TraceID {
 		t.Error("derivation is not deterministic")
+	}
+
+	// Unified session meta: constructed from the same walk.
+	wantMeta(t, d.Meta, "claude", "add a feature", "claude-opus-4-8", 1, 1, "code-review")
+}
+
+// wantMeta asserts the unified session meta's core fields plus valid time
+// bounds and a single-skill list.
+func wantMeta(t *testing.T, m derive.SessionMeta, agent, title, model string, turns, tools int64, skill string) {
+	t.Helper()
+	if m.Agent != agent {
+		t.Errorf("meta agent = %q, want %q", m.Agent, agent)
+	}
+	if m.Title != title {
+		t.Errorf("meta title = %q, want %q", m.Title, title)
+	}
+	if m.Model != model {
+		t.Errorf("meta model = %q, want %q", m.Model, model)
+	}
+	if m.Turns != turns || m.Tools != tools {
+		t.Errorf("meta counts = %d turns / %d tools, want %d/%d", m.Turns, m.Tools, turns, tools)
+	}
+	if len(m.Skills) != 1 || m.Skills[0] != skill {
+		t.Errorf("meta skills = %v, want [%s]", m.Skills, skill)
+	}
+	if m.StartedMs == 0 || m.EndedMs < m.StartedMs {
+		t.Errorf("meta time bounds invalid: %d..%d", m.StartedMs, m.EndedMs)
 	}
 }

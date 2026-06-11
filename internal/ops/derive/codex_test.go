@@ -52,10 +52,11 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 		codexRow(sid, 11, `{"timestamp":"2026-06-02T15:32:06.415Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"done"}}`),
 	}
 
-	spans, err := derive.DeriveSession(rows)
+	d, err := derive.DeriveSession(rows)
 	if err != nil {
 		t.Fatalf("derive: %v", err)
 	}
+	spans := d.Spans
 
 	llm, tool, skill := splitSpanKinds(spans)
 	if llm == nil || tool == nil || skill == nil {
@@ -101,7 +102,7 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 
 	// Determinism: re-derivation reproduces identical ids.
 	again, _ := derive.DeriveSession(rows)
-	if again[0].SpanID != spans[0].SpanID || again[0].TraceID != spans[0].TraceID {
+	if again.Spans[0].SpanID != spans[0].SpanID || again.Spans[0].TraceID != spans[0].TraceID {
 		t.Error("derivation is not deterministic")
 	}
 
@@ -109,6 +110,9 @@ func TestCodexDerive_TurnToolSkill(t *testing.T) {
 	// must collapse onto ONE span, so every emitted span_id is unique. A dup
 	// here is exactly what tripped the UNIQUE constraint and dropped sessions.
 	assertUniqueSpanIDs(t, spans)
+
+	// Unified session meta: model, prompt title, counts, and the skill list.
+	wantMeta(t, d.Meta, "codex", "list files then read the review skill", "gpt-5.5", 1, 1, "code-review")
 }
 
 // splitSpanKinds returns the last LLM, TOOL, and SKILL span (each may be nil).
@@ -149,14 +153,14 @@ func assertUniqueSpanIDs(t *testing.T, spans []derive.Span) {
 	}
 }
 
-// TestCodexDerive_FirstPrompt confirms the shared title deriver works for codex.
-func TestCodexDerive_FirstPrompt(t *testing.T) {
+// TestCodexDerive_Title confirms the shared title logic works for codex.
+func TestCodexDerive_Title(t *testing.T) {
 	sid := uuid.New()
 	rows := []*ops.RawTrace{
 		codexRow(sid, 0, `{"timestamp":"2026-06-02T15:31:51.966Z","type":"event_msg","payload":{"type":"task_started"}}`),
 		codexRow(sid, 1, `{"timestamp":"2026-06-02T15:31:54.008Z","type":"event_msg","payload":{"type":"user_message","message":"fix the codex deriver"}}`),
 	}
-	if got := derive.FirstPrompt(rows, 120); got != "fix the codex deriver" {
-		t.Errorf("FirstPrompt: got %q", got)
+	if got := metaTitle(t, rows); got != "fix the codex deriver" {
+		t.Errorf("title: got %q", got)
 	}
 }

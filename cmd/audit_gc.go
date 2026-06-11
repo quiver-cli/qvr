@@ -20,7 +20,7 @@ const defaultRawRetention = 30 * 24 * time.Hour
 
 // skilllessGrace spares very recent sessions from the skill-only sweep: a
 // session whose last activity is within this window may still be in progress
-// (a skill could yet be used), so gc leaves it for the completion-hook gate.
+// (a skill could yet be used), so gc leaves it for a later pass.
 const skilllessGrace = time.Hour
 
 var auditGCCmd = &cobra.Command{
@@ -74,9 +74,8 @@ func runAuditGC(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prune raw traces: %w", err)
 	}
 
-	// Skill-only retention backstop: drop sessions that completed with no skill
-	// usage but never got a clean completion-hook prune (e.g. the agent crashed
-	// or the Stop hook never fired). Mirrors the gate in rawtrace.Capture.
+	// Skill-only retention backstop: drop settled sessions with no skill usage
+	// (qvr keeps skill-attributed evidence, not generic transcripts).
 	sessionsPruned, err := sweepSkilllessSessions(cmd, s)
 	if err != nil {
 		return err
@@ -98,7 +97,7 @@ func runAuditGC(cmd *cobra.Command, args []string) error {
 // sweepSkilllessSessions re-derives each settled session and deletes the ones
 // with no skill usage. Only sessions whose agent has a deriver are eligible
 // (skill absence is unprovable otherwise), and only those past skilllessGrace
-// (recent ones may still be active — left to the completion-hook gate).
+// (recent ones may still be active).
 func sweepSkilllessSessions(cmd *cobra.Command, s store.Store) (int, error) {
 	sessions, err := s.ListRawSessions(cmd.Context(), &store.RawSessionFilter{})
 	if err != nil {
@@ -113,7 +112,7 @@ func sweepSkilllessSessions(cmd *cobra.Command, s store.Store) (int, error) {
 		if sess.LastAt.After(cutoff) {
 			continue // too recent — may still be in progress
 		}
-		_, hasSkill, derr := rawtrace.Rederive(cmd.Context(), s, sess.SessionID, sess.AgentName)
+		_, hasSkill, derr := rawtrace.Rederive(cmd.Context(), s, sess.SessionID)
 		if derr != nil || hasSkill {
 			continue
 		}

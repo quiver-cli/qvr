@@ -3,24 +3,21 @@ package derive
 import (
 	"encoding/json"
 	"strings"
-
-	"github.com/astra-sh/qvr/internal/ops"
 )
 
-// FirstPrompt returns a human-friendly session title: the first prompt the user
-// typed into the session, collapsed to a single trimmed line and clipped. It is
-// derived from the same spans the deriver produces, so it reuses every agent's
-// transcript-parsing logic for free — the title is the user content of the
-// session's first LLM turn.
+// titleDefaultMaxLen is the clip length finalizeMeta uses for session titles.
+const titleDefaultMaxLen = 120
+
+// firstPromptFromSpans returns a human-friendly session title: the first
+// prompt the user typed into the session, collapsed to a single trimmed line
+// and clipped. It reads the spans the deriver produced, so it reuses every
+// agent's transcript-parsing logic for free — the title is the user content of
+// the session's first LLM turn.
 //
-// Returns "" when the session has no registered deriver (e.g. an agent we don't
-// yet derive), no LLM turn, or an empty first prompt. Callers fall back to a
-// placeholder ("untitled session") in that case rather than showing nothing.
-func FirstPrompt(rows []*ops.RawTrace, maxLen int) string {
-	spans, err := DeriveSession(rows)
-	if err != nil || len(spans) == 0 {
-		return ""
-	}
+// Returns "" when the session has no LLM turn or an empty first prompt;
+// callers fall back to a placeholder ("untitled session") rather than showing
+// nothing.
+func firstPromptFromSpans(spans []Span, maxLen int) string {
 	for _, sp := range spans {
 		if sp.Kind != KindLLM {
 			continue
@@ -44,12 +41,33 @@ func FirstPrompt(rows []*ops.RawTrace, maxLen int) string {
 			if m.Role != "user" {
 				continue
 			}
+			if isScaffoldPrompt(m.Content) {
+				continue // harness preamble, not what the user typed
+			}
 			if t := cleanTitle(m.Content); t != "" {
 				return clipTitle(t, maxLen)
 			}
 		}
 	}
 	return ""
+}
+
+// isScaffoldPrompt reports whether a "user" message is harness scaffolding
+// rather than typed input: local-command caveat blocks and slash-command
+// envelopes. Skipping them lets the first REAL prompt title the session.
+func isScaffoldPrompt(s string) bool {
+	t := strings.TrimSpace(s)
+	for _, prefix := range []string{
+		"<local-command-caveat>",
+		"Caveat: the messages below",
+		"<command-name>",
+		"<local-command-stdout>",
+	} {
+		if len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanTitle collapses whitespace/newlines into single spaces and trims, so a

@@ -37,7 +37,6 @@ var advancedCommands = map[string]bool{
 	"resolve":    true,
 	"import":     true,
 	"export":     true,
-	"hook":       true,
 	"audit":      true,
 	"scan":       true,
 	"ui":         true,

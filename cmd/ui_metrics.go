@@ -74,11 +74,7 @@ func (s *uiServer) handleSkillMetrics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	entries, _ := s.entriesForScope(sc)
 	f := s.metricsFilter(sc, r)
 	usage, tokens, ok := s.skillRollups(r.Context(), f)
 
@@ -293,7 +289,7 @@ type skillReportResponse struct {
 	Series         []skillReportSeriesPoint `json:"series"`
 	Tokens         skillReportTokens        `json:"tokens"`
 	Versions       []skillReportVersion     `json:"versions"`
-	RecentSessions []*store.RawSession      `json:"recentSessions"`
+	RecentSessions []*store.SessionMetaRow  `json:"recentSessions"`
 }
 
 // handleSkillReport serves GET /api/metrics/skills/{name} — the report card.
@@ -305,17 +301,13 @@ func (s *uiServer) handleSkillReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	entries, err := s.entriesForScope(sc)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	entries, _ := s.entriesForScope(sc)
 	resp := skillReportResponse{
 		Name:           name,
 		Agents:         []skillReportAgent{},
 		Series:         []skillReportSeriesPoint{},
 		Versions:       []skillReportVersion{},
-		RecentSessions: []*store.RawSession{},
+		RecentSessions: []*store.SessionMetaRow{},
 	}
 	var entry *model.LockEntry
 	for _, e := range entries {
@@ -436,12 +428,13 @@ func commitsMatch(a, b string) bool {
 	return strings.HasPrefix(b, a)
 }
 
-// fillReportRecentSessions attaches the skill's most recent sessions, titled.
+// fillReportRecentSessions attaches the skill's most recent sessions from the
+// unified session model (already titled and skill-tagged).
 func (s *uiServer) fillReportRecentSessions(ctx context.Context, resp *skillReportResponse, f *store.MetricsFilter) {
 	if s.store == nil {
 		return
 	}
-	sessions, err := s.store.ListRawSessions(ctx, &store.RawSessionFilter{
+	sessions, err := s.store.ListSessionMeta(ctx, &store.SessionMetaFilter{
 		Skill: f.Skill,
 		Dirs:  f.Dirs,
 		Limit: 8,
@@ -449,8 +442,6 @@ func (s *uiServer) fillReportRecentSessions(ctx context.Context, resp *skillRepo
 	if err != nil || sessions == nil {
 		return
 	}
-	s.populateTitles(ctx, sessions)
-	s.populateSessionSkills(ctx, sessions)
 	resp.RecentSessions = sessions
 }
 
@@ -496,11 +487,7 @@ func (s *uiServer) handleDeadweight(w http.ResponseWriter, r *http.Request) {
 		fired[u.Skill] = struct{}{}
 	}
 
-	locks, err := loadScopedLocks(sc.projectRoot, sc.global, sc.all)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
+	locks, _ := s.locksForScope(sc)
 	now := time.Now().UTC()
 	for _, sl := range locks {
 		if sl.Lock == nil {

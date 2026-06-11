@@ -32,7 +32,7 @@ func seedVerifiedMetricsSession(t *testing.T, projectRoot string) uuid.UUID {
 
 	sessionID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	err = st.AppendRawTraces(ctx, []*ops.RawTrace{{
-		AgentName: "claude-code", SessionID: sessionID, Source: ops.RawSourceTranscript,
+		AgentName: "claude", SessionID: sessionID, Source: ops.RawSourceTranscript,
 		WorkingDirectory: projectRoot, CapturedAt: time.Now().UTC(),
 		Raw: []byte(`{"type":"user","timestamp":"2026-06-03T00:00:00.000Z","message":{"role":"user","content":"review this"}}`),
 	}}, nil)
@@ -43,12 +43,12 @@ func seedVerifiedMetricsSession(t *testing.T, projectRoot string) uuid.UUID {
 	startMs := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC).UnixMilli()
 	rows := []*store.SpanRow{
 		{
-			SpanID: "m-llm-1", TraceID: "m-tr", SessionID: sessionID, AgentName: "claude-code",
+			SpanID: "m-llm-1", TraceID: "m-tr", SessionID: sessionID, AgentName: "claude",
 			Kind: "LLM", Name: "turn", StartMs: startMs, EndMs: startMs + 1000,
 			Attributes: `{"gen_ai.operation.name":"chat","gen_ai.usage.input_tokens":100,"gen_ai.usage.output_tokens":40}`,
 		},
 		{
-			SpanID: "m-skill-1", TraceID: "m-tr", SessionID: sessionID, AgentName: "claude-code",
+			SpanID: "m-skill-1", TraceID: "m-tr", SessionID: sessionID, AgentName: "claude",
 			Kind: "SKILL", Name: "code-reviewer", StartMs: startMs, EndMs: startMs,
 			Attributes: `{"skill.name":"code-reviewer","skill.verified":true,"skill.commit":"a1b2c3d4567","skill.version":"v1.2.0"}`,
 		},
@@ -175,8 +175,8 @@ func assertReportMetrics(t *testing.T, resp *skillReportResponse) {
 	if resp.Totals.Invocations != 2 || resp.Totals.Verified != 1 || resp.Totals.Unverified != 1 {
 		t.Errorf("totals = %+v, want 2 invocations / 1 verified / 1 unverified", resp.Totals)
 	}
-	if len(resp.Agents) != 1 || resp.Agents[0].Agent != "claude-code" {
-		t.Errorf("agents = %+v, want one claude-code row", resp.Agents)
+	if len(resp.Agents) != 1 || resp.Agents[0].Agent != "claude" {
+		t.Errorf("agents = %+v, want one claude row", resp.Agents)
 	}
 	if len(resp.Series) == 0 {
 		t.Errorf("series empty, want day buckets")
@@ -270,9 +270,9 @@ func TestUI_Metrics_Rescoping(t *testing.T) {
 	root, _ := seedUIEnv(t, true)
 	h := newUITestServer(t, root)
 
-	// Global scope: the (empty) global lock has no entries, and the seeded
-	// session no longer matches a project dir filter — global sees ALL dirs,
-	// so usage still counts but no skill is installed.
+	// Global scope is the MACHINE view: the global lock unioned with every
+	// known project's lock — including the launch project — so the two skills
+	// seeded in the launch project's lock count as installed here too.
 	rec := do(t, h, http.MethodGet, "/api/metrics/skills?scope=global")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -282,8 +282,8 @@ func TestUI_Metrics_Rescoping(t *testing.T) {
 	if resp.Scope != "global" {
 		t.Errorf("scope = %q, want global", resp.Scope)
 	}
-	if resp.Headline.Installed != 0 {
-		t.Errorf("global installed = %d, want 0 (empty global lock)", resp.Headline.Installed)
+	if resp.Headline.Installed != 2 {
+		t.Errorf("global installed = %d, want 2 (machine view unions project locks)", resp.Headline.Installed)
 	}
 
 	// Unknown ?project= is rejected, mirroring every other scoped endpoint.

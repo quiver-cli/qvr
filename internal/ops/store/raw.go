@@ -78,6 +78,28 @@ func (s *sqliteStore) AppendRawTraces(ctx context.Context, rows []*ops.RawTrace,
 	return tx.Commit()
 }
 
+// ReplaceSourceRawTraces atomically replaces every raw row ingested from one
+// source file with rows, in a single transaction. Document-layout stores
+// (whole-file JSON rewritten in place, not appended) re-ingest this way so a
+// failure can never leave the old rows deleted but the new ones missing.
+func (s *sqliteStore) ReplaceSourceRawTraces(ctx context.Context, agent, sourcePath string, rows []*ops.RawTrace) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: replace source tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM raw_traces WHERE agent_name = ? AND source_path = ?`,
+		agent, sourcePath); err != nil {
+		return fmt.Errorf("store: replace source delete: %w", err)
+	}
+	if err := insertRawTraceRows(ctx, tx, rows, newRawSeqAllocator(ctx, tx)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // newRawSeqAllocator returns a per-session sequence allocator that hands out a
 // dense monotonic run continuing from whatever is already stored for a session,
 // caching the next value per session so repeated calls within one tx stay dense.

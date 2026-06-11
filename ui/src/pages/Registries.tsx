@@ -6,6 +6,7 @@ import {
   ErrorBox,
   Loading,
   PageHead,
+  RefreshButton,
   Prompt,
   SkillRowItem,
   Tag,
@@ -13,11 +14,15 @@ import {
 import { relTime } from "../lib/format";
 
 export default function Registries() {
-  const { data, error, loading } = useFetch(api.registries, "registries");
+  const { data, error, loading, reload } = useFetch(api.registries, "registries");
 
   return (
     <>
-      <PageHead title="Registries" sub="Plain Git repos. No central server." />
+      <PageHead
+        title="Registries"
+        sub="Plain Git repos. No central server."
+        actions={<RefreshButton onClick={reload} busy={loading} />}
+      />
       {loading && <Loading />}
       {error && <ErrorBox message={error} />}
       {data && data.length === 0 && (

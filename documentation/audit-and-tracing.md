@@ -10,59 +10,65 @@ that was active** — so you can evaluate and improve skills on evidence rather 
 guesswork. Everything stays local: capture lands in a SQLite database at
 `~/.quiver/skillops.db`, and nothing is sent anywhere.
 
-## Two layers: raw traces and derived spans
+Agents are the capture infrastructure: each one already persists its own session
+history on disk (Claude Code's `~/.claude/projects`, Codex's rollout files, …).
+`qvr audit discover` reads those native stores directly — **no agent
+configuration is ever touched**, and months of existing history back-fill on the
+first scan.
 
-- **Raw traces** — the agent's own transcript lines and hook payloads, captured
-  **verbatim**. This is the lossless source of truth (`qvr audit export`,
-  `qvr audit sessions show`).
-- **Derived spans** — Turn / Tool / Skill spans *projected* from the raw traces
-  using the OpenTelemetry [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
-  shown by `qvr audit logs`. A `skill.*` attribute family tags which skill each
-  span belongs to. A *deriver* must exist for the agent; without one the agent is
-  raw-only and the derived views stay empty (the `DERIVES` column in `status`
-  reports this per agent).
+## Two layers: raw traces and a derived projection
 
-Because spans are derived, an improved deriver can re-run over old captures
-without re-capturing.
+- **Raw traces** — the agent's own transcript lines, captured **verbatim**. This
+  is the lossless source of truth (`qvr audit export`, `qvr audit sessions show`).
+- **Derived projection** — the unified per-session model (title, model, turn /
+  tool counts, skills used) plus Turn / Tool / Skill spans, *projected* from the
+  raw traces using the OpenTelemetry
+  [GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
+  shown by `qvr audit sessions` and `qvr audit logs`. A `skill.*` attribute
+  family tags which skill each span belongs to, resolved against `qvr.lock`
+  (`skill.verified` marks identity proven by the loaded path).
+
+Because the projection is derived, an improved deriver re-runs over old captures
+without re-capturing (`qvr audit rederive`). Derivers ship for **claude, codex,
+copilot, cursor, gemini, droid, pi, hermes, and openclaw**; an agent without a
+deriver is listed but inert until one ships.
 
 ## Workflow
 
-### 1. Enable capture and wire agent hooks
-
-`enable` sets `ops.enabled` in config and creates the database. `install-hooks`
-adds a hook to each detected agent's native config that pipes events into qvr;
-the original config is backed up first under `$QUIVER_HOME/backups/<agent>/<ts>/`.
-Hook adapters ship for **claudecode, cursor, codex, copilot, and opencode**.
+### 1. Enable capture and discover your history
 
 ```bash
-qvr audit enable
-qvr audit install-hooks                  # wire every detected agent
-qvr audit install-hooks --agent codex    # wire a single agent
-qvr audit install-hooks --dry-run        # show planned changes, write nothing
+qvr audit enable                       # opt in; creates the database
+qvr audit discover                     # scan every agent's session store
+qvr audit discover --agent claude      # scan a single agent
+qvr audit discover --since 90d         # bound the back-fill window
+qvr audit discover --dry-run           # report what would be scanned
 ```
 
-Nothing is captured until **both** steps run — `enable` alone creates the DB but
-no events flow; hooks alone fire but `disable` keeps them from recording.
+Scans are incremental and idempotent: a stat ledger remembers every file seen,
+so re-running over an unchanged store costs almost nothing. Sessions that
+provably used **no** skill are counted but not stored (qvr keeps
+skill-attributed evidence, not generic transcripts); pass `--keep-all` to import
+everything.
 
-### 2. Confirm it's recording
+Re-run `discover` whenever you want fresh sessions picked up — or just open
+the dashboard: `qvr ui` scans on launch and keeps rescanning in the background
+while it runs, so new sessions appear live (`--no-discover` turns the scans
+off; the discover button forces one on demand).
+
+### 2. Confirm what's recorded
 
 ```bash
 qvr audit status
 ```
 
-Read the columns: detected, hooks installed/valid, `DERIVES` (raw-only vs. derived
-views available), `RECORDED` (events), `SESSIONS` (runs they group into),
-`ERRORS` (non-zero means events reach qvr but fail to record), and last-event time.
+Read the columns: `DERIVES` (whether qvr can project this agent's format),
+`RECORDED` (raw rows), `SESSIONS`, and last-event time.
 
-### 3. Use your agent normally
-
-With hooks wired and capture enabled, run the agent as usual. Tool calls, file
-ops, and commands are recorded and attributed to the active skill.
-
-### 4. Query activity
+### 3. Query activity
 
 ```bash
-qvr audit sessions                                  # newest-first, with row counts
+qvr audit sessions                                  # newest-first, titled, with skills
 qvr audit sessions --agent claude --since 24h
 qvr audit sessions show <session-id>                # one session's verbatim raw lines
 
@@ -71,7 +77,7 @@ qvr audit logs --kind SKILL                         # only skill spans (or LLM /
 qvr audit logs --session <session-id> --limit 0     # everything for one session
 ```
 
-### 5. Export for external analysis
+### 4. Export for external analysis
 
 `export` streams matching raw trace rows as JSONL (one object per line) —
 suitable for archival, analysis, or replay, and OTLP-ready for any OpenTelemetry
@@ -80,36 +86,35 @@ consumer (Jaeger, Tempo, Honeycomb, an OTel Collector):
 ```bash
 qvr audit export > traces.jsonl
 qvr audit export --session <session-id> -o session.jsonl
-qvr audit export --source hook_payload              # or: transcript
 ```
 
-### 6. Turn it off / unwire
+### 5. Turn it off
 
 ```bash
-qvr audit disable                        # stop recording (hooks may still fire silently)
-qvr audit uninstall-hooks                # remove hooks / restore from backup
-qvr audit uninstall-hooks --agent codex
+qvr audit disable                        # stop recording; the database stays
 ```
 
 ## The dashboard
 
-The read-only `qvr ui` dashboard (embedded in the binary, served at
-`http://127.0.0.1:7878`) visualizes recorded sessions alongside a skill's files,
-targets, scan results, version history, and provenance — drilling from a registry
-down to a single skill.
+The `qvr ui` dashboard (embedded in the binary, served at
+`http://127.0.0.1:7878`) visualizes recorded sessions and activity analytics —
+sessions over time split by agent and skill usage, the by-skill breakdown, the
+skill report card and dead-weight view — alongside a skill's files, targets,
+scan results, version history, and provenance.
 
 ```bash
-qvr ui
+qvr ui                   # live-scans session stores while running (--no-discover to skip)
 ```
 
 ## Notes
 
 - **Local only.** The database lives under `~/.quiver/`; nothing leaves the machine.
-- **`DERIVES=no` ⇒ empty derived views.** `logs` / spans / UI timeline will be
-  blank for raw-only agents even though raw traces land — use `sessions show` or
-  `export` to read the raw data.
-- **`ERRORS > 0` in status** means hook payloads are arriving but failing to
-  ingest — investigate before trusting the data.
+- **No agent configuration is modified.** Discovery only reads the session files
+  agents already write. (Earlier qvr versions installed hooks into agent
+  configs; that mechanism is gone — if you ran `install-hooks` on an old
+  version, remove the `qvr _hook` entries from your agents' hook configs.)
+- **`DERIVES=no` ⇒ not scanned.** Discovery only ingests agents whose format qvr
+  can derive, so the skill-retention gate stays provable.
 - Low-level plumbing verbs (`gc`, `ingest`, `raw`, `rederive`, `spans`) exist for
   maintenance and re-derivation but are hidden — prefer the verbs above.
 

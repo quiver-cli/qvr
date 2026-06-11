@@ -69,10 +69,11 @@ func TestEnrichSkillIdentity_FromProjectLock(t *testing.T) {
 	writeLock(t, proj, "raks", "v0.2.0", "94e539be7d6a01774d723a7c25513af0f070de7b")
 
 	rows := skillRows(uuid.MustParse("550e8400-e29b-41d4-a716-446655440000"), proj)
-	spans, err := derive.DeriveSession(rows)
+	d, err := derive.DeriveSession(rows)
 	if err != nil {
 		t.Fatalf("derive: %v", err)
 	}
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)
@@ -106,8 +107,10 @@ func TestEnrichSkillIdentity_Collision(t *testing.T) {
 	rowsA := skillRows(uuid.New(), projA)
 	rowsB := skillRows(uuid.New(), projB)
 
-	spansA, _ := derive.DeriveSession(rowsA)
-	spansB, _ := derive.DeriveSession(rowsB)
+	dA, _ := derive.DeriveSession(rowsA)
+	spansA := dA.Spans
+	dB, _ := derive.DeriveSession(rowsB)
+	spansB := dB.Spans
 	derive.EnrichSkillIdentity(spansA, rowsA)
 	derive.EnrichSkillIdentity(spansB, rowsB)
 
@@ -131,7 +134,8 @@ func TestEnrichSkillIdentity_NotInLock(t *testing.T) {
 
 	proj := t.TempDir() // no qvr.lock written
 	rows := skillRows(uuid.New(), proj)
-	spans, _ := derive.DeriveSession(rows)
+	d, _ := derive.DeriveSession(rows)
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)
@@ -154,7 +158,8 @@ func TestEnrichSkillIdentity_GlobalFallback(t *testing.T) {
 
 	proj := t.TempDir() // project has no qvr.lock
 	rows := skillRows(uuid.New(), proj)
-	spans, _ := derive.DeriveSession(rows)
+	d, _ := derive.DeriveSession(rows)
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)

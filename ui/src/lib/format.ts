@@ -41,6 +41,15 @@ export function fmtCount(n?: number): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
 
+// fmtCountWhole humanizes a count to whole units ("154m", "2k") — for tight
+// tiles where fmtCount's decimal ("154.3m") would clip.
+export function fmtCountWhole(n?: number): string {
+  if (n == null) return "—";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${Math.round(n / 1_000_000)}m`;
+}
+
 // fmtShare renders a 0..1 share as a percentage ("95%").
 export function fmtShare(x?: number): string {
   if (x == null || isNaN(x)) return "—";
@@ -52,6 +61,32 @@ export function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+// fmtEpochMs renders an epoch-millisecond timestamp in the viewer's locale.
+export function fmtEpochMs(ms?: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString();
+}
+
+// relTimeMs renders "2d ago"-style relative time from epoch milliseconds.
+export function relTimeMs(ms?: number): string {
+  if (!ms) return "—";
+  return relTime(new Date(ms).toISOString());
+}
+
+// fmtDuration humanizes a long duration: 130min → "2h 10m", 26h → "1d 2h",
+// 75d → "2mo 15d". Coarse two-unit rendering for analytics cards.
+export function fmtDuration(ms?: number): string {
+  if (!ms || ms <= 0) return "—";
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}h ${min % 60}m`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ${h % 24}h`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ${d % 30}d`;
 }
 
 // prettyJSON stringifies an arbitrary JSON value with 2-space indent.

@@ -80,7 +80,7 @@ func runAuditRederive(cmd *cobra.Command, args []string) error {
 			sum.SkippedNoDB++
 			continue
 		}
-		n, _, err := rawtrace.Rederive(cmd.Context(), s, sess.SessionID, sess.AgentName)
+		n, _, err := rawtrace.Rederive(cmd.Context(), s, sess.SessionID)
 		if err != nil {
 			printer.Warning(fmt.Sprintf("skip session %s: %v", sess.SessionID, err))
 			continue
@@ -104,7 +104,7 @@ func runAuditRederive(cmd *cobra.Command, args []string) error {
 // flags. A bare --session is looked up among the listed sessions so its agent
 // (needed to pick a deriver) is known.
 func targetSessions(cmd *cobra.Command, s store.Store) ([]*store.RawSession, error) {
-	sessions, err := s.ListRawSessions(cmd.Context(), &store.RawSessionFilter{Agent: rederiveAgent})
+	sessions, err := s.ListRawSessions(cmd.Context(), &store.RawSessionFilter{Agent: canonicalAgentFlag(rederiveAgent)})
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}

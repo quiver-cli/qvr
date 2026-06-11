@@ -9,7 +9,17 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestFirstPrompt(t *testing.T) {
+// metaTitle derives the session and returns its unified-model title.
+func metaTitle(t *testing.T, rows []*ops.RawTrace) string {
+	t.Helper()
+	d, err := derive.DeriveSession(rows)
+	if err != nil || d == nil {
+		return ""
+	}
+	return d.Meta.Title
+}
+
+func TestSessionTitle(t *testing.T) {
 	sid := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 
 	t.Run("first user prompt becomes the title", func(t *testing.T) {
@@ -18,8 +28,8 @@ func TestFirstPrompt(t *testing.T) {
 			row(sid, 1, `{"type":"assistant","timestamp":"2026-06-02T00:00:01.000Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"output_tokens":5},"content":[{"type":"text","text":"ok"}]}}`),
 			row(sid, 2, `{"type":"user","timestamp":"2026-06-02T00:00:02.000Z","message":{"role":"user","content":"now add tests"}}`),
 		}
-		if got := derive.FirstPrompt(rows, 100); got != "add a dark mode toggle" {
-			t.Errorf("FirstPrompt = %q, want %q", got, "add a dark mode toggle")
+		if got := metaTitle(t, rows); got != "add a dark mode toggle" {
+			t.Errorf("title = %q, want %q", got, "add a dark mode toggle")
 		}
 	})
 
@@ -27,8 +37,8 @@ func TestFirstPrompt(t *testing.T) {
 		rows := []*ops.RawTrace{
 			row(sid, 0, `{"type":"user","timestamp":"2026-06-02T00:00:00.000Z","message":{"role":"user","content":"line one\n\n   line two"}}`),
 		}
-		if got := derive.FirstPrompt(rows, 100); got != "line one line two" {
-			t.Errorf("FirstPrompt = %q, want collapsed single line", got)
+		if got := metaTitle(t, rows); got != "line one line two" {
+			t.Errorf("title = %q, want collapsed single line", got)
 		}
 	})
 
@@ -37,23 +47,24 @@ func TestFirstPrompt(t *testing.T) {
 		rows := []*ops.RawTrace{
 			row(sid, 0, `{"type":"user","timestamp":"2026-06-02T00:00:00.000Z","message":{"role":"user","content":"`+long+`"}}`),
 		}
-		got := derive.FirstPrompt(rows, 20)
-		if r := []rune(got); len(r) != 21 || r[20] != '…' { // 20 chars + ellipsis
-			t.Errorf("FirstPrompt clip = %q (len %d), want 20 runes + ellipsis", got, len([]rune(got)))
+		got := metaTitle(t, rows)
+		if r := []rune(got); len(r) != 121 || r[120] != '…' { // default clip = 120 runes + ellipsis
+			t.Errorf("title clip = %q (len %d), want 120 runes + ellipsis", got, len([]rune(got)))
 		}
 	})
 
-	t.Run("no rows yields empty title", func(t *testing.T) {
-		if got := derive.FirstPrompt(nil, 100); got != "" {
-			t.Errorf("FirstPrompt(nil) = %q, want empty", got)
+	t.Run("no rows yields no derivation", func(t *testing.T) {
+		d, err := derive.DeriveSession(nil)
+		if err != nil || d != nil {
+			t.Errorf("DeriveSession(nil) = (%v, %v), want (nil, nil)", d, err)
 		}
 	})
 
-	t.Run("unknown agent yields empty title", func(t *testing.T) {
+	t.Run("unknown agent yields an error", func(t *testing.T) {
 		r := row(sid, 0, `{"type":"user","message":{"role":"user","content":"hi"}}`)
 		r.AgentName = "totally-unknown-agent"
-		if got := derive.FirstPrompt([]*ops.RawTrace{r}, 100); got != "" {
-			t.Errorf("FirstPrompt(unknown agent) = %q, want empty", got)
+		if _, err := derive.DeriveSession([]*ops.RawTrace{r}); err == nil {
+			t.Error("DeriveSession(unknown agent) should error")
 		}
 	})
 }

@@ -15,7 +15,7 @@ import {
   Tabs,
   Tag,
 } from "../components/qvr";
-import { fmtMs, fmtTime, prettyJSON, short } from "../lib/format";
+import { fmtEpochMs, fmtMs, fmtTime, prettyJSON, short } from "../lib/format";
 import { spanKindTone } from "../lib/tones";
 
 type View = "spans" | "raw";
@@ -40,18 +40,24 @@ export default function SessionDetail() {
             badges={<Badge tone="info">{prettyAgent(session.agent_name)}</Badge>}
           />
           <Meta>
-            <MetaItem k="started">{fmtTime(session.started_at)}</MetaItem>
-            <MetaItem k="transcript">{session.transcript_lines} lines</MetaItem>
-            <MetaItem k="hooks">{session.hook_payloads}</MetaItem>
-            <MetaItem k="rows">{session.total_rows}</MetaItem>
+            <MetaItem k="started">{fmtEpochMs(session.started_ms)}</MetaItem>
+            {session.ended_ms > session.started_ms && (
+              <MetaItem k="duration">{fmtMs(session.ended_ms - session.started_ms)}</MetaItem>
+            )}
+            <MetaItem k="turns">{session.turns}</MetaItem>
+            <MetaItem k="tools">{session.tools}</MetaItem>
+            {session.model && <MetaItem k="model">{session.model}</MetaItem>}
             <span className="qvr-meta__item">
               <span className="qvr-meta__k">session</span>
               <Tag title={session.session_id}>{short(session.session_id, 8)}</Tag>
             </span>
           </Meta>
-          {session.working_directory && (
+          {(session.working_directory || session.git_branch) && (
             <Meta style={{ marginTop: 4 }}>
-              <MetaItem k="cwd">{session.working_directory}</MetaItem>
+              {session.working_directory && (
+                <MetaItem k="cwd">{session.working_directory}</MetaItem>
+              )}
+              {session.git_branch && <MetaItem k="branch">{session.git_branch}</MetaItem>}
             </Meta>
           )}
 

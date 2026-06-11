@@ -82,7 +82,8 @@ func TestEnrich_Claude_NoPathIsUnverified(t *testing.T) {
 	writeGlobalLock(t, home, crEntry("94e539be7d6a01774d723a7c25513af0f070de7b"))
 
 	rows := skillRows(uuid.New(), "") // claude Skill tool, no working dir
-	spans, _ := derive.DeriveSession(rows)
+	d, _ := derive.DeriveSession(rows)
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)
@@ -105,7 +106,8 @@ func TestEnrich_Codex_LoadPathInWorktreeIsVerified(t *testing.T) {
 	skillMD := seedWorktree(t, e) // the real locked artifact on disk
 
 	rows := codexSkillLoadRows(uuid.New(), skillMD)
-	spans, _ := derive.DeriveSession(rows)
+	d, _ := derive.DeriveSession(rows)
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)
@@ -138,7 +140,8 @@ func TestEnrich_Codex_ShadowingEjectIsUnverified(t *testing.T) {
 	}
 
 	rows := codexSkillLoadRows(uuid.New(), ejectMD)
-	spans, _ := derive.DeriveSession(rows)
+	d, _ := derive.DeriveSession(rows)
+	spans := d.Spans
 	derive.EnrichSkillIdentity(spans, rows)
 
 	sp := skillSpan(t, spans)
