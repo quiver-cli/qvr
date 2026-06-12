@@ -83,13 +83,18 @@ compatibility: Requires git, docker, jq, and access to the internet
 
 ### `metadata` (Optional)
 
-Arbitrary key-value map (string → string). For additional properties not in the spec.
+Arbitrary key-value map for additional properties not in the spec. String values
+are kept as-is. Nested maps and lists are accepted for compatibility with
+published agent skills and are displayed as compact JSON by qvr.
 
 ```yaml
 metadata:
   author: example-org
   version: "1.0"
   homepage: https://github.com/example-org/skills
+  runtime:
+    tags: ["research", "automation"]
+    primaryEnv: API_KEY
 ```
 
 ### `allowed-tools` (Optional, Experimental)

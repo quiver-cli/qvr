@@ -1,6 +1,7 @@
 package skillspec_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/astra-sh/qvr/pkg/skillspec"
@@ -307,6 +308,150 @@ Body.
 	}
 	if s.Frontmatter.Metadata["note"] != "user: pinned" {
 		t.Errorf("metadata.note = %q", s.Frontmatter.Metadata["note"])
+	}
+}
+
+func TestParse_NestedMetadata(t *testing.T) {
+	content := `---
+name: example-skill
+description: Example automation workflow.
+metadata: {"runtime":{"tags":["research","automation","source-context"],"primaryEnv":"API_KEY","envVars":[{"name":"API_KEY","required":false}]}}
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := s.Frontmatter.Metadata["runtime"]
+	for _, want := range []string{
+		`"primaryEnv":"API_KEY"`,
+		`"tags":["research","automation","source-context"]`,
+		`"envVars":[{"name":"API_KEY","required":false}]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("metadata.runtime = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestParse_BlockStyleNestedMetadata(t *testing.T) {
+	content := `---
+name: example-skill
+description: Example automation workflow.
+metadata:
+  runtime:
+    tags:
+      - research
+      - automation
+      - source-context
+    primaryEnv: API_KEY
+    envVars:
+      - name: API_KEY
+        required: false
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := s.Frontmatter.Metadata["runtime"]
+	for _, want := range []string{
+		`"primaryEnv":"API_KEY"`,
+		`"tags":["research","automation","source-context"]`,
+		`"envVars":[{"name":"API_KEY","required":false}]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("metadata.runtime = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestParse_NullMetadata(t *testing.T) {
+	content := `---
+name: no-metadata
+description: Explicit null metadata is absent.
+metadata: null
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.Frontmatter.Metadata != nil {
+		t.Errorf("metadata = %#v, want nil", s.Frontmatter.Metadata)
+	}
+}
+
+func TestParse_MetadataAliases(t *testing.T) {
+	content := `---
+name: aliased-metadata
+description: Metadata values may use YAML anchors.
+metadata:
+  tags: &tags
+    - research
+    - automation
+  searchTags: *tags
+  config: &config
+    primaryEnv: API_KEY
+  runtime: *config
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := s.Frontmatter.Metadata["searchTags"]; got != `["research","automation"]` {
+		t.Errorf("metadata.searchTags = %q", got)
+	}
+	if got := s.Frontmatter.Metadata["runtime"]; got != `{"primaryEnv":"API_KEY"}` {
+		t.Errorf("metadata.runtime = %q", got)
+	}
+}
+
+func TestParse_EmptyMetadataValuePreserved(t *testing.T) {
+	content := `---
+name: empty-metadata
+description: Empty metadata values keep key presence.
+metadata:
+  reviewer: ""
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	value, ok := s.Frontmatter.Metadata["reviewer"]
+	if !ok {
+		t.Fatal("metadata.reviewer missing")
+	}
+	if value != "" {
+		t.Errorf("metadata.reviewer = %q, want empty string", value)
+	}
+}
+
+func TestParse_NonMappingMetadataRejected(t *testing.T) {
+	content := `---
+name: bad-metadata
+description: Metadata must be a mapping.
+metadata:
+  - author
+---
+
+Body.
+`
+	_, err := skillspec.Parse(content)
+	if err == nil {
+		t.Fatal("expected error for sequence metadata, got nil")
 	}
 }
 
