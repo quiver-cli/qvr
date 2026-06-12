@@ -12,6 +12,7 @@ import (
 // Severity represents the severity of a lint issue.
 type Severity string
 
+// The two lint severities: errors fail validation, warnings don't.
 const (
 	SeverityError   Severity = "error"
 	SeverityWarning Severity = "warning"

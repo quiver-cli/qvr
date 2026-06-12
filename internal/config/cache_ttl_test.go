@@ -1,3 +1,4 @@
+// Package config_test exercises internal/config through its public API only.
 package config_test
 
 import (

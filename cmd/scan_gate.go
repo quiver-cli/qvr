@@ -31,7 +31,7 @@ func enforceScanPolicy(cfg *config.Config, disabled bool) error {
 	return nil
 }
 
-// scanGateOptions tunes a single ScanAndGate call.
+// scanGateOptions tunes a single scanAndGate call.
 type scanGateOptions struct {
 	// Disabled forces the gate off regardless of cfg.Security.ScanOnInstall.
 	// Set by `--no-scan` flags on add/sync/publish.
@@ -67,7 +67,7 @@ type scanGateOptions struct {
 	ReportOnlyBlocked bool
 }
 
-// scanGateResult is the outcome of a single ScanAndGate call. Blocked is true
+// scanGateResult is the outcome of a single scanAndGate call. Blocked is true
 // when the scan ran and at least one finding meets/exceeds the configured
 // block_severity threshold. Skipped is true when the gate did not run at all
 // (disabled, scan_on_install=false, no skill loadable, etc.) — callers
@@ -85,7 +85,7 @@ type scanGateResult struct {
 	Threshold      security.Severity    `json:"threshold,omitempty"`
 }
 
-// ScanAndGate runs the standard scanner against the skill at skillDir and
+// scanAndGate runs the standard scanner against the skill at skillDir and
 // applies the cfg.Security.BlockSeverity threshold. Findings are surfaced to
 // stderr in text mode (regardless of the global --output) so users always see
 // what was flagged, even when the command itself returns a JSON payload.
@@ -98,7 +98,7 @@ type scanGateResult struct {
 // opts.Disabled is true the gate is skipped entirely and the returned result
 // has Skipped=true with no findings — used for the user-facing `--no-scan`
 // path on add/registry/sync/publish.
-func ScanAndGate(ctx context.Context, skillDir string, cfg *config.Config, opts scanGateOptions) (*scanGateResult, error) {
+func scanAndGate(ctx context.Context, skillDir string, cfg *config.Config, opts scanGateOptions) (*scanGateResult, error) {
 	out := &scanGateResult{Skipped: true}
 	if err := enforceScanPolicy(cfg, opts.Disabled); err != nil {
 		return out, err

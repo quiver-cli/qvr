@@ -1,3 +1,6 @@
+// Package output renders command results: a Printer that emits text tables
+// or JSON per the global --output flag (structured data to stdout,
+// diagnostics to stderr), TTY-aware styling, and progress indicators.
 package output
 
 import (
@@ -14,6 +17,7 @@ import (
 // Format represents the output format.
 type Format string
 
+// The supported output formats, matching the global --output flag values.
 const (
 	FormatText Format = "text"
 	FormatJSON Format = "json"

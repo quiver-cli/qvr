@@ -1,3 +1,8 @@
+// Package git wraps all git operations behind the GitClient abstraction:
+// a hybrid go-git implementation that shells out to the system git binary
+// for network operations (so the user's credential helpers and SSH agent
+// handle auth) and uses pure go-git for local reads, plus worktree
+// management for materializing and editing installed skills.
 package git
 
 import (

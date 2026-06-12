@@ -3,12 +3,22 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter: stacked PRs (base = another feature branch)
+  # must run the same gates as PRs into main.
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per branch/PR — a new push cancels the previous, now-stale run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -28,5 +38,80 @@ jobs:
       - name: Test (race)
         run: go test ./... -race -count=1
 
-      - name: Vet
+  # The goreportcard-cli northstar, as individual blocking checks: gofmt,
+  # go_vet, gocyclo, ineffassign, golint (via revive, its maintained
+  # successor), license, misspell — plus the gopls modernize bar we hold
+  # ourselves to. Each check fails the job on any finding, matching the
+  # "A+ with every category at 100%" target.
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
         run: go vet ./...
+
+      # Test files are graded on purpose: the goreportcard northstar holds
+      # every function to ≤ 15, test helpers included.
+      - name: gocyclo (complexity ≤ 15)
+        run: |
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@v0.6.0
+          gocyclo -over 15 .
+
+      - name: ineffassign
+        run: |
+          go install github.com/gordonklaus/ineffassign@v0.2.0
+          ineffassign ./...
+
+      - name: golint (revive)
+        run: |
+          go install github.com/mgechev/revive@v1.15.0
+          revive -config revive.toml -set_exit_status ./...
+
+      # -i hardlinked: real word (hard-linked files); misspell's dictionary
+      # wrongly corrects it to "hardline".
+      - name: misspell
+        run: |
+          go install github.com/client9/misspell/cmd/misspell@v0.3.4
+          misspell -error -i hardlinked cmd internal pkg main.go README.md CONTRIBUTING.md
+
+      - name: license
+        run: test -s LICENSE
+
+      # gopls needs a newer toolchain than the module's go directive;
+      # GOTOOLCHAIN=auto lets go fetch it for this step only (setup-go
+      # pins GOTOOLCHAIN=local everywhere else).
+      - name: gopls modernize
+        run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0 ./...
+        env:
+          GOTOOLCHAIN: auto
+
+  # The full golangci-lint suite (`make lint`), via the official action for
+  # caching and inline PR annotations. Config lives in .golangci.yml.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

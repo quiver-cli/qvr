@@ -29,6 +29,7 @@ import (
 // info < warning < error < critical, by [Severity.Rank].
 type Severity string
 
+// The four severity levels, in ascending rank order (see [Severity.Rank]).
 const (
 	SeverityInfo     Severity = "info"
 	SeverityWarning  Severity = "warning"

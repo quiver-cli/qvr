@@ -17,8 +17,14 @@ import (
 )
 
 var (
-	ErrSkillNotFound    = errors.New("skill not found in any registry")
+	// ErrSkillNotFound is returned when resolution finds the requested
+	// skill name in none of the registered registries.
+	ErrSkillNotFound = errors.New("skill not found in any registry")
+	// ErrAlreadyInstalled means the skill being installed is already
+	// present in the project's lockfile.
 	ErrAlreadyInstalled = errors.New("skill is already installed")
+	// ErrInvalidReference is returned when a skill reference string is
+	// malformed (e.g. empty reference or empty name).
 	ErrInvalidReference = errors.New("invalid skill reference")
 	// ErrAmbiguousRef means the requested skill exists in >1 registry but
 	// the @<ref> the user asked for isn't resolvable in any of them.

@@ -9,10 +9,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Sentinel errors returned by Parse. Match with errors.Is — ErrInvalidYAML
+// may be wrapped with the underlying decode error.
 var (
-	ErrNoFrontmatter    = errors.New("SKILL.md missing frontmatter delimiters (---)")
-	ErrInvalidYAML      = errors.New("SKILL.md frontmatter is not valid YAML")
-	ErrEmptyContent     = errors.New("SKILL.md is empty")
+	// ErrNoFrontmatter is returned when the content does not begin with the
+	// opening "---" frontmatter delimiter.
+	ErrNoFrontmatter = errors.New("SKILL.md missing frontmatter delimiters (---)")
+	// ErrInvalidYAML is returned when the frontmatter block is delimited
+	// correctly but its body fails to decode as YAML.
+	ErrInvalidYAML = errors.New("SKILL.md frontmatter is not valid YAML")
+	// ErrEmptyContent is returned when the content is empty or whitespace-only.
+	ErrEmptyContent = errors.New("SKILL.md is empty")
+	// ErrMalformedContent is returned when the opening "---" delimiter is never
+	// closed by a matching "---" line.
 	ErrMalformedContent = errors.New("SKILL.md has malformed frontmatter")
 )
 

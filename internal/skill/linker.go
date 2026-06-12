@@ -11,12 +11,25 @@ import (
 )
 
 var (
-	ErrSymlinkExists   = errors.New("symlink path already exists and is not a symlink")
+	// ErrSymlinkExists is returned when the path where a skill symlink
+	// should live is already occupied by something that is not a symlink
+	// (a real file or directory is never silently replaced).
+	ErrSymlinkExists = errors.New("symlink path already exists and is not a symlink")
+	// ErrSymlinkNotFound is returned when removing or verifying a symlink
+	// that does not exist.
 	ErrSymlinkNotFound = errors.New("symlink not found")
+	// ErrSymlinkMismatch is returned by verification when an existing
+	// symlink points somewhere other than the expected skill directory.
 	ErrSymlinkMismatch = errors.New("symlink target mismatch")
-	ErrUnknownTarget   = errors.New("unknown agent target")
+	// ErrUnknownTarget is returned when an agent target name (or alias)
+	// does not resolve in the target registry.
+	ErrUnknownTarget = errors.New("unknown agent target")
+	// ErrTargetNotASkill is returned when the directory a symlink should
+	// point at (or points at) contains no SKILL.md.
 	ErrTargetNotASkill = errors.New("target path does not contain SKILL.md")
-	ErrTargetNotExist  = errors.New("symlink target does not exist")
+	// ErrTargetNotExist is returned when the skill directory a symlink
+	// should point at (or points at) is missing — a dangling link.
+	ErrTargetNotExist = errors.New("symlink target does not exist")
 )
 
 // ResolveTargetPath returns the directory where a symlink for skillName should

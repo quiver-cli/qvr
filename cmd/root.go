@@ -1,3 +1,6 @@
+// Package cmd implements the qvr Cobra command tree: one file per command,
+// all registered on rootCmd, with a persistent --output flag that routes
+// structured data to stdout and diagnostics to stderr.
 package cmd
 
 import (
@@ -81,6 +84,11 @@ func rejectUnknownSubcommand(cmd *cobra.Command, args []string) error {
 	return cmd.Help()
 }
 
+// Execute runs the root command and is the binary's sole entry point from
+// main. On failure it prints the error (a structured JSON envelope when
+// --output json, a plain `error:` line otherwise) and exits 1; commands that
+// already surfaced their own failure output signal that via errJSONHandled /
+// errTextHandled so the envelope is not duplicated.
 func Execute() {
 	assignCommandGroups(rootCmd)
 	err := rootCmd.Execute()

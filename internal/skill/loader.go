@@ -1,3 +1,8 @@
+// Package skill implements the skill lifecycle: loading and linting SKILL.md
+// packages, installing them from registries into SHA-keyed immutable
+// materializations, symlinking those into agent directories, syncing back to
+// the locked commit, and ejecting a writable copy for editing (`qvr edit`)
+// or publishing it back to a registry.
 package skill
 
 import (

@@ -33,10 +33,13 @@ type SarifRun struct {
 	Results []SarifResult `json:"results"`
 }
 
+// SarifTool wraps the driver descriptor for a run.
 type SarifTool struct {
 	Driver SarifDriver `json:"driver"`
 }
 
+// SarifDriver identifies the scanner that produced the run and lists
+// the rules its results reference.
 type SarifDriver struct {
 	Name           string      `json:"name"`
 	Version        string      `json:"version,omitempty"`
@@ -44,6 +47,8 @@ type SarifDriver struct {
 	Rules          []SarifRule `json:"rules,omitempty"`
 }
 
+// SarifRule describes one rule referenced by results, deduplicated
+// across findings.
 type SarifRule struct {
 	ID               string         `json:"id"`
 	Name             string         `json:"name,omitempty"`
@@ -52,10 +57,13 @@ type SarifRule struct {
 	Properties       map[string]any `json:"properties,omitempty"`
 }
 
+// SarifText is SARIF's wrapper for plain message strings.
 type SarifText struct {
 	Text string `json:"text"`
 }
 
+// SarifResult is one finding: rule reference, level, message, and
+// where it was found.
 type SarifResult struct {
 	RuleID     string          `json:"ruleId,omitempty"`
 	Level      string          `json:"level"`
@@ -64,19 +72,26 @@ type SarifResult struct {
 	Properties map[string]any  `json:"properties,omitempty"`
 }
 
+// SarifLocation points a result at a physical location in the skill.
 type SarifLocation struct {
 	PhysicalLocation SarifPhysicalLocation `json:"physicalLocation"`
 }
 
+// SarifPhysicalLocation is a file (and optional line region) inside
+// the scanned skill.
 type SarifPhysicalLocation struct {
 	ArtifactLocation SarifArtifactLocation `json:"artifactLocation"`
 	Region           *SarifRegion          `json:"region,omitempty"`
 }
 
+// SarifArtifactLocation holds the skill-relative URI of the file a
+// finding lives in.
 type SarifArtifactLocation struct {
 	URI string `json:"uri"`
 }
 
+// SarifRegion narrows a physical location to a starting line; emitted
+// only when the finding carries a line number.
 type SarifRegion struct {
 	StartLine int `json:"startLine"`
 }

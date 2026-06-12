@@ -18,6 +18,8 @@ const DependencyCheckName = "dependencies"
 // pass them straight through.
 type Ecosystem string
 
+// The package ecosystems the dependency check parses manifests for.
+// Spellings match osv.dev's ecosystem identifiers exactly.
 const (
 	EcosystemPyPI Ecosystem = "PyPI"
 	EcosystemNPM  Ecosystem = "npm"

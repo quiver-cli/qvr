@@ -1,3 +1,7 @@
+// Package model holds qvr's core domain types — Skill, Registry, LockFile,
+// Target, and the qvr.toml Project file — plus their (de)serialization and
+// invariants. It is the shared vocabulary every other internal package
+// builds on and depends only on the standard library and codec packages.
 package model
 
 import (
@@ -60,8 +64,16 @@ const LockFileName = "qvr.lock"
 const MinSupportedLockFileVersion = 6
 
 var (
-	ErrLockNotFound           = errors.New("lock file not found")
-	ErrLockSkillMissing       = errors.New("skill not present in lock file")
+	// ErrLockNotFound indicates a qvr.lock that was required to exist does
+	// not. ReadLockFile itself treats a missing file as an empty lock; this
+	// sentinel is for callers that need the absence to be an error.
+	ErrLockNotFound = errors.New("lock file not found")
+	// ErrLockSkillMissing is returned (wrapped, with the skill name) by
+	// LockFile.Get and Remove when the named skill has no entry.
+	ErrLockSkillMissing = errors.New("skill not present in lock file")
+	// ErrLockVersionUnsupported is returned (wrapped, with detail) when a
+	// lock's version field is missing, malformed, or outside the
+	// [MinSupportedLockFileVersion, LockFileVersion] window this binary reads.
 	ErrLockVersionUnsupported = errors.New("unsupported lock file version")
 )
 

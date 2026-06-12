@@ -1,3 +1,6 @@
+// Package config manages qvr's machine-local configuration
+// (~/.quiver/config.yaml): load/save, dotted-key get/set, and typed views
+// over the security, cache, and default-target settings.
 package config
 
 import (

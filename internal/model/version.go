@@ -9,6 +9,7 @@ import (
 // VersionKind distinguishes tags from branches.
 type VersionKind string
 
+// The two VersionKind values: a ref is either a git tag or a branch.
 const (
 	VersionKindTag    VersionKind = "tag"
 	VersionKindBranch VersionKind = "branch"

@@ -15,9 +15,15 @@ import (
 )
 
 var (
-	ErrWorktreeExists   = errors.New("worktree path already exists")
+	// ErrWorktreeExists is returned by Add when the destination worktree
+	// path already exists on disk.
+	ErrWorktreeExists = errors.New("worktree path already exists")
+	// ErrWorktreeNotFound is returned by Remove when the given path does
+	// not exist or is not a directory.
 	ErrWorktreeNotFound = errors.New("worktree not found")
-	ErrBareNotFound     = errors.New("bare repository not found")
+	// ErrBareNotFound is returned by Add when the bare repository the
+	// worktree should be provisioned from does not exist.
+	ErrBareNotFound = errors.New("bare repository not found")
 )
 
 // Worktree represents a provisioned worktree linked to a bare repository.

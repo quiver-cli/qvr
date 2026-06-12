@@ -1,0 +1,29 @@
+# Revive pinned to golint parity — the exact rule set goreportcard's "golint"
+# category grades (revive is golint's maintained successor). Keep this list in
+# lockstep with that category; broader linting belongs in .golangci.yml.
+ignoreGeneratedHeader = false
+severity = "warning"
+confidence = 0.8
+
+[rule.blank-imports]
+[rule.context-as-argument]
+[rule.context-keys-type]
+[rule.dot-imports]
+[rule.error-return]
+[rule.error-strings]
+[rule.error-naming]
+# Stuttering check disabled: golint would rename git.GitClient → git.Client,
+# but GitClient is the canonical central abstraction (see CLAUDE.md) and the
+# rename is churn without clarity. Doc-comment enforcement stays on.
+[rule.exported]
+  arguments = ["disableStutteringCheck"]
+[rule.increment-decrement]
+[rule.var-naming]
+[rule.var-declaration]
+[rule.package-comments]
+[rule.range]
+[rule.receiver-naming]
+[rule.time-naming]
+[rule.unexported-return]
+[rule.indent-error-flow]
+[rule.errorf]

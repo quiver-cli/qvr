@@ -10,7 +10,7 @@ import (
 func TestBuiltinRulesCompile(t *testing.T) {
 	rules := BuiltinRules()
 	require.NotEmpty(t, rules, "builtin rule set must be non-empty")
-	_, err := rules.Compile()
+	_, err := rules.compile()
 	require.NoError(t, err, "all built-in rules must compile cleanly")
 }
 
