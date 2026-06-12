@@ -92,7 +92,7 @@ type Store interface {
 	// --- Skill metrics (read-side aggregations over spans; see metrics.go) ---
 
 	// SkillUsageRollup aggregates SKILL spans per skill (invocations, sessions,
-	// verified count, first/last fired), most-recently-fired first.
+	// observed versions, first/last fired), most-recently-fired first.
 	SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([]*SkillUsage, error)
 
 	// SkillTokenRollup returns per-skill session-attributed token totals,
@@ -107,9 +107,19 @@ type Store interface {
 	// f.Skill is required.
 	SkillAgentRollup(ctx context.Context, f *MetricsFilter) ([]*SkillAgentUsage, error)
 
+	// SkillModelRollup aggregates one skill's invocations per model — the
+	// skill × model performance cut. f.Skill is required.
+	SkillModelRollup(ctx context.Context, f *MetricsFilter) ([]*SkillModelUsage, error)
+
 	// SkillVersionRollup groups one skill's invocations by the (ref, commit)
 	// identity its spans carried — the lineage data. f.Skill is required.
 	SkillVersionRollup(ctx context.Context, f *MetricsFilter) ([]*SkillVersionUsage, error)
+
+	// PutLockSnapshots freezes a session's ingest-time proven identities
+	// (write-once per session+skill). GetLockSnapshots reads them back keyed
+	// by skill name. See migration 0005.
+	PutLockSnapshots(ctx context.Context, sessionID uuid.UUID, rows []*LockSnapshotRow) error
+	GetLockSnapshots(ctx context.Context, sessionID uuid.UUID) (map[string]*LockSnapshotRow, error)
 
 	// DeleteRawBefore sweeps raw rows captured before cutoff. Returns the
 	// number of rows deleted.

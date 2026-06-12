@@ -19,10 +19,14 @@ func init() { Register("copilot", copilotDeriver{}) }
 //	    {"toolCallId","name","arguments"}]}}
 //	{"type":"tool.execution_complete","data":{"toolCallId","success",
 //	    "result":{"content":"…"}}}
+//	{"type":"skill.invoked","data":{"name":"…","path":"…/SKILL.md"}}
 //	{"type":"session.model_change","data":{"newModel":"…"}}
 //
-// Skill attribution is the shared path signal over each tool request's
-// command/arguments.
+// Skill attribution: copilot's first-class "skill" tool is name-only
+// (resolved by ops.SkillRefFromTool), and the skill.invoked event that
+// follows it carries the loaded SKILL.md's path — the load-path evidence
+// (observed live, 2026-06-11). The shared path signal over each tool
+// request's command/arguments covers supporting-file reads.
 type copilotDeriver struct{}
 
 // copilotLine is the event envelope.
@@ -40,6 +44,8 @@ type copilotData struct {
 	Success      *bool                `json:"success"`
 	Result       *copilotToolResult   `json:"result"`
 	NewModel     string               `json:"newModel"`
+	Name         string               `json:"name"` // skill.invoked: skill name
+	Path         string               `json:"path"` // skill.invoked: loaded SKILL.md path
 }
 
 type copilotToolRequest struct {
@@ -108,5 +114,11 @@ func copilotEvent(w *turnWalk, ln *copilotLine, ts int64) {
 		}
 		failed := ln.Data.Success != nil && !*ln.Data.Success
 		w.cur.applyResult(ln.Data.ToolCallID, result, ts, failed)
+	case "skillinvoked":
+		// The path evidence for the turn's pending skill-tool SKILL span,
+		// emitted right after the tool call it belongs to.
+		if w.cur != nil {
+			w.cur.attachSkillLoadPath(ln.Data.Name, ln.Data.Path)
+		}
 	}
 }

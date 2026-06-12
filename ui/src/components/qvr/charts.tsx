@@ -1,8 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Badge } from "./Badge";
 import { Card } from "./Card";
-import { fmtShare } from "../../lib/format";
 
 // Inline-SVG chart primitives. No chart library: hairline strokes on token
 // colors fit the mechanical terminal aesthetic, and payloads are tiny.
@@ -83,52 +81,31 @@ export function BarRow({
   );
 }
 
-// ShareStat — the LOUD verified-share hero: accent card, 38px brand number.
-// The moat metric (lock-proven attribution) renders louder than anything else.
-export function ShareStat({
-  share,
-  label,
-  sub,
-}: {
-  share: number | undefined;
-  label: string;
-  sub?: ReactNode;
-}) {
-  return (
-    <Card variant="accent" className="qvr-stat">
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span className="qvr-sharestat__num">{fmtShare(share)}</span>
-        <Badge tone="accent" dot>
-          verified
-        </Badge>
-      </div>
-      <div className="qvr-stat__label" style={{ marginTop: 8 }}>
-        {label}
-      </div>
-      {sub != null && (
-        <div className="qvr-stat__label" style={{ marginTop: 2 }}>
-          {sub}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-// StatCard — overview stat tile: lime icon, 30px number, micro label.
+// StatCard — overview stat tile: lime icon, 30px number, micro label, and an
+// optional quieter detail line (keeps the primary label on one clean line).
 export function StatCard({
   icon,
   value,
   label,
+  sub,
 }: {
   icon: ReactNode;
   value: ReactNode;
   label: string;
+  sub?: string;
 }) {
   return (
     <Card className="qvr-stat">
       {icon}
       <div className="qvr-stat__num">{value}</div>
-      <div className="qvr-stat__label">{label}</div>
+      <div className="qvr-stat__label" title={label}>
+        {label}
+      </div>
+      {sub && (
+        <div className="qvr-stat__sub" title={sub}>
+          {sub}
+        </div>
+      )}
     </Card>
   );
 }

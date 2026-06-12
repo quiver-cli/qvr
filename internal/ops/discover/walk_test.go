@@ -175,14 +175,9 @@ func TestScannable_RequiresDeriver(t *testing.T) {
 	for _, st := range Scannable(nil) {
 		active[st.Agent] = true
 	}
-	for _, want := range []string{"claude", "codex", "openclaw", "pi", "copilot", "droid", "cursor", "gemini", "hermes"} {
+	for _, want := range []string{"claude", "codex", "openclaw", "pi", "copilot", "droid", "cursor", "gemini", "hermes", "opencode"} {
 		if !active[want] {
 			t.Errorf("%s should be scannable (deriver registered)", want)
-		}
-	}
-	for _, inert := range []string{"opencode"} {
-		if active[inert] {
-			t.Errorf("%s must stay inert until its deriver ships", inert)
 		}
 	}
 	if got := Scannable([]string{"codex"}); len(got) != 1 || got[0].Agent != "codex" {

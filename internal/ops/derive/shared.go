@@ -60,7 +60,23 @@ func flexTimeMs(raw json.RawMessage) int64 {
 // ~/.quiver worktree path and the relative agent-dir symlink both contain it —
 // so the captured token is the real path the tool referenced, which
 // EnrichSkillIdentity resolves to verify the loaded artifact.
-var skillDirPathRe = regexp.MustCompile(`(\S*(?:skills|rules)/([a-z0-9][a-z0-9-]{0,63})(?:/\S*)?)`)
+//
+// The token classes exclude JSON syntax (quotes, braces, commas, backslashes)
+// in addition to whitespace: paths are routinely matched inside compact
+// serialized tool arguments ({"file_path":"/x/skills/y/SKILL.md"}), where a
+// \S* token would swallow the surrounding JSON and yield an unresolvable
+// "path" (observed in real claude stores, 2026-06-11).
+var skillDirPathRe = regexp.MustCompile(`([^\s"'\\{}\[\],]*(?:skills|rules)/([a-z0-9][a-z0-9-]{0,63})(?:/[^\s"'\\{}\[\],]*)?)`)
+
+// quiverWorktreePathRe matches a direct reference into qvr's immutable store:
+// .quiver/worktrees/<registry>/<skill>/<sha7>/... — capturing the whole token
+// (group 1) and the skill name (group 2). Agents resolve the agent-dir symlink
+// before reading (observed in real codex rollouts, 2026-06-11: `sed -n 1,220p
+// /Users/u/.quiver/worktrees/_local/qvr-probe/17dd2d4/SKILL.md`), and a LOCAL
+// install's subtree has no skills/<name>/ segment for skillDirPathRe to find,
+// so the store layout itself must be a recognized signal. It is also the
+// strongest one: the path pins registry+skill+sha directly.
+var quiverWorktreePathRe = regexp.MustCompile(`([^\s"'\\{}\[\],]*\.quiver/worktrees/[^/\s"'\\{}\[\],]+/([a-z0-9][a-z0-9-]{0,63})/[0-9a-f]{7}(?:/[^\s"'\\{}\[\],]*)?)`)
 
 // pathSkillRef reports the skill a tool invocation touches, whether the access
 // is the skill's SKILL.md (its "load"), and the path token actually
@@ -70,6 +86,14 @@ var skillDirPathRe = regexp.MustCompile(`(\S*(?:skills|rules)/([a-z0-9][a-z0-9-]
 func pathSkillRef(text string, valid map[string]bool) (name string, isLoad bool, loadPath string) {
 	if text == "" {
 		return "", false, ""
+	}
+	// The store-layout signal first: a resolved worktree path is unambiguous
+	// (registry/skill/sha in the path) and is NOT gated on the valid set —
+	// a path into qvr's own store identifies the skill regardless of what the
+	// agent announced.
+	for _, m := range quiverWorktreePathRe.FindAllStringSubmatch(text, -1) {
+		path, n := m[1], m[2]
+		return n, strings.HasSuffix(path, "/SKILL.md"), path
 	}
 	for _, m := range skillDirPathRe.FindAllStringSubmatch(text, -1) {
 		path, n := m[1], m[2]
@@ -91,16 +115,38 @@ type skillRef struct {
 // resolveSkillRef attributes one tool invocation to a skill: a literal "Skill"
 // tool-call wins (the agent's own first-class skill mechanism); otherwise the
 // path signal over the invocation's command text, then its serialized
-// arguments. valid optionally restricts the accepted skill-name set.
+// arguments. valid optionally restricts the accepted skill-name set. When the
+// caller has only serialized arguments (OpenAI-style function calls carry a
+// JSON string — hermes, codex), they are parsed here so name-keyed skill
+// tools like hermes's skill_view still resolve.
 func resolveSkillRef(toolName string, args map[string]any, cmdText, argsJSON string, valid map[string]bool) skillRef {
+	if args == nil && argsJSON != "" {
+		args = map[string]any{}
+		_ = json.Unmarshal([]byte(argsJSON), &args)
+	}
 	if name := ops.SkillRefFromTool(toolName, args); name != "" {
-		return skillRef{name: name, isLoad: true}
+		// A skill tool invoked WITH a file argument reads a supporting file
+		// (hermes's skill_view(name, file_path)) — attribute it to the skill
+		// without counting a load, mirroring how path-signal file reads stay
+		// TOOL spans.
+		return skillRef{name: name, isLoad: !skillToolReadsFile(args)}
 	}
 	name, isLoad, loadPath := pathSkillRef(cmdText, valid)
 	if name == "" {
 		name, isLoad, loadPath = pathSkillRef(argsJSON, valid)
 	}
 	return skillRef{name: name, isLoad: isLoad, loadPath: loadPath}
+}
+
+// skillToolReadsFile reports whether a skill tool-call's arguments target a
+// supporting file rather than the skill itself.
+func skillToolReadsFile(args map[string]any) bool {
+	for _, k := range []string{"file_path", "file"} {
+		if v, ok := args[k].(string); ok && v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // addToolInvocation turns one tool invocation into a child span. A skill load
@@ -114,6 +160,12 @@ func (t *turn) addToolInvocation(toolName, callID, argsJSON, cmdText string, ref
 		"gen_ai.tool.name":           toolName,
 		"gen_ai.tool.call.id":        callID,
 		"gen_ai.tool.call.arguments": argsJSON,
+	}
+	// The turn's model rides on its tool/skill children so skill aggregations
+	// can cut by model ("skill A on opus vs skill B on fable") without a
+	// parent-span join.
+	if t.model != "" {
+		attrs["gen_ai.request.model"] = t.model
 	}
 	if cmdText != "" {
 		attrs["gen_ai.tool.description"] = clip(cmdText, 200)
@@ -169,7 +221,15 @@ func (t *turn) applyResult(callID, result string, ts int64, isError bool) {
 	if !ok {
 		return
 	}
-	sp := &t.tools[idx]
+	applyResultTo(&t.tools[idx], result, ts, isError)
+	delete(t.pending, callID)
+}
+
+// applyResultTo stamps a result onto one span. A SKILL span that lacked path
+// evidence at call time gets a second chance here: name-only skill tools
+// (hermes's skill_view, opencode's skill, …) inline the loaded artifact's
+// real directory in their RESULT, so the result text is mined for it.
+func applyResultTo(sp *Span, result string, ts int64, isError bool) {
 	sp.Attributes["gen_ai.tool.call.result"] = result
 	if isError {
 		sp.Attributes["error.type"] = "tool_failure"
@@ -177,7 +237,58 @@ func (t *turn) applyResult(callID, result string, ts int64, isError bool) {
 	if ts > sp.StartMs {
 		sp.EndMs = ts
 	}
-	delete(t.pending, callID)
+	mineSkillLoadPath(sp, result)
+}
+
+// mineSkillLoadPath extracts load-path evidence for a SKILL span from a tool
+// result's text. Gated on the span's own skill.name so a result that mentions
+// other skills' paths can never mis-attribute; the path is recorded only when
+// the span has none yet (call-time evidence wins).
+func mineSkillLoadPath(sp *Span, text string) {
+	if sp.Kind != KindSkill || text == "" {
+		return
+	}
+	if _, ok := sp.Attributes["skill.load_path"]; ok {
+		return
+	}
+	name, _ := sp.Attributes["skill.name"].(string)
+	if name == "" {
+		return
+	}
+	// The worktree-path branch of pathSkillRef ignores the valid set, so the
+	// returned name must be re-checked against the span's skill.
+	if n, _, path := pathSkillRef(text, map[string]bool{name: true}); n == name && path != "" {
+		// Some results spell the location as a file:// URI (opencode's
+		// base-directory line); enrichment resolves filesystem paths.
+		sp.Attributes["skill.load_path"] = strings.TrimPrefix(path, "file://")
+	}
+}
+
+// attachSkillLoadPath sets skill.load_path on the turn's most recent SKILL
+// span that lacks one — for agents whose load-path evidence arrives in a
+// separate record after the skill invocation (claude's base-directory
+// injection, copilot's skill.invoked event). A non-empty name additionally
+// requires the span's skill.name to match.
+func (t *turn) attachSkillLoadPath(name, path string) {
+	if path == "" {
+		return
+	}
+	for i := len(t.tools) - 1; i >= 0; i-- {
+		sp := &t.tools[i]
+		if sp.Kind != KindSkill {
+			continue
+		}
+		if name != "" {
+			if n, _ := sp.Attributes["skill.name"].(string); n != name {
+				continue
+			}
+		}
+		if _, ok := sp.Attributes["skill.load_path"]; ok {
+			continue
+		}
+		sp.Attributes["skill.load_path"] = path
+		return
+	}
 }
 
 // turnWalk is the shared state machine the JSONL derivers drive: it owns the

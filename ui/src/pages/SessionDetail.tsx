@@ -14,6 +14,7 @@ import {
   MetaItem,
   Tabs,
   Tag,
+  VersionTag,
 } from "../components/qvr";
 import { fmtEpochMs, fmtMs, fmtTime, prettyJSON, short } from "../lib/format";
 import { spanKindTone } from "../lib/tones";
@@ -103,7 +104,6 @@ interface ParsedAttrs {
   skillRegistry?: string;
   skillVersion?: string;
   skillCommit?: string;
-  skillVerified?: boolean;
   error?: string;
 }
 
@@ -116,7 +116,6 @@ function parseAttrs(raw: string): ParsedAttrs {
   }
   const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : undefined);
   const num = (k: string) => (typeof a[k] === "number" ? (a[k] as number) : undefined);
-  const bool = (k: string) => (typeof a[k] === "boolean" ? (a[k] as boolean) : undefined);
   const firstMessage = (k: string): string | undefined => {
     const v = str(k);
     if (!v) return undefined;
@@ -141,20 +140,15 @@ function parseAttrs(raw: string): ParsedAttrs {
     skillRegistry: str("skill.registry"),
     skillVersion: str("skill.version"),
     skillCommit: str("skill.commit"),
-    skillVerified: bool("skill.verified"),
     error: str("error.type"),
   };
 }
 
-// skillIdentity renders the lock-resolved skill identity as a compact label,
-// e.g. "raks@v0.2.0 · 94e539b" — what makes name collisions across registries
-// and versions distinguishable (#146). Returns "" when nothing was resolved.
-function skillIdentity(a: ReturnType<typeof parseAttrs>): string {
-  if (!a.skillRegistry && !a.skillVersion && !a.skillCommit) return "";
-  const left = [a.skillRegistry, a.skillVersion].filter(Boolean).join("@");
-  const sha = a.skillCommit ? a.skillCommit.slice(0, 7) : "";
-  return [left, sha].filter(Boolean).join(" · ");
-}
+// Identity fields exist on a span only when its load path proved which locked
+// artifact ran (#146, #149); the VersionTag renders them as the quiet pin —
+// or @unknown when the agent's records carried no evidence. The skill NAME
+// tag is the loud part: tagging the session is the point, identity is
+// supporting metadata.
 
 interface Turn {
   llm: SpanRow;
@@ -281,7 +275,6 @@ function ToolSpan({ span }: { span: SpanRow }) {
   const a = parseAttrs(span.attributes);
   const isSkill = span.kind === "SKILL";
   const hasDetail = !!(a.toolArgs || a.toolResult);
-  const identity = skillIdentity(a);
   return (
     <div className="qvr-card qvr-card--inset">
       <button
@@ -308,24 +301,20 @@ function ToolSpan({ span }: { span: SpanRow }) {
           {a.toolName || span.name}
         </span>
         {isSkill && a.skillName && (
-          <span className="qvr-scan__scanner">→ {a.skillName}</span>
-        )}
-        {isSkill && a.skillVerified !== false && identity && (
-          <Badge tone="success" dot title="skill identity verified against the loaded artifact">
-            {identity}
+          <Badge tone="accent" dot>
+            {a.skillName}
           </Badge>
         )}
-        {isSkill && a.skillVerified === false && (
-          <Badge
-            tone="warning"
+        {isSkill && a.skillName && (
+          <VersionTag
+            refName={a.skillVersion}
+            sha={a.skillCommit}
             title={
-              identity
-                ? "best-guess identity from qvr.lock — qvr could not confirm the copy the agent actually loaded"
-                : "qvr could not resolve the loaded copy to a locked skill (e.g. a global eject or a shadowing install)"
+              a.skillRegistry
+                ? `${a.skillRegistry}@${a.skillVersion}${a.skillCommit ? ` · ${a.skillCommit}` : ""}`
+                : undefined
             }
-          >
-            {identity ? `~${identity}` : "unverified"}
-          </Badge>
+          />
         )}
         {!isSkill && a.toolDesc && (
           <span

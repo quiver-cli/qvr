@@ -228,7 +228,7 @@ func deriveGrouped(rows []*ops.RawTrace) ([]derive.Span, error) {
 		} else if d != nil {
 			// Promote skill identity from qvr.lock so name collisions across
 			// registries/versions stay distinguishable in the output (#146).
-			derive.EnrichSkillIdentity(d.Spans, batch)
+			derive.EnrichSkillIdentity(d.Spans, batch, nil)
 			spans = append(spans, d.Spans...)
 		}
 		batch = nil

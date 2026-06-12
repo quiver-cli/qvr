@@ -14,10 +14,10 @@ import {
   StatusBadge,
   Tag,
 } from "../components/qvr";
-import { fmtCount, fmtShare, relTime } from "../lib/format";
+import { fmtCount, relTime } from "../lib/format";
 
-// Skills — every skill in the lock, ranked by observed verified work (the
-// server sorts by verified desc), each row carrying its usage evidence.
+// Skills — every skill in the lock, ranked by observed work (the server
+// sorts by invocations desc), each row carrying its usage evidence.
 // Skills that fired historically but are no longer installed stay listed
 // (installed:false) so history reads honestly.
 export default function Skills() {
@@ -105,7 +105,7 @@ function SkillRow({ s, auditEnabled }: { s: SkillUsageRow; auditEnabled: boolean
       desc={
         auditEnabled
           ? s.invocations > 0
-            ? `${fmtCount(s.invocations)} runs · ${fmtShare(s.verifiedShare)} verified · ${fmtCount(
+            ? `${fmtCount(s.invocations)} runs · ${fmtCount(s.sessions)} sessions · ${fmtCount(
                 s.tokensIn + s.tokensOut,
               )} tok · last fired ${relTime(s.lastFired)}`
             : "never fired"

@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/ops"
 	"github.com/astra-sh/qvr/internal/ops/derive"
 	"github.com/astra-sh/qvr/internal/ops/store"
@@ -36,6 +37,8 @@ type Store interface {
 	ReplaceSessionDerivation(ctx context.Context, meta *store.SessionMetaRow, rows []*store.SpanRow) error
 	DeleteSession(ctx context.Context, sessionID uuid.UUID) (int64, error)
 	ReplaceSourceRawTraces(ctx context.Context, agent, sourcePath string, rows []*ops.RawTrace) error
+	PutLockSnapshots(ctx context.Context, sessionID uuid.UUID, rows []*store.LockSnapshotRow) error
+	GetLockSnapshots(ctx context.Context, sessionID uuid.UUID) (map[string]*store.LockSnapshotRow, error)
 }
 
 // Result reports what a single ingest stored, for diagnostics/tests.
@@ -84,8 +87,19 @@ func persistDerivation(ctx context.Context, s Store, sessionID uuid.UUID) (int, 
 	}
 	// Promote full skill identity (registry/commit/version/hash) from the
 	// project's qvr.lock onto skill-attributed spans before they're persisted,
-	// so name collisions across registries/versions stay distinguishable (#146).
-	derive.EnrichSkillIdentity(d.Spans, rows)
+	// so name collisions across registries/versions stay distinguishable
+	// (#146). The session's ingest-time snapshot (when one exists) pins
+	// symlink-origin evidence to the resolution that was true at run time, so
+	// a rederive after a version move doesn't rewrite history; the first
+	// derivation that proves identity freezes it.
+	snap := loadLockSnapshot(ctx, s, sessionID)
+	derive.EnrichSkillIdentity(d.Spans, rows, snap)
+	// Harvest on every pass: a skill first proven in a later continuation of
+	// an already-snapshotted session still needs freezing. Write-once per
+	// (session, skill) is enforced by the store's INSERT OR IGNORE.
+	if h := derive.HarvestVerifiedIdentities(d.Spans); len(h) > 0 {
+		_ = s.PutLockSnapshots(ctx, sessionID, snapshotRows(h)) // best-effort: a miss re-freezes next pass
+	}
 	hasSkill := hasSkillSpans(d.Spans)
 	out := make([]*store.SpanRow, 0, len(d.Spans))
 	for _, sp := range d.Spans {
@@ -121,6 +135,46 @@ func persistDerivation(ctx context.Context, s Store, sessionID uuid.UUID) (int, 
 		DeriverVersion:  derive.Version,
 	}
 	return len(out), hasSkill, s.ReplaceSessionDerivation(ctx, meta, out)
+}
+
+// loadLockSnapshot reads a session's frozen identities as the lock-entry map
+// enrichment consumes. A read failure degrades to "no snapshot" (live
+// resolution) rather than failing derivation.
+func loadLockSnapshot(ctx context.Context, s Store, sessionID uuid.UUID) map[string]*model.LockEntry {
+	rows, err := s.GetLockSnapshots(ctx, sessionID)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	out := make(map[string]*model.LockEntry, len(rows))
+	for name, r := range rows {
+		out[name] = &model.LockEntry{
+			Name:        r.SkillName,
+			Registry:    r.Registry,
+			Ref:         r.Ref,
+			Commit:      r.Commit,
+			SubtreeHash: r.SubtreeHash,
+			Source:      r.Source,
+			Canonical:   r.Canonical,
+		}
+	}
+	return out
+}
+
+// snapshotRows converts harvested identities into snapshot rows.
+func snapshotRows(h map[string]*model.LockEntry) []*store.LockSnapshotRow {
+	out := make([]*store.LockSnapshotRow, 0, len(h))
+	for name, e := range h {
+		out = append(out, &store.LockSnapshotRow{
+			SkillName:   name,
+			Registry:    e.Registry,
+			Ref:         e.Ref,
+			Commit:      e.Commit,
+			SubtreeHash: e.SubtreeHash,
+			Source:      e.Source,
+			Canonical:   e.Canonical,
+		})
+	}
+	return out
 }
 
 // hasSkillSpans reports whether any span carries a skill attribution — the

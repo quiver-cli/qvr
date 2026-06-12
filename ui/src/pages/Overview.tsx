@@ -18,9 +18,9 @@ import {
 import { ActivityCharts, activityCoverage, avgSessionMs } from "../components/ActivityPanel";
 import { fmtCount, fmtCountWhole, fmtDuration, fmtShare, relTimeMs } from "../lib/format";
 
-// Overview — the dashboard home: stat tiles, the verified-work headline
-// ("N installed · M do 90% of verified work · K never fired"), the scan-gate
-// rollup, what needs attention, and the latest sessions.
+// Overview — the dashboard home: stat tiles, the activity charts, the
+// scan-gate rollup, what needs attention, and the latest sessions. Version
+// detail lives in the Skills views for power users.
 export default function Overview() {
   const [nonce, setNonce] = useState(0);
   // 10s polling keeps the dashboard live while the server's background scan
@@ -91,52 +91,30 @@ export default function Overview() {
                 <StatCard
                   icon={<Layers />}
                   value={fmtCount(cov.totalSessions)}
-                  label={`sessions · ${fmtShare(cov.taggedShare)} used skills`}
+                  label="sessions"
+                  sub={`${fmtShare(cov.taggedShare)} used skills`}
                 />
                 <StatCard
                   icon={<MessagesSquare />}
                   value={fmtCount(activity.summary.turns)}
-                  label={`turns · ${fmtCount(activity.summary.tools)} tool calls`}
+                  label="turns"
+                  sub={`${fmtCount(activity.summary.tools)} tool calls`}
                 />
                 <StatCard
                   icon={<Coins />}
                   value={fmtCountWhole(activity.summary.tokens_in + activity.summary.tokens_out)}
-                  label={`tokens · ${fmtCount(activity.summary.tokens_in)} in / ${fmtCount(activity.summary.tokens_out)} out`}
+                  label="tokens"
+                  sub={`${fmtCount(activity.summary.tokens_in)} in · ${fmtCount(activity.summary.tokens_out)} out`}
                 />
                 <StatCard
                   icon={<Clock />}
                   value={fmtDuration(activity.summary.duration_ms)}
-                  label={`session time · ${fmtDuration(avgSessionMs(activity))} avg`}
+                  label="session time"
+                  sub={`${fmtDuration(avgSessionMs(activity))} avg`}
                 />
               </>
             )}
           </div>
-
-          {m?.audit_enabled && m.headline.total_invocations > 0 && (
-            <Card variant="accent" className="qvr-stat" >
-              <p
-                style={{
-                  margin: 0,
-                  fontFamily: "var(--font-brand)",
-                  fontSize: "var(--text-lg)",
-                  color: "var(--text)",
-                }}
-              >
-                {m.headline.installed} skills installed ·{" "}
-                <Link to="/skills">
-                  {m.headline.core_skills.length}{" "}
-                  {m.headline.core_skills.length === 1 ? "does" : "do"}{" "}
-                  {fmtShare(m.headline.core_share)} of verified work
-                </Link>{" "}
-                ·{" "}
-                <Link to="/deadweight">{m.headline.never_fired} never fired</Link>
-              </p>
-              <p className="qvr-sub" style={{ marginTop: 6 }}>
-                {fmtCount(m.headline.verified_invocations)} of{" "}
-                {fmtCount(m.headline.total_invocations)} skill invocations were lock-verified.
-              </p>
-            </Card>
-          )}
 
           {activity && <ActivityCharts data={activity} skills={m?.skills ?? []} />}
 

@@ -24,7 +24,14 @@ import (
 // v5: unified session model — every derivation also constructs a SessionMeta
 // (the one read model the UI/CLI/metrics list sessions from), and agents are
 // keyed by canonical target name.
-const Version = 5
+// v6: proof-gated identity — skill.verified is gone; identity fields are
+// stamped only on load-path proof, and skill.version's presence IS the
+// verified signal (always set on proof, short SHA when the entry has no ref).
+// claude gains load paths: the harness-injected isMeta "Base directory for
+// this skill:" line (observed in real session stores, 2026-06-11) plus the
+// universal path signal over tool calls; isMeta lines no longer fabricate
+// turns.
+const Version = 6
 
 // KindSkill is the Quiver span category for a skill load/invocation within a
 // turn. It exists so the trace makes skill usage a first-class, queryable stage

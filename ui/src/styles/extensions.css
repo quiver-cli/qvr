@@ -133,6 +133,9 @@ a.qvr-skillrow:hover {
   overflow: hidden;
 }
 .qvr-barrow__fill {
+  /* the fill is a <span>; without block display its width/height are
+     ignored and the bar renders empty */
+  display: block;
   height: 100%;
   background: var(--accent);
   border-radius: var(--radius-pill);
@@ -147,29 +150,55 @@ a.qvr-skillrow:hover {
   text-align: right;
 }
 
-/* The LOUD verified-share hero number on the report card. */
-.qvr-sharestat__num {
-  font-family: var(--font-brand);
-  font-size: 38px;
+/* Version pin hero on the report card — the latest observed version, set in
+   the mono identity face (a ref is code, not a number). */
+.qvr-verhero__num {
+  font-family: var(--font-mono);
+  font-size: 28px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   color: var(--text);
-  line-height: 1;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.qvr-verhero__lead { color: var(--text-faint); margin-right: 2px; }
+.qvr-verhero__num--unknown { color: var(--text-faint); font-weight: 500; }
 
-/* Stat card (overview) — the kit builds these inline; named here for reuse. */
+/* Unpinned version tag — identity unknown. A dashed, faint variant of the
+   mono tag: visually "not pinned by the lock", deliberately quiet (missing
+   telemetry is an absence, not a warning). */
+.qvr-tag--ghost {
+  color: var(--text-faint);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+}
+.qvr-tag--ghost .qvr-tag__lead { color: var(--text-faint); }
+
+/* Stat card (overview) — the kit builds these inline; named here for reuse.
+   The value never wraps ("1d 8h" stays one line); detail beyond the primary
+   label goes on its own quieter line so columns align across tiles. */
 .qvr-stat { padding: 16px; }
 .qvr-stat svg { width: 18px; height: 18px; color: var(--accent); }
 .qvr-stat__num {
   font-family: var(--font-brand);
-  font-size: 30px;
+  font-size: clamp(22px, 1.8vw, 30px);
   font-weight: 600;
   color: var(--text);
   margin-top: 8px;
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 .qvr-stat__label {
   font-family: var(--font-ui);
   font-size: 12px;
   color: var(--text-subtle);
+}
+.qvr-stat__sub {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-top: 2px;
 }

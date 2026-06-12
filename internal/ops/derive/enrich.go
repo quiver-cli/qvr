@@ -2,6 +2,7 @@ package derive
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/astra-sh/qvr/internal/config"
@@ -10,45 +11,55 @@ import (
 	reg "github.com/astra-sh/qvr/internal/registry"
 )
 
-// EnrichSkillIdentity promotes full skill identity onto SKILL/TOOL spans that
-// carry only a bare skill.name, by resolving that name against the calling
-// project's qvr.lock (falling back to the user-global lock). The lockfile
-// already pins each skill to registry + commit + ref + subtreeHash, so two
-// registries that both ship "code-review", or two pinned versions of the same
-// skill across projects, become distinguishable in logs/spans/UI/OTLP without
-// scraping raw command strings (issue #146).
+// EnrichSkillIdentity promotes full skill identity onto SKILL/TOOL spans whose
+// recorded load path PROVES which artifact the agent ran, by resolving the
+// span's skill.name against the calling project's qvr.lock (falling back to
+// the user-global lock) and checking the load path for containment in that
+// entry's managed worktree. The lockfile pins each skill to registry + commit
+// + ref + subtreeHash, so two registries that both ship "code-review", or two
+// pinned versions of the same skill across projects, become distinguishable
+// in logs/spans/UI/OTLP without scraping raw command strings (issue #146).
 //
 // It is intentionally a SEPARATE pass from DeriveSession, not folded into the
 // derivers: a Deriver must be PURE (same rows in → same spans out), and the
 // lockfile is external state not carried in the rows. Enrichment is applied at
 // the persistence/display boundaries (capture + `qvr audit spans`), where
-// reflecting the current pin is what callers want. Spans for skills not found
-// in any lock (built-in agent skills, skills installed by another tool) are
-// left with skill.name only — identity is never fabricated.
+// reflecting the current pin is what callers want.
 //
-// Attributes added when the corresponding lock field is non-empty:
+// Identity is proof-gated: the presence of skill.version IS the verification
+// signal (version present ⇔ proven; no separate boolean). Attributes added
+// when — and only when — the span's skill.load_path resolves into the lock
+// entry's worktree:
 //
 //	skill.registry     — the registry the skill came from (e.g. "raks")
-//	skill.version      — the requested ref (branch/tag, e.g. "v0.2.0")
+//	skill.version      — the requested ref (branch/tag), or the short pinned
+//	                     SHA when the entry has no ref — always set on proof,
+//	                     so "has skill.version" is the one verification test
 //	skill.commit       — the pinned git SHA at the entry's HEAD
 //	skill.source       — the fetch coordinate (git URL or local path)
 //	skill.subtree_hash — canonical content hash of the installed subtree
 //	skill.canonical    — upstream skill name when installed under an alias
-//	skill.verified     — bool: whether the asserted identity is PROVEN to be the
-//	                     artifact the agent actually loaded (see below)
 //
-// Identity is name-keyed only as a last resort. When a span records the file
-// path the agent actually loaded (codex captures it as skill.load_path), the
-// path wins over the name: lock identity is asserted only when that path
-// resolves into the lock entry's managed worktree, and the span is marked
-// skill.verified=true. A path that doesn't match — a global eject shadowing the
-// project install, a copy from another registry, a drifted sha — gets
-// skill.name only and skill.verified=false; qvr never attests a
-// registry+commit+subtree_hash the agent didn't run. When NO load path is known
-// (claude's Skill tool call carries only {"skill":"<name>"}), the lock is the
-// best available guess, so it is attached but flagged skill.verified=false
-// rather than presented as authoritative (issue #149).
-func EnrichSkillIdentity(spans []Span, rows []*ops.RawTrace) {
+// Everything else keeps skill.name (and skill.load_path, when recorded) as
+// evidence and gains NO identity fields: a span with no load path (an agent
+// that never records what it read), a path that resolves outside the entry's
+// worktree (a global eject shadowing the project install, a copy from another
+// registry, a drifted sha), or a name absent from every lock (built-in agent
+// skills, skills installed by another tool). qvr never attests a
+// registry+commit+subtree_hash the agent didn't provably run (#149). The
+// unproven name→lock pin is still useful context, but it is a DISPLAY-TIME
+// join (UI/CLI resolve name→lock at render and label it as the current pin),
+// never persisted onto spans as identity.
+// snap optionally carries the session's ingest-time identity snapshot
+// (skill name → frozen entry). Symlink-origin evidence (an agent-dir path
+// like claude's base-directory line) can only be resolved against the
+// filesystem AS IT IS NOW, so a rederive after a version move would rewrite
+// history; the snapshot — harvested at first ingest, when resolution still
+// matched run time — wins for that evidence class. Transcript-pinned store
+// paths (the sha is in the recorded path itself) stay path-truth and ignore
+// the snapshot. Pass nil when no snapshot exists (first ingest, display-time
+// re-derivation of unpersisted rows).
+func EnrichSkillIdentity(spans []Span, rows []*ops.RawTrace, snap map[string]*model.LockEntry) {
 	if len(spans) == 0 {
 		return
 	}
@@ -60,27 +71,125 @@ func EnrichSkillIdentity(spans []Span, rows []*ops.RawTrace) {
 		if !ok || name == "" {
 			continue
 		}
-		entry := r.lookup(name)
 		loadPath, _ := attrs["skill.load_path"].(string)
+		if loadPath == "" {
+			continue // no evidence — nothing to prove against
+		}
 
-		switch {
-		case loadPath != "":
-			// The load path is concrete evidence: trust it over the name. Only
-			// assert identity when the loaded file resolves into this entry's
-			// worktree; otherwise the loaded copy is provably not the locked one.
-			if entry != nil && loadedFromEntryWorktree(loadPath, wd, entry) {
-				applyIdentity(attrs, entry)
-				attrs["skill.verified"] = true
-			} else {
-				attrs["skill.verified"] = false
-			}
-		case entry != nil:
-			// No load path (e.g. claude). Attach the lock's identity as a guess
-			// but never claim it is the proven-loaded artifact.
+		// Transcript-pinned: the RECORDED path (before any symlink
+		// resolution) is already inside qvr's immutable store — registry,
+		// skill, and short sha are in the bytes the agent wrote, so this is
+		// proof ACROSS time (codex/openclaw record resolved paths). When the
+		// current lock pin matches, the richer lock fields ride along.
+		abs := absLoadPath(loadPath, wd)
+		if pathReg, _, sha := storeWorktreeIdentity(abs); sha != "" {
+			applyPathIdentity(attrs, r.lookup(name), pathReg, sha)
+			continue
+		}
+
+		// Symlink-origin evidence from here down: prefer the ingest-time
+		// snapshot when one exists — it froze the proof while the symlink
+		// still pointed where it did at run time.
+		if e := snap[name]; e != nil {
+			applyIdentity(attrs, e)
+			continue
+		}
+
+		// No snapshot: resolve the symlink now (derive-time truth — correct
+		// for near-live ingest, the case that then gets snapshotted).
+		real := resolveLoadPath(loadPath, wd)
+		if pathReg, _, sha := storeWorktreeIdentity(real); sha != "" {
+			applyPathIdentity(attrs, r.lookup(name), pathReg, sha)
+			continue
+		}
+		// Non-store evidence: assert identity only when the loaded file
+		// resolves into the lock entry's worktree; otherwise the loaded copy
+		// is provably not the locked one.
+		if entry := r.lookup(name); entry != nil && loadedFromEntryWorktree(loadPath, wd, entry) {
 			applyIdentity(attrs, entry)
-			attrs["skill.verified"] = false
 		}
 	}
+}
+
+// applyPathIdentity stamps identity proven by a store path: the full lock
+// fields when the current pin matches the path's sha, else the minimal
+// path-derived identity (version = short sha — still verified).
+func applyPathIdentity(attrs map[string]any, entry *model.LockEntry, pathReg, sha string) {
+	if entry != nil && strings.HasPrefix(entry.Commit, sha) {
+		applyIdentity(attrs, entry)
+		return
+	}
+	attrs["skill.registry"] = pathReg
+	attrs["skill.commit"] = sha
+	attrs["skill.version"] = sha // version presence = verified
+}
+
+// HarvestVerifiedIdentities collects the proven identity per skill from
+// enriched spans — the rows persistDerivation freezes as the session's
+// snapshot on first ingest. Only verified spans (skill.version present)
+// contribute; the snapshot never records guesses.
+func HarvestVerifiedIdentities(spans []Span) map[string]*model.LockEntry {
+	out := map[string]*model.LockEntry{}
+	str := func(m map[string]any, k string) string {
+		s, _ := m[k].(string)
+		return s
+	}
+	for i := range spans {
+		attrs := spans[i].Attributes
+		name := str(attrs, "skill.name")
+		if name == "" || str(attrs, "skill.version") == "" {
+			continue
+		}
+		if _, seen := out[name]; seen {
+			continue
+		}
+		out[name] = &model.LockEntry{
+			Name:        name,
+			Registry:    str(attrs, "skill.registry"),
+			Ref:         str(attrs, "skill.version"),
+			Commit:      str(attrs, "skill.commit"),
+			SubtreeHash: str(attrs, "skill.subtree_hash"),
+			Source:      str(attrs, "skill.source"),
+			Canonical:   str(attrs, "skill.canonical"),
+		}
+	}
+	return out
+}
+
+// absLoadPath absolutizes a recorded load path against the session's working
+// directory WITHOUT resolving symlinks — the recorded bytes, locatable.
+func absLoadPath(loadPath, workingDir string) string {
+	if !filepath.IsAbs(loadPath) && workingDir != "" {
+		return filepath.Join(workingDir, loadPath)
+	}
+	return loadPath
+}
+
+// storeWorktreePathRe parses a resolved path inside qvr's immutable store:
+// …/.quiver/worktrees/<registry>/<skill>/<sha7>/…
+var storeWorktreePathRe = regexp.MustCompile(`\.quiver/worktrees/([^/]+)/([^/]+)/([0-9a-f]{7})(?:/|$)`)
+
+// storeWorktreeIdentity extracts (registry, skill, sha7) from a resolved
+// store path, or zero values when the path is not in the store.
+func storeWorktreeIdentity(path string) (registry, skill, sha string) {
+	m := storeWorktreePathRe.FindStringSubmatch(path)
+	if m == nil {
+		return "", "", ""
+	}
+	return m[1], m[2], m[3]
+}
+
+// resolveLoadPath absolutizes a recorded load path against the session's
+// working directory and resolves symlinks best-effort.
+func resolveLoadPath(loadPath, workingDir string) string {
+	abs := loadPath
+	if !filepath.IsAbs(abs) && workingDir != "" {
+		abs = filepath.Join(workingDir, abs)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
 }
 
 // loadedFromEntryWorktree reports whether loadPath — the file the agent actually
@@ -113,6 +222,9 @@ func loadedFromEntryWorktree(loadPath, workingDir string, e *model.LockEntry) bo
 }
 
 // applyIdentity writes the non-empty identity fields of entry onto attrs.
+// skill.version is ALWAYS set (falling back to the short pinned SHA when the
+// entry has no ref) because its presence is the verification signal — callers
+// only invoke this after the load-path proof has passed.
 func applyIdentity(attrs map[string]any, e *model.LockEntry) {
 	set := func(k, v string) {
 		if v != "" {
@@ -120,7 +232,11 @@ func applyIdentity(attrs map[string]any, e *model.LockEntry) {
 		}
 	}
 	set("skill.registry", e.Registry)
-	set("skill.version", e.Ref)
+	version := e.Ref
+	if version == "" {
+		version = reg.ShortSHA(e.Commit)
+	}
+	set("skill.version", version)
 	set("skill.commit", e.Commit)
 	set("skill.source", e.Source)
 	set("skill.subtree_hash", e.SubtreeHash)

@@ -31,7 +31,6 @@ import {
   MetaItem,
   DetailHeader,
   Section,
-  ShareStat,
   Sparkline,
   StatCard,
   StatusBadge,
@@ -40,13 +39,14 @@ import {
   Tag,
   Td,
   Th,
+  VersionTag,
 } from "../components/qvr";
-import { fmtCount, fmtShare, fmtTime, relTime, relTimeMs, short } from "../lib/format";
+import { fmtCount, fmtTime, relTime, relTimeMs, short } from "../lib/format";
 import { toneFor } from "../lib/tones";
 
 // SkillView is the skill workbench, used from two routes:
 //   /skills/:name                          — project scope (installed): the
-//     REPORT CARD — observed behavior (utilization, verified share, cost,
+//     REPORT CARD — observed behavior (utilization, version identity, cost,
 //     lineage) in front, install plumbing behind a tab.
 //   /registries/:registry/skills/:name     — registry scope (browsing): files
 //     + version catalogue, no telemetry (nothing is installed).
@@ -193,7 +193,7 @@ function ProjectView({
   );
 }
 
-// ReportTab — observed behavior: the verified-share hero, the utilization
+// ReportTab — observed behavior: the version-in-flight hero, the utilization
 // sparkline, token cost, per-agent table, recent sessions.
 function ReportTab({ report }: { report: SkillReport | null }) {
   const sparkPoints = useMemo(() => {
@@ -224,7 +224,10 @@ function ReportTab({ report }: { report: SkillReport | null }) {
   }
 
   const t = report.totals;
-  const share = t.invocations > 0 ? t.verified / t.invocations : undefined;
+  // versions is newest-first by first-fired; the lead row is what's in
+  // flight. Defensive ?. — the server initializes the slice, but a hero that
+  // can crash the whole report card isn't worth the assumption.
+  const latest = report.versions?.[0];
   const maxTok = Math.max(report.tokens.input, report.tokens.output, 1);
 
   return (
@@ -232,20 +235,34 @@ function ReportTab({ report }: { report: SkillReport | null }) {
       <div
         style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 16 }}
       >
-        <ShareStat
-          share={share}
-          label={`${fmtCount(t.verified)} of ${fmtCount(t.invocations)} invocations lock-verified`}
-          sub="load path proven to resolve into the locked worktree"
-        />
+        <Card variant="accent" className="qvr-stat">
+          <div
+            className={
+              "qvr-verhero__num" + (latest?.ref || latest?.commit ? "" : " qvr-verhero__num--unknown")
+            }
+            title={latest?.commit || undefined}
+          >
+            <span className="qvr-verhero__lead">@</span>
+            {latest?.ref || (latest?.commit ? short(latest.commit) : "unknown")}
+          </div>
+          <div className="qvr-stat__label" style={{ marginTop: 8 }}>
+            latest observed version{latest?.current ? " · the lock's pin" : ""}
+          </div>
+          <div className="qvr-stat__label" style={{ marginTop: 2 }}>
+            read from each invocation's recorded load path
+          </div>
+        </Card>
         <StatCard
           icon={<span />}
           value={fmtCount(t.invocations)}
-          label={`invocations · ${fmtCount(t.sessions)} sessions`}
+          label="invocations"
+          sub={`${fmtCount(t.sessions)} sessions`}
         />
         <StatCard
           icon={<span />}
           value={fmtCount(report.tokens.input + report.tokens.output)}
-          label="tokens in sessions where it fired"
+          label="tokens"
+          sub="in sessions where it fired"
         />
       </div>
 
@@ -288,7 +305,7 @@ function ReportTab({ report }: { report: SkillReport | null }) {
             <tr>
               <Th>agent</Th>
               <Th>invocations</Th>
-              <Th>verified</Th>
+              <Th>version</Th>
               <Th>sessions</Th>
               <Th>last fired</Th>
             </tr>
@@ -300,8 +317,8 @@ function ReportTab({ report }: { report: SkillReport | null }) {
                 <Badge tone="info">{prettyAgent(a.agent)}</Badge>
               </Td>
               <Td muted>{fmtCount(a.invocations)}</Td>
-              <Td muted>
-                {fmtShare(a.invocations > 0 ? a.verified / a.invocations : undefined)}
+              <Td>
+                <VersionCell versions={a.versions} />
               </Td>
               <Td muted>{fmtCount(a.sessions)}</Td>
               <Td muted>{relTime(a.lastFired)}</Td>
@@ -309,6 +326,38 @@ function ReportTab({ report }: { report: SkillReport | null }) {
           ))}
         </Table>
       </Section>
+
+      {(report.models?.length ?? 0) > 0 && (
+        <Section title="models">
+          <Table
+            head={
+              <tr>
+                <Th>model</Th>
+                <Th>invocations</Th>
+                <Th>sessions</Th>
+                <Th>last fired</Th>
+              </tr>
+            }
+          >
+            {report.models!.map((m) => (
+              <tr key={m.model}>
+                <Td>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-sm)" }}>
+                    {m.model}
+                  </span>
+                </Td>
+                <Td muted>{fmtCount(m.invocations)}</Td>
+                <Td muted>{fmtCount(m.sessions)}</Td>
+                <Td muted>{relTime(m.lastFired)}</Td>
+              </tr>
+            ))}
+          </Table>
+          <p className="qvr-sub" style={{ marginTop: 6 }}>
+            same skill, different models — how often it fired under each model
+            its spans ran with.
+          </p>
+        </Section>
+      )}
 
       {report.recentSessions.length > 0 && (
         <Section title="recent sessions">
@@ -346,6 +395,26 @@ function ReportTab({ report }: { report: SkillReport | null }) {
   );
 }
 
+// VersionCell — the agents table's version column: each distinct version the
+// agent's invocations carried as a pin tag, or the unpinned ghost when its
+// records never identified one.
+function VersionCell({ versions }: { versions?: string[] }) {
+  if (!versions || versions.length === 0) return <VersionTag />;
+  const shown = versions.slice(0, 2);
+  return (
+    <span style={{ display: "inline-flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+      {shown.map((v) => (
+        <VersionTag key={v} refName={v} />
+      ))}
+      {versions.length > shown.length && (
+        <span className="qvr-scan__scanner" title={versions.join(", ")}>
+          +{versions.length - shown.length}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // VersionsTab — lineage first (how each pinned version actually behaved),
 // the registry's installable refs below.
 function VersionsTab({
@@ -364,8 +433,9 @@ function VersionsTab({
           <>
             <VersionTimeline rows={fromVersionUsage(report.versions)} />
             <p className="qvr-sub" style={{ marginTop: 8 }}>
-              one row per (ref, commit) this skill fired as. compare verified share and
-              cost across versions before pinning forward.
+              one row per (ref, commit) this skill fired as — runs whose records
+              carried no identity group under @unknown. compare usage and cost
+              across versions before pinning forward.
             </p>
           </>
         ) : (

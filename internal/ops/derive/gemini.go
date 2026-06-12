@@ -28,7 +28,23 @@ func init() { Register("gemini", geminiDeriver{}) }
 //
 // Tool call and result ride the same item, so results attach immediately.
 // Skill attribution is the shared path signal over each call's arguments.
+//
+// Gemini has NO skill-load event (observed live, 2026-06-11): skills are
+// injected eagerly into the session context (an instructions block whose
+// <available_resources> lists the skill directory), there is no skill tool,
+// and SKILL.md itself is never read at use time. The observable footprint of
+// "this skill ran" is the first tool call touching the skill's files — so the
+// session's FIRST path-attributed call per skill is lifted to a SKILL span
+// (later touches stay TOOL), keeping invocation counts comparable with agents
+// that do have a discrete load event.
 type geminiDeriver struct{}
+
+// geminiState is the walk plus the per-session set of skills already lifted
+// to a SKILL span (the first-touch-is-the-load rule above).
+type geminiState struct {
+	turnWalk
+	skillLoaded map[string]bool
+}
 
 // geminiDoc is the wrapper-object form.
 type geminiDoc struct {
@@ -83,24 +99,27 @@ func (geminiDeriver) Derive(rows []*ops.RawTrace) (*Derivation, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	w := &turnWalk{sessionID: rows[0].SessionID.String()}
+	st := &geminiState{
+		turnWalk:    turnWalk{sessionID: rows[0].SessionID.String()},
+		skillLoaded: map[string]bool{},
+	}
 	out := &Derivation{}
 
 	for _, r := range rows {
 		if r.Source != ops.RawSourceTranscript {
 			continue
 		}
-		items, fallbackMs := geminiItems(r.Raw, w)
+		items, fallbackMs := geminiItems(r.Raw, &st.turnWalk)
 		for _, raw := range items {
 			var item geminiItem
 			if err := json.Unmarshal(raw, &item); err != nil {
 				continue
 			}
-			geminiMessage(w, &item, fallbackMs)
+			geminiMessage(st, &item, fallbackMs)
 		}
 	}
-	w.flush()
-	out.Spans = w.spans
+	st.flush()
+	out.Spans = st.spans
 	return out, nil
 }
 
@@ -149,8 +168,8 @@ func geminiItems(raw []byte, w *turnWalk) ([]json.RawMessage, int64) {
 
 // geminiMessage folds one item into the walk. fallbackMs (the document's
 // startTime) stamps items that carry no timestamp of their own.
-func geminiMessage(w *turnWalk, item *geminiItem, fallbackMs int64) {
-	w.setModel(item.Model)
+func geminiMessage(st *geminiState, item *geminiItem, fallbackMs int64) {
+	st.setModel(item.Model)
 	ts := firstFlexTime(item.TS, item.Timestamp, item.CreatedAt, item.Time)
 	if ts == 0 {
 		ts = fallbackMs
@@ -162,26 +181,28 @@ func geminiMessage(w *turnWalk, item *geminiItem, fallbackMs int64) {
 		if text == "" {
 			return
 		}
-		w.open(ts)
-		w.cur.prompt = text
+		st.open(ts)
+		st.cur.prompt = text
 	case "assistant":
-		w.ensure(ts)
+		st.ensure(ts)
 		if text := geminiText(item); text != "" {
-			w.cur.appendOutput(text)
+			st.cur.appendOutput(text)
 		}
 		calls := item.ToolCalls
 		if len(calls) == 0 {
 			calls = item.ToolCalls2
 		}
 		for _, tc := range calls {
-			geminiTool(w, tc, ts)
+			geminiTool(st, tc, ts)
 		}
-		w.cur.bump(ts)
+		st.cur.bump(ts)
 	}
 }
 
-// geminiTool emits one tool call (and its inline result) as a span.
-func geminiTool(w *turnWalk, tc geminiToolCall, ts int64) {
+// geminiTool emits one tool call (and its inline result) as a span. The
+// session's first call attributed to a skill is promoted to its SKILL span
+// (gemini has no discrete load event — see the type doc).
+func geminiTool(st *geminiState, tc geminiToolCall, ts int64) {
 	name := firstNonEmptyStr(tc.Name, tc.Tool, tc.DisplayName)
 	if name == "" && tc.ID == "" {
 		return
@@ -190,9 +211,16 @@ func geminiTool(w *turnWalk, tc geminiToolCall, ts int64) {
 	if args == nil {
 		args = tc.Input
 	}
-	w.cur.addCommandTool(name, tc.ID, compactJSON(args), commandFromArgs(args), ts, w.sessionID, nil)
+	cmdText := commandFromArgs(args)
+	argsJSON := compactJSON(args)
+	ref := resolveSkillRef(name, args, cmdText, argsJSON, nil)
+	if ref.name != "" && !st.skillLoaded[ref.name] {
+		st.skillLoaded[ref.name] = true
+		ref.isLoad = true // first touch IS the load on gemini
+	}
+	st.cur.addToolInvocation(name, tc.ID, argsJSON, cmdText, ref, ts, st.sessionID)
 	if result := geminiToolOutput(tc); result != "" {
-		w.cur.applyResultLast(result, ts, false)
+		st.cur.applyResultLast(result, ts, false)
 	}
 }
 

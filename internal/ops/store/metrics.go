@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -14,9 +15,13 @@ import (
 // even on large capture DBs.
 //
 // Dotted attribute keys require the quoted JSON-path form:
-// json_extract(attributes, '$."skill.name"'). skill.verified is marshaled as
-// JSON true/false and extracts as integer 1/0 in SQLite, but a deriver could
-// plausibly emit the string "true" — the verified expression matches both.
+// json_extract(attributes, '$."skill.name"'). Version identity is
+// proof-gated: enrichment stamps skill.version (and the other identity
+// fields) only when the span's load path proved which locked artifact ran.
+// The aggregations surface the OBSERVED VERSIONS per cut; an invocation
+// without one simply has an unknown version ("" — surfaces render it as
+// such). Skill attribution (the name tag) is never gated on identity:
+// every SKILL span counts, version known or not.
 //
 // Token attribution is session-level: a skill's token cost is the sum of
 // gen_ai.usage.* over the LLM spans of every session in which the skill
@@ -37,13 +42,19 @@ type MetricsFilter struct {
 	Until *time.Time
 }
 
-// SQL fragments shared by every aggregation. skillVerifiedExpr yields 1/0 per
-// SKILL span so SUM() counts verified invocations.
+// SQL fragments shared by every aggregation. skillVersionExpr yields the
+// span's proven version ref, or "" when identity is unknown; skillVersionsAgg
+// collapses a group to its known versions, NULL when none. The separator is
+// the unit separator (0x1f) — a control char git forbids in ref names, unlike
+// the default comma, which is legal in branch names. SQLite rejects DISTINCT
+// alongside a custom separator, so splitVersions dedupes on the Go side.
 const (
-	skillNameExpr     = `json_extract(attributes, '$."skill.name"')`
-	skillVerifiedExpr = `CASE WHEN json_extract(attributes, '$."skill.verified"') IN (1, 'true') THEN 1 ELSE 0 END`
-	llmInTokExpr      = `json_extract(attributes, '$."gen_ai.usage.input_tokens"')`
-	llmOutTokExpr     = `json_extract(attributes, '$."gen_ai.usage.output_tokens"')`
+	versionsSep      = "\x1f"
+	skillNameExpr    = `json_extract(attributes, '$."skill.name"')`
+	skillVersionExpr = `COALESCE(json_extract(attributes, '$."skill.version"'), '')`
+	skillVersionsAgg = `GROUP_CONCAT(NULLIF(` + skillVersionExpr + `, ''), char(31))`
+	llmInTokExpr     = `json_extract(attributes, '$."gen_ai.usage.input_tokens"')`
+	llmOutTokExpr    = `json_extract(attributes, '$."gen_ai.usage.output_tokens"')`
 )
 
 // skillSpanWhere builds the WHERE clauses selecting the SKILL spans in scope
@@ -92,9 +103,9 @@ func skillSpanWhereSQL(f *MetricsFilter) (string, []any) {
 // SkillUsage is the per-skill invocation rollup over SKILL spans.
 type SkillUsage struct {
 	Skill        string
-	Invocations  int64 // SKILL spans
-	Sessions     int64 // distinct sessions with ≥1 SKILL span
-	Verified     int64 // invocations whose lock identity was load-path proven
+	Invocations  int64    // SKILL spans
+	Sessions     int64    // distinct sessions with ≥1 SKILL span
+	Versions     []string // distinct proven versions observed; empty = unknown
 	FirstFiredMs int64
 	LastFiredMs  int64
 }
@@ -106,7 +117,7 @@ func (s *sqliteStore) SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([
 	q := `SELECT ` + skillNameExpr + ` AS skill,
 	  COUNT(*),
 	  COUNT(DISTINCT session_id),
-	  SUM(` + skillVerifiedExpr + `),
+	  ` + skillVersionsAgg + `,
 	  MIN(start_ms),
 	  MAX(start_ms)
 	FROM spans ` + where + `
@@ -122,13 +133,33 @@ func (s *sqliteStore) SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([
 	var out []*SkillUsage
 	for rows.Next() {
 		u := &SkillUsage{}
-		if err := rows.Scan(&u.Skill, &u.Invocations, &u.Sessions, &u.Verified,
+		var versions sql.NullString
+		if err := rows.Scan(&u.Skill, &u.Invocations, &u.Sessions, &versions,
 			&u.FirstFiredMs, &u.LastFiredMs); err != nil {
 			return nil, fmt.Errorf("store: scan skill usage: %w", err)
 		}
+		u.Versions = splitVersions(versions)
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// splitVersions decodes a skillVersionsAgg column: NULL (no proven version in
+// the group) → nil, else the joined refs deduped in first-seen order (the
+// aggregate cannot use DISTINCT alongside its custom separator).
+func splitVersions(v sql.NullString) []string {
+	if !v.Valid || v.String == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for ref := range strings.SplitSeq(v.String, versionsSep) {
+		if !seen[ref] {
+			seen[ref] = true
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // TokenTotals is the session-attributed token rollup for one skill (see the
@@ -180,7 +211,6 @@ type SkillSeriesPoint struct {
 	Day         string // YYYY-MM-DD (UTC)
 	Agent       string
 	Invocations int64
-	Verified    int64
 }
 
 // SkillInvocationSeries buckets one skill's SKILL spans by UTC day and agent,
@@ -191,8 +221,7 @@ func (s *sqliteStore) SkillInvocationSeries(ctx context.Context, f *MetricsFilte
 	}
 	where, args := skillSpanWhereSQL(f)
 	q := `SELECT date(start_ms/1000, 'unixepoch') AS day, agent_name,
-	  COUNT(*),
-	  SUM(` + skillVerifiedExpr + `)
+	  COUNT(*)
 	FROM spans ` + where + `
 	GROUP BY day, agent_name
 	ORDER BY day ASC, agent_name ASC`
@@ -206,7 +235,7 @@ func (s *sqliteStore) SkillInvocationSeries(ctx context.Context, f *MetricsFilte
 	var out []*SkillSeriesPoint
 	for rows.Next() {
 		p := &SkillSeriesPoint{}
-		if err := rows.Scan(&p.Day, &p.Agent, &p.Invocations, &p.Verified); err != nil {
+		if err := rows.Scan(&p.Day, &p.Agent, &p.Invocations); err != nil {
 			return nil, fmt.Errorf("store: scan series point: %w", err)
 		}
 		out = append(out, p)
@@ -214,11 +243,13 @@ func (s *sqliteStore) SkillInvocationSeries(ctx context.Context, f *MetricsFilte
 	return out, rows.Err()
 }
 
-// SkillAgentUsage is one skill's rollup for a single agent.
+// SkillAgentUsage is one skill's rollup for a single agent. Versions is the
+// distinct proven versions this agent's invocations carried — empty when the
+// agent's evidence never pinned one (surfaces render "unknown").
 type SkillAgentUsage struct {
 	Agent       string
 	Invocations int64
-	Verified    int64
+	Versions    []string
 	Sessions    int64
 	LastFiredMs int64
 }
@@ -232,7 +263,7 @@ func (s *sqliteStore) SkillAgentRollup(ctx context.Context, f *MetricsFilter) ([
 	where, args := skillSpanWhereSQL(f)
 	q := `SELECT agent_name,
 	  COUNT(*),
-	  SUM(` + skillVerifiedExpr + `),
+	  ` + skillVersionsAgg + `,
 	  COUNT(DISTINCT session_id),
 	  MAX(start_ms)
 	FROM spans ` + where + `
@@ -248,23 +279,68 @@ func (s *sqliteStore) SkillAgentRollup(ctx context.Context, f *MetricsFilter) ([
 	var out []*SkillAgentUsage
 	for rows.Next() {
 		a := &SkillAgentUsage{}
-		if err := rows.Scan(&a.Agent, &a.Invocations, &a.Verified, &a.Sessions, &a.LastFiredMs); err != nil {
+		var versions sql.NullString
+		if err := rows.Scan(&a.Agent, &a.Invocations, &versions, &a.Sessions, &a.LastFiredMs); err != nil {
 			return nil, fmt.Errorf("store: scan agent usage: %w", err)
 		}
+		a.Versions = splitVersions(versions)
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// SkillModelUsage is one skill's rollup for a single model — the
+// "skill A on opus vs skill A on fable" cut. Model is the turn's
+// gen_ai.request.model stamped onto the skill's spans at derive time;
+// "" groups spans whose transcript carried no model.
+type SkillModelUsage struct {
+	Model       string
+	Invocations int64
+	Sessions    int64
+	LastFiredMs int64
+}
+
+// SkillModelRollup aggregates one skill's SKILL spans per model, busiest
+// model first. f.Skill is required.
+func (s *sqliteStore) SkillModelRollup(ctx context.Context, f *MetricsFilter) ([]*SkillModelUsage, error) {
+	if f == nil || f.Skill == "" {
+		return nil, fmt.Errorf("store: skill model rollup: Skill is required")
+	}
+	where, args := skillSpanWhereSQL(f)
+	q := `SELECT COALESCE(json_extract(attributes, '$."gen_ai.request.model"'), ''),
+	  COUNT(*),
+	  COUNT(DISTINCT session_id),
+	  MAX(start_ms)
+	FROM spans ` + where + `
+	GROUP BY 1
+	ORDER BY COUNT(*) DESC, 1 ASC`
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: skill model rollup: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*SkillModelUsage
+	for rows.Next() {
+		m := &SkillModelUsage{}
+		if err := rows.Scan(&m.Model, &m.Invocations, &m.Sessions, &m.LastFiredMs); err != nil {
+			return nil, fmt.Errorf("store: scan model usage: %w", err)
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
 // SkillVersionUsage is one skill's rollup per (ref, commit) version as
 // recorded on its SKILL spans — the lineage view's data: how each pinned
-// version behaved while it was the installed one.
+// version behaved while it was the installed one. The empty (ref, commit)
+// row groups invocations whose version is unknown (no load-path evidence).
 type SkillVersionUsage struct {
 	Ref          string // skill.version on the span (the lock Ref at fire time)
 	Commit       string // skill.commit on the span
 	Invocations  int64
 	Sessions     int64
-	Verified     int64
 	FirstFiredMs int64
 	LastFiredMs  int64
 	InputTokens  int64 // session-attributed, keyed by this version's session set
@@ -279,24 +355,28 @@ func (s *sqliteStore) SkillVersionRollup(ctx context.Context, f *MetricsFilter) 
 	}
 	where, args := skillSpanWhereSQL(f)
 	q := `WITH ver AS (
-	  SELECT COALESCE(json_extract(attributes, '$."skill.version"'), '') AS ref,
+	  SELECT ` + skillVersionExpr + ` AS ref,
 	         COALESCE(json_extract(attributes, '$."skill.commit"'), '')  AS commit_sha,
-	         session_id, start_ms,
-	         ` + skillVerifiedExpr + ` AS v
+	         session_id, start_ms
 	  FROM spans ` + where + `
 	),
 	tok AS (
+	  -- A session counts toward the unknown (ref = '') bucket only when none
+	  -- of its spans carried a proven version; otherwise the same session's
+	  -- tokens would be claimed by both the proven row and the unknown row.
 	  SELECT vs.ref, vs.commit_sha,
 	    CAST(COALESCE(SUM(` + strings.ReplaceAll(llmInTokExpr, "attributes", "l.attributes") + `), 0) AS INTEGER) AS tin,
 	    CAST(COALESCE(SUM(` + strings.ReplaceAll(llmOutTokExpr, "attributes", "l.attributes") + `), 0) AS INTEGER) AS tout
 	  FROM (SELECT DISTINCT ref, commit_sha, session_id FROM ver) vs
 	  JOIN spans l ON l.session_id = vs.session_id AND l.kind = 'LLM'
+	  WHERE vs.ref <> ''
+	     OR NOT EXISTS (SELECT 1 FROM ver pv
+	                    WHERE pv.session_id = vs.session_id AND pv.ref <> '')
 	  GROUP BY vs.ref, vs.commit_sha
 	)
 	SELECT ver.ref, ver.commit_sha,
 	  COUNT(*),
 	  COUNT(DISTINCT ver.session_id),
-	  SUM(ver.v),
 	  MIN(ver.start_ms),
 	  MAX(ver.start_ms),
 	  COALESCE(MAX(tok.tin), 0),
@@ -315,7 +395,7 @@ func (s *sqliteStore) SkillVersionRollup(ctx context.Context, f *MetricsFilter) 
 	var out []*SkillVersionUsage
 	for rows.Next() {
 		v := &SkillVersionUsage{}
-		if err := rows.Scan(&v.Ref, &v.Commit, &v.Invocations, &v.Sessions, &v.Verified,
+		if err := rows.Scan(&v.Ref, &v.Commit, &v.Invocations, &v.Sessions,
 			&v.FirstFiredMs, &v.LastFiredMs, &v.InputTokens, &v.OutputTokens); err != nil {
 			return nil, fmt.Errorf("store: scan version usage: %w", err)
 		}

@@ -1,7 +1,7 @@
 // Quiver Design System component library — typed TSX ports of the DS kit.
 export { Badge, StatusBadge } from "./Badge";
 export { Button } from "./Button";
-export { Tag } from "./Tag";
+export { Tag, VersionTag } from "./Tag";
 export { Card } from "./Card";
 export { Tabs, type TabItem } from "./Tabs";
 export { Input, Field, Select } from "./Input";
@@ -13,6 +13,6 @@ export { EmptyState } from "./EmptyState";
 export { PageHead, Back, Section, DetailHeader } from "./PageHead";
 export { Meta, MetaItem } from "./Meta";
 export { SkillRowItem } from "./SkillRowItem";
-export { Sparkline, BarRow, ShareStat, StatCard, StackedBarChart, type SparkPoint, type ChartCol, type ChartSeg } from "./charts";
+export { Sparkline, BarRow, StatCard, StackedBarChart, type SparkPoint, type ChartCol, type ChartSeg } from "./charts";
 export { Loading, ErrorBox, CodeBlock } from "./states";
 export { RefreshButton } from "./RefreshButton";

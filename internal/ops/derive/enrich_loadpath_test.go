@@ -73,31 +73,34 @@ func crEntry(commit string) *model.LockEntry {
 	}
 }
 
-// TestEnrich_Claude_NoPathIsUnverified pins #149 for claude: the Skill tool call
-// carries no load path, so identity is a name-keyed guess — attached, but flagged
-// skill.verified=false rather than presented as authoritative.
+// TestEnrich_Claude_NoPathIsUnverified pins #149 for claude-shaped evidence:
+// a Skill tool call with no load path gets NO identity fields under the
+// proof-gated model — skill.version's absence is the unverified signal, and
+// the lock pin is a display-time join, never persisted onto the span.
 func TestEnrich_Claude_NoPathIsUnverified(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("QVR_HOME", home)
 	writeGlobalLock(t, home, crEntry("94e539be7d6a01774d723a7c25513af0f070de7b"))
 
-	rows := skillRows(uuid.New(), "") // claude Skill tool, no working dir
+	rows := skillRows(uuid.New(), "", "") // claude Skill tool, no working dir, no base-dir evidence
 	d, _ := derive.DeriveSession(rows)
 	spans := d.Spans
-	derive.EnrichSkillIdentity(spans, rows)
+	derive.EnrichSkillIdentity(spans, rows, nil)
 
 	sp := skillSpan(t, spans)
-	if sp.Attributes["skill.registry"] != "raks" {
-		t.Errorf("name-keyed guess should still attach identity, got registry=%v", sp.Attributes["skill.registry"])
+	for _, k := range []string{"skill.version", "skill.registry", "skill.commit", "skill.subtree_hash"} {
+		if v, ok := sp.Attributes[k]; ok {
+			t.Errorf("no load path ⇒ no identity may be stamped, but %s=%v", k, v)
+		}
 	}
-	if v, _ := sp.Attributes["skill.verified"].(bool); v {
-		t.Error("claude skill (no load path) must be skill.verified=false — qvr cannot prove the loaded copy")
+	if sp.Attributes["skill.name"] != "code-review" {
+		t.Errorf("the bare name should survive, got %v", sp.Attributes["skill.name"])
 	}
 }
 
 // TestEnrich_Codex_LoadPathInWorktreeIsVerified pins #149 for codex: when the
-// loaded file resolves into the locked worktree, identity is asserted AND
-// marked verified.
+// loaded file resolves into the locked worktree, full identity is asserted —
+// and skill.version is present, which IS the verified signal.
 func TestEnrich_Codex_LoadPathInWorktreeIsVerified(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("QVR_HOME", home)
@@ -108,11 +111,11 @@ func TestEnrich_Codex_LoadPathInWorktreeIsVerified(t *testing.T) {
 	rows := codexSkillLoadRows(uuid.New(), skillMD)
 	d, _ := derive.DeriveSession(rows)
 	spans := d.Spans
-	derive.EnrichSkillIdentity(spans, rows)
+	derive.EnrichSkillIdentity(spans, rows, nil)
 
 	sp := skillSpan(t, spans)
-	if v, _ := sp.Attributes["skill.verified"].(bool); !v {
-		t.Errorf("load from the locked worktree must be skill.verified=true; attrs=%v", sp.Attributes)
+	if v, _ := sp.Attributes["skill.version"].(string); v != e.Ref {
+		t.Errorf("proven load must stamp skill.version (the verified signal); got %v, attrs=%v", v, sp.Attributes)
 	}
 	if sp.Attributes["skill.commit"] != e.Commit {
 		t.Errorf("verified load should assert the locked commit, got %v", sp.Attributes["skill.commit"])
@@ -121,8 +124,8 @@ func TestEnrich_Codex_LoadPathInWorktreeIsVerified(t *testing.T) {
 
 // TestEnrich_Codex_ShadowingEjectIsUnverified is the core of #149: a same-named
 // skill loaded from a path OUTSIDE the locked worktree (a global eject) must not
-// be reported as the locked artifact — no commit/registry is asserted and the
-// span is skill.verified=false.
+// be reported as the locked artifact — no identity fields are stamped, so
+// skill.version is absent (the unverified signal).
 func TestEnrich_Codex_ShadowingEjectIsUnverified(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("QVR_HOME", home)
@@ -142,11 +145,11 @@ func TestEnrich_Codex_ShadowingEjectIsUnverified(t *testing.T) {
 	rows := codexSkillLoadRows(uuid.New(), ejectMD)
 	d, _ := derive.DeriveSession(rows)
 	spans := d.Spans
-	derive.EnrichSkillIdentity(spans, rows)
+	derive.EnrichSkillIdentity(spans, rows, nil)
 
 	sp := skillSpan(t, spans)
-	if v, _ := sp.Attributes["skill.verified"].(bool); v {
-		t.Errorf("an eject outside the worktree must be skill.verified=false; attrs=%v", sp.Attributes)
+	if v, ok := sp.Attributes["skill.version"]; ok {
+		t.Errorf("an eject outside the worktree must carry no skill.version (unverified); got %v", v)
 	}
 	for _, k := range []string{"skill.commit", "skill.registry", "skill.subtree_hash"} {
 		if _, ok := sp.Attributes[k]; ok {

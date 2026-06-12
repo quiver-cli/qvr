@@ -105,16 +105,15 @@ var sessionStores = []SessionStore{
 	},
 	{
 		Agent: "opencode",
-		Roots: []string{"~/.local/share/opencode/storage/session"},
-		// docs: https://opencode.ai/docs (session documents under
-		// storage/session/<project>/ses_*.json). The session document carries
-		// only metadata — messages live in sibling storage/message and
-		// storage/part trees keyed by message id — so deriving spans needs
-		// multi-file session assembly. Inert (no deriver) until that ships.
-		Recursive:    true,
-		NamePrefix:   "ses_",
-		NameSuffixes: []string{".json"},
-		Layout:       LayoutDocument,
+		Roots: []string{"~/.local/share/opencode"},
+		// OpenCode v1.17+ persists sessions in opencode.db (SQLite, WAL —
+		// session/message/part tables; observed live 2026-06-11), replacing
+		// the storage/session file trees its earlier docs describe. Read by
+		// rawtrace.IngestOpencodeDB with per-session replace semantics
+		// (parts mutate in place).
+		Recursive:    false,
+		NameSuffixes: []string{"opencode.db"},
+		Layout:       LayoutSQLite,
 	},
 	{
 		Agent: "droid",
@@ -138,15 +137,26 @@ var sessionStores = []SessionStore{
 		Agent: "hermes",
 		Roots: []string{"~/.hermes/sessions"},
 		// docs: https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage
-		// This entry covers the per-session JSON documents. Current Hermes
-		// versions persist sessions in ~/.hermes/state.db (SQLite, WAL); that
-		// store needs a LayoutSQLite reader with a rowid watermark — pending.
+		// This entry covers the LEGACY per-session JSON documents; the entry
+		// below covers the current SQLite store.
 		EnvRoot:       "HERMES_HOME",
 		EnvRootSubdir: "sessions",
 		Recursive:     false,
 		NamePrefix:    "session_",
 		NameSuffixes:  []string{".json"},
 		Layout:        LayoutDocument,
+	},
+	{
+		Agent: "hermes",
+		Roots: []string{"~/.hermes"},
+		// Current Hermes versions persist sessions in ~/.hermes/state.db
+		// (SQLite, WAL; sessions + messages tables — schema observed live,
+		// 2026-06-11). Read by rawtrace.IngestHermesStateDB with per-session
+		// message-id watermarks.
+		EnvRoot:      "HERMES_HOME",
+		Recursive:    false,
+		NameSuffixes: []string{"state.db"},
+		Layout:       LayoutSQLite,
 	},
 	{
 		Agent: "openclaw",

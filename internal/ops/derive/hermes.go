@@ -19,11 +19,30 @@ func init() { Register("hermes", hermesDeriver{}) }
 //	   "tool_calls":[{"id","function":{"name","arguments"}}],
 //	   "tool_call_id"?, "tool_name"?, "reasoning"?}]}
 //
-// Current Hermes versions persist sessions in SQLite (~/.hermes/state.db);
-// that store needs a dedicated reader and stays pending — this deriver covers
-// the per-session JSON documents. Skill attribution is the shared path signal
-// over each tool call's arguments.
+// Current Hermes versions persist sessions in SQLite (~/.hermes/state.db),
+// captured by rawtrace.IngestHermesStateDB as FLAT rows — one "type":"session"
+// header (model, cwd, title, token totals) plus one "type":"message" row per
+// messages-table row ({role, content, tool_calls, tool_call_id, timestamp
+// epoch-seconds}). Both shapes share hermesMessageWalk; the flat shape is
+// detected per row by its "type" envelope (observed live 2026-06-11). Skill
+// attribution: hermes's native skill tool is "skill_view" (name-keyed — see
+// ops.SkillRefFromTool) whose RESULT inlines the loaded skill's directory
+// ("skill_dir": "~/.hermes/skills/<name>") — mined as the span's load path
+// by the shared result miner; terminal commands touching
+// ~/.hermes/skills/<name>/… paths feed the shared path signal too.
 type hermesDeriver struct{}
+
+// hermesFlatRow is the state.db capture envelope (header or message row).
+type hermesFlatRow struct {
+	Type       string           `json:"type"`
+	Model      string           `json:"model"`
+	Title      string           `json:"title"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCalls  []hermesToolCall `json:"tool_calls"`
+	ToolCallID string           `json:"tool_call_id"`
+	Timestamp  json.RawMessage  `json:"timestamp"` // epoch seconds (REAL)
+}
 
 // hermesDoc is the session document.
 type hermesDoc struct {
@@ -59,6 +78,23 @@ func (hermesDeriver) Derive(rows []*ops.RawTrace) (*Derivation, error) {
 
 	for _, r := range rows {
 		if r.Source != ops.RawSourceTranscript {
+			continue
+		}
+		// state.db capture: flat header/message rows (vs the legacy whole-
+		// document row, which has no "type" envelope).
+		var flat hermesFlatRow
+		if err := json.Unmarshal(r.Raw, &flat); err == nil && flat.Type != "" {
+			switch flat.Type {
+			case "session":
+				w.setModel(flat.Model)
+			case "message":
+				hermesMessageWalk(w, hermesMessage{
+					Role:       flat.Role,
+					Content:    flat.Content,
+					ToolCalls:  flat.ToolCalls,
+					ToolCallID: flat.ToolCallID,
+				}, flexTimeMs(flat.Timestamp))
+			}
 			continue
 		}
 		var doc hermesDoc

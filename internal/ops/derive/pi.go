@@ -98,12 +98,5 @@ func (t *turn) applyResultLast(result string, ts int64, isError bool) {
 	if len(t.tools) == 0 {
 		return
 	}
-	sp := &t.tools[len(t.tools)-1]
-	sp.Attributes["gen_ai.tool.call.result"] = result
-	if isError {
-		sp.Attributes["error.type"] = "tool_failure"
-	}
-	if ts > sp.StartMs {
-		sp.EndMs = ts
-	}
+	applyResultTo(&t.tools[len(t.tools)-1], result, ts, isError)
 }

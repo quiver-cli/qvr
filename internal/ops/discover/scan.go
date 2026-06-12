@@ -2,6 +2,8 @@ package discover
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/astra-sh/qvr/internal/ops/rawtrace"
@@ -84,14 +86,12 @@ func Scan(ctx context.Context, s Store, opts Options) (*Report, error) {
 // scanStore scans one agent's store.
 func scanStore(ctx context.Context, s Store, st SessionStore, opts Options) (*AgentReport, error) {
 	ar := &AgentReport{Agent: st.Agent}
-	if st.Layout == LayoutSQLite {
-		// SQLite-backed stores need a dedicated reader (rowid watermarks, live
-		// WAL writers); none is wired yet, so the row is inert.
-		return ar, nil
-	}
 	candidates, err := enumerate(st, opts.Since)
 	if err != nil {
 		return ar, err
+	}
+	if st.Layout == LayoutSQLite {
+		return ar, scanSQLiteStore(ctx, s, st, candidates, opts, ar)
 	}
 	ar.Seen = len(candidates)
 	if len(candidates) == 0 {
@@ -122,6 +122,103 @@ func scanStore(ctx context.Context, s Store, st SessionStore, opts Options) (*Ag
 		scanOneFile(ctx, s, st, c, opts, ar)
 	}
 	return ar, nil
+}
+
+// scanSQLiteStore handles database-backed stores (hermes state.db). The db
+// file is stat-diffed like any candidate — but WAL mode means new messages
+// can live in the -wal sibling while the main file's stat is unchanged, so
+// the ledger entry folds the sibling's size/mtime in. Per-session
+// incrementality lives in rawtrace's message-id cursors, so re-reading an
+// unchanged session costs one cursor lookup.
+func scanSQLiteStore(ctx context.Context, s Store, st SessionStore, candidates []candidate, opts Options, ar *AgentReport) error {
+	ar.Seen = len(candidates)
+	if len(candidates) == 0 {
+		return nil
+	}
+	ledger, err := s.GetScannedFiles(ctx, st.Agent)
+	if err != nil {
+		return err
+	}
+	for _, c := range candidates {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c = foldWALStat(c)
+		if prev := ledger[c.path]; prev != nil && prev.Status != store.ScanStatusError &&
+			prev.Size == c.size && prev.MtimeMs == c.mtimeMs {
+			ar.Unchanged++
+			continue
+		}
+		if opts.DryRun {
+			ar.WouldExamine++
+			continue
+		}
+		examineSQLiteStore(ctx, s, st.Agent, c, opts, ar)
+	}
+	return nil
+}
+
+// examineSQLiteStore ingests one database candidate, folds the per-session
+// results into the agent report, and records the file's ledger entry.
+// entry.SessionID stays zero: a SQLite store holds MANY sessions, and
+// recording just the last-ingested one would read as the file's only session
+// to anything auditing the ledger.
+func examineSQLiteStore(ctx context.Context, s Store, agent string, c candidate, opts Options, ar *AgentReport) {
+	results, ierr := ingestSQLiteStore(ctx, s, agent, c.path, !opts.KeepAll)
+	entry := &store.ScannedFile{
+		AgentName:  agent,
+		SourcePath: c.path,
+		Size:       c.size,
+		MtimeMs:    c.mtimeMs,
+		Status:     store.ScanStatusIngested,
+	}
+	if ierr != nil {
+		ar.Errors++
+		entry.Status = store.ScanStatusError
+	}
+	ingested := 0
+	for _, res := range results {
+		if res.Skipped {
+			ar.Skipped++
+			continue
+		}
+		ingested++
+		ar.Ingested++
+		ar.Lines += res.LinesStored
+		ar.Spans += res.SpansStored
+	}
+	// A database whose every session was gate-skipped is a skip, not an
+	// ingest — same ledger semantics as the file-layout path.
+	if ierr == nil && len(results) > 0 && ingested == 0 {
+		entry.Status = store.ScanStatusSkipped
+	}
+	_ = s.UpsertScannedFile(ctx, entry)
+}
+
+// ingestSQLiteStore dispatches a database-backed store to its agent-specific
+// reader. An agent whose descriptor says LayoutSQLite but has no reader here
+// is a wiring bug surfaced as an error, never silently skipped.
+func ingestSQLiteStore(ctx context.Context, s Store, agent, path string, gate bool) ([]*rawtrace.Result, error) {
+	switch agent {
+	case "hermes":
+		return rawtrace.IngestHermesStateDB(ctx, s, path, gate)
+	case "opencode":
+		return rawtrace.IngestOpencodeDB(ctx, s, path, gate)
+	default:
+		return nil, fmt.Errorf("discover: no sqlite reader for agent %q", agent)
+	}
+}
+
+// foldWALStat folds a SQLite database's -wal sibling into its stat signature,
+// so a checkpoint-lagged write still flips the change detector.
+func foldWALStat(c candidate) candidate {
+	if fi, err := os.Stat(c.path + "-wal"); err == nil {
+		c.size += fi.Size()
+		if m := fi.ModTime().UnixMilli(); m > c.mtimeMs {
+			c.mtimeMs = m
+		}
+	}
+	return c
 }
 
 // scanOneFile ingests one new/changed file and records the outcome in the
