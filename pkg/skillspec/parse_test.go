@@ -336,6 +336,52 @@ Body.
 	}
 }
 
+func TestParse_NullMetadata(t *testing.T) {
+	content := `---
+name: no-metadata
+description: Explicit null metadata is absent.
+metadata: null
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.Frontmatter.Metadata != nil {
+		t.Errorf("metadata = %#v, want nil", s.Frontmatter.Metadata)
+	}
+}
+
+func TestParse_MetadataAliases(t *testing.T) {
+	content := `---
+name: aliased-metadata
+description: Metadata values may use YAML anchors.
+metadata:
+  tags: &tags
+    - twitter
+    - x
+  searchTags: *tags
+  config: &config
+    primaryEnv: XQUIK_API_KEY
+  openclaw: *config
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := s.Frontmatter.Metadata["searchTags"]; got != `["twitter","x"]` {
+		t.Errorf("metadata.searchTags = %q", got)
+	}
+	if got := s.Frontmatter.Metadata["openclaw"]; got != `{"primaryEnv":"XQUIK_API_KEY"}` {
+		t.Errorf("metadata.openclaw = %q", got)
+	}
+}
+
 func TestParse_NonMappingMetadataRejected(t *testing.T) {
 	content := `---
 name: bad-metadata

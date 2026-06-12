@@ -190,7 +190,14 @@ func flattenAllowedTools(node *yaml.Node) (string, error) {
 // kept as text. Nested mappings and lists become compact JSON strings so search,
 // info, and scanner paths can still inspect their visible contents.
 func flattenMetadata(node *yaml.Node) (map[string]string, error) {
+	node, err := resolveMetadataAlias(node, make(map[*yaml.Node]struct{}))
+	if err != nil {
+		return nil, err
+	}
 	if node == nil || node.Kind == 0 {
+		return nil, nil
+	}
+	if isNullScalar(node) {
 		return nil, nil
 	}
 	if node.Kind != yaml.MappingNode {
@@ -223,7 +230,14 @@ func flattenMetadata(node *yaml.Node) (map[string]string, error) {
 }
 
 func metadataValueString(node *yaml.Node) (string, error) {
+	node, err := resolveMetadataAlias(node, make(map[*yaml.Node]struct{}))
+	if err != nil {
+		return "", err
+	}
 	if node == nil || node.Kind == 0 {
+		return "", nil
+	}
+	if isNullScalar(node) {
 		return "", nil
 	}
 	if node.Kind == yaml.ScalarNode {
@@ -241,6 +255,18 @@ func metadataValueString(node *yaml.Node) (string, error) {
 }
 
 func metadataJSONValue(node *yaml.Node) (any, error) {
+	return metadataJSONValueWithAliases(node, make(map[*yaml.Node]struct{}))
+}
+
+func metadataJSONValueWithAliases(node *yaml.Node, seen map[*yaml.Node]struct{}) (any, error) {
+	resolved, err := resolveMetadataAlias(node, seen)
+	if err != nil {
+		return nil, err
+	}
+	node = resolved
+	if node == nil || node.Kind == 0 || isNullScalar(node) {
+		return nil, nil
+	}
 	switch node.Kind {
 	case yaml.ScalarNode:
 		var value any
@@ -249,9 +275,13 @@ func metadataJSONValue(node *yaml.Node) (any, error) {
 		}
 		return node.Value, nil
 	case yaml.SequenceNode:
+		if err := enterMetadataNode(node, seen); err != nil {
+			return nil, err
+		}
+		defer delete(seen, node)
 		values := make([]any, 0, len(node.Content))
 		for _, child := range node.Content {
-			value, err := metadataJSONValue(child)
+			value, err := metadataJSONValueWithAliases(child, seen)
 			if err != nil {
 				return nil, err
 			}
@@ -259,13 +289,17 @@ func metadataJSONValue(node *yaml.Node) (any, error) {
 		}
 		return values, nil
 	case yaml.MappingNode:
+		if err := enterMetadataNode(node, seen); err != nil {
+			return nil, err
+		}
+		defer delete(seen, node)
 		values := make(map[string]any, len(node.Content)/2)
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			if keyNode.Kind != yaml.ScalarNode {
 				return nil, fmt.Errorf("metadata keys must be strings")
 			}
-			value, err := metadataJSONValue(node.Content[i+1])
+			value, err := metadataJSONValueWithAliases(node.Content[i+1], seen)
 			if err != nil {
 				return nil, err
 			}
@@ -275,4 +309,30 @@ func metadataJSONValue(node *yaml.Node) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported metadata value kind %d", node.Kind)
 	}
+}
+
+func isNullScalar(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Tag == "!!null"
+}
+
+func resolveMetadataAlias(node *yaml.Node, seen map[*yaml.Node]struct{}) (*yaml.Node, error) {
+	for node != nil && node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return nil, fmt.Errorf("metadata alias is empty")
+		}
+		if err := enterMetadataNode(node, seen); err != nil {
+			return nil, err
+		}
+		defer delete(seen, node)
+		node = node.Alias
+	}
+	return node, nil
+}
+
+func enterMetadataNode(node *yaml.Node, seen map[*yaml.Node]struct{}) error {
+	if _, ok := seen[node]; ok {
+		return fmt.Errorf("metadata alias cycle detected")
+	}
+	seen[node] = struct{}{}
+	return nil
 }
