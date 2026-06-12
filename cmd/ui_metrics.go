@@ -21,19 +21,20 @@ import (
 // could read as "every skill is dead weight" when usage simply isn't
 // measurable yet.
 
-// coreShareThreshold is the "M skills did 90% of verified work" cut for the
-// overview headline.
+// coreShareThreshold is the "M skills did 90% of the skill work" cut for the
+// overview headline. The headline is deliberately NAME-keyed (all attributed
+// invocations): the overview answers "what fires" for everyone; version-level
+// stats are the skill detail view's job (power users).
 const coreShareThreshold = 0.9
 
 // skillMetricsHeadline is the overview rollup sentence's data.
 type skillMetricsHeadline struct {
-	Installed           int      `json:"installed"`
-	Active              int      `json:"active"`      // installed AND fired in window
-	NeverFired          int      `json:"never_fired"` // installed, zero spans ever in window
-	VerifiedInvocations int64    `json:"verified_invocations"`
-	TotalInvocations    int64    `json:"total_invocations"`
-	CoreSkills          []string `json:"core_skills"` // smallest set covering ≥90% of verified work
-	CoreShare           float64  `json:"core_share"`
+	Installed        int      `json:"installed"`
+	Active           int      `json:"active"`      // installed AND fired in window
+	NeverFired       int      `json:"never_fired"` // installed, zero spans ever in window
+	TotalInvocations int64    `json:"total_invocations"`
+	CoreSkills       []string `json:"core_skills"` // smallest set covering ≥90% of the skill work
+	CoreShare        float64  `json:"core_share"`
 }
 
 // skillMetricsRow is one skill's usage merged with its lock identity. Skills
@@ -50,8 +51,7 @@ type skillMetricsRow struct {
 	InstalledAt   *time.Time `json:"installedAt,omitempty"`
 	Invocations   int64      `json:"invocations"`
 	Sessions      int64      `json:"sessions"`
-	Verified      int64      `json:"verified"`
-	VerifiedShare float64    `json:"verifiedShare"`
+	Versions      []string   `json:"versions,omitempty"` // distinct observed versions; absent = unknown
 	FirstFired    *time.Time `json:"firstFired,omitempty"`
 	LastFired     *time.Time `json:"lastFired,omitempty"`
 	TokensIn      int64      `json:"tokensIn"`
@@ -146,10 +146,7 @@ func mergeUsageWithLock(entries []*model.LockEntry, usage []*store.SkillUsage, t
 		row := rowFor(u.Skill)
 		row.Invocations = u.Invocations
 		row.Sessions = u.Sessions
-		row.Verified = u.Verified
-		if u.Invocations > 0 {
-			row.VerifiedShare = float64(u.Verified) / float64(u.Invocations)
-		}
+		row.Versions = u.Versions
 		row.FirstFired = msToTimePtr(u.FirstFiredMs)
 		row.LastFired = msToTimePtr(u.LastFiredMs)
 		if t := tokens[u.Skill]; t != nil {
@@ -163,9 +160,6 @@ func mergeUsageWithLock(entries []*model.LockEntry, usage []*store.SkillUsage, t
 		out = append(out, *row)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Verified != out[j].Verified {
-			return out[i].Verified > out[j].Verified
-		}
 		if out[i].Invocations != out[j].Invocations {
 			return out[i].Invocations > out[j].Invocations
 		}
@@ -174,14 +168,16 @@ func mergeUsageWithLock(entries []*model.LockEntry, usage []*store.SkillUsage, t
 	return out
 }
 
-// buildSkillMetricsHeadline computes the "N installed / M did 90% of verified
-// work / K never fired" rollup from the merged rows (already sorted by
-// verified work desc, which the core-set accumulation relies on).
+// buildSkillMetricsHeadline computes the "N installed / M did 90% of the
+// skill work / K never fired" rollup from the merged rows (already sorted by
+// invocations desc, which the core-set accumulation relies on). The core set
+// is NAME-keyed over all attributed invocations — an agent that records no
+// load paths still gets an honest overview; version detail lives in the
+// per-skill views.
 func buildSkillMetricsHeadline(rows []skillMetricsRow) skillMetricsHeadline {
 	h := skillMetricsHeadline{CoreSkills: []string{}}
 	for _, row := range rows {
 		h.TotalInvocations += row.Invocations
-		h.VerifiedInvocations += row.Verified
 		if !row.Installed {
 			continue
 		}
@@ -192,21 +188,21 @@ func buildSkillMetricsHeadline(rows []skillMetricsRow) skillMetricsHeadline {
 			h.NeverFired++
 		}
 	}
-	if h.VerifiedInvocations == 0 {
+	if h.TotalInvocations == 0 {
 		return h
 	}
 	var acc int64
 	for _, row := range rows {
-		if row.Verified == 0 {
-			break // sorted desc — nothing verified beyond this point
+		if row.Invocations == 0 {
+			break // sorted desc — nothing fired beyond this point
 		}
 		h.CoreSkills = append(h.CoreSkills, row.Name)
-		acc += row.Verified
-		if float64(acc) >= coreShareThreshold*float64(h.VerifiedInvocations) {
+		acc += row.Invocations
+		if float64(acc) >= coreShareThreshold*float64(h.TotalInvocations) {
 			break
 		}
 	}
-	h.CoreShare = float64(acc) / float64(h.VerifiedInvocations)
+	h.CoreShare = float64(acc) / float64(h.TotalInvocations)
 	return h
 }
 
@@ -237,16 +233,16 @@ type skillReportEntry struct {
 type skillReportTotals struct {
 	Invocations int64      `json:"invocations"`
 	Sessions    int64      `json:"sessions"`
-	Verified    int64      `json:"verified"`
-	Unverified  int64      `json:"unverified"`
 	FirstFired  *time.Time `json:"firstFired,omitempty"`
 	LastFired   *time.Time `json:"lastFired,omitempty"`
 }
 
+// skillReportAgent is one agent's cut. Versions is the distinct observed
+// versions this agent's invocations carried; empty renders as "unknown".
 type skillReportAgent struct {
 	Agent       string     `json:"agent"`
 	Invocations int64      `json:"invocations"`
-	Verified    int64      `json:"verified"`
+	Versions    []string   `json:"versions,omitempty"`
 	Sessions    int64      `json:"sessions"`
 	LastFired   *time.Time `json:"lastFired,omitempty"`
 }
@@ -255,7 +251,15 @@ type skillReportSeriesPoint struct {
 	Day         string `json:"day"`
 	Agent       string `json:"agent"`
 	Invocations int64  `json:"invocations"`
-	Verified    int64  `json:"verified"`
+}
+
+// skillReportModel is one model the skill fired under — the skill × model
+// performance cut ("this skill on opus vs on fable").
+type skillReportModel struct {
+	Model       string     `json:"model"`
+	Invocations int64      `json:"invocations"`
+	Sessions    int64      `json:"sessions"`
+	LastFired   *time.Time `json:"lastFired,omitempty"`
 }
 
 type skillReportTokens struct {
@@ -265,13 +269,13 @@ type skillReportTokens struct {
 }
 
 // skillReportVersion is one (ref, commit) the skill fired as — the lineage
-// row. Current marks the lock's pinned commit.
+// row. Current marks the lock's pinned commit; an empty ref+commit row is
+// the "version unknown" bucket (invocations with no identity evidence).
 type skillReportVersion struct {
 	Ref         string     `json:"ref,omitempty"`
 	Commit      string     `json:"commit,omitempty"`
 	Invocations int64      `json:"invocations"`
 	Sessions    int64      `json:"sessions"`
-	Verified    int64      `json:"verified"`
 	FirstFired  *time.Time `json:"firstFired,omitempty"`
 	LastFired   *time.Time `json:"lastFired,omitempty"`
 	TokensIn    int64      `json:"tokensIn"`
@@ -286,6 +290,7 @@ type skillReportResponse struct {
 	Entry          *skillReportEntry        `json:"entry,omitempty"`
 	Totals         skillReportTotals        `json:"totals"`
 	Agents         []skillReportAgent       `json:"agents"`
+	Models         []skillReportModel       `json:"models"`
 	Series         []skillReportSeriesPoint `json:"series"`
 	Tokens         skillReportTokens        `json:"tokens"`
 	Versions       []skillReportVersion     `json:"versions"`
@@ -369,35 +374,11 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 		resp.Totals = skillReportTotals{
 			Invocations: u.Invocations,
 			Sessions:    u.Sessions,
-			Verified:    u.Verified,
-			Unverified:  u.Invocations - u.Verified,
 			FirstFired:  msToTimePtr(u.FirstFiredMs),
 			LastFired:   msToTimePtr(u.LastFiredMs),
 		}
 	}
-	if agents, err := s.store.SkillAgentRollup(ctx, f); err == nil {
-		for _, a := range agents {
-			resp.Agents = append(resp.Agents, skillReportAgent{
-				Agent:       a.Agent,
-				Invocations: a.Invocations,
-				Verified:    a.Verified,
-				Sessions:    a.Sessions,
-				LastFired:   msToTimePtr(a.LastFiredMs),
-			})
-		}
-	}
-	if series, err := s.store.SkillInvocationSeries(ctx, f); err == nil {
-		for _, p := range series {
-			resp.Series = append(resp.Series, skillReportSeriesPoint{
-				Day: p.Day, Agent: p.Agent, Invocations: p.Invocations, Verified: p.Verified,
-			})
-		}
-	}
-	if tokens, err := s.store.SkillTokenRollup(ctx, f); err == nil {
-		if t := tokens[f.Skill]; t != nil {
-			resp.Tokens = skillReportTokens{Sessions: t.Sessions, Input: t.InputTokens, Output: t.OutputTokens}
-		}
-	}
+	s.fillReportCuts(ctx, resp, f)
 	if versions, err := s.store.SkillVersionRollup(ctx, f); err == nil {
 		for _, v := range versions {
 			resp.Versions = append(resp.Versions, skillReportVersion{
@@ -405,7 +386,6 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 				Commit:      v.Commit,
 				Invocations: v.Invocations,
 				Sessions:    v.Sessions,
-				Verified:    v.Verified,
 				FirstFired:  msToTimePtr(v.FirstFiredMs),
 				LastFired:   msToTimePtr(v.LastFiredMs),
 				TokensIn:    v.InputTokens,
@@ -415,6 +395,49 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 		}
 	}
 	return true
+}
+
+// fillReportCuts populates the report's per-agent, per-model, per-day, and
+// token cuts. Each aggregation degrades independently: a failed read leaves
+// its section empty without taking down the card.
+func (s *uiServer) fillReportCuts(ctx context.Context, resp *skillReportResponse, f *store.MetricsFilter) {
+	if agents, err := s.store.SkillAgentRollup(ctx, f); err == nil {
+		for _, a := range agents {
+			resp.Agents = append(resp.Agents, skillReportAgent{
+				Agent:       a.Agent,
+				Invocations: a.Invocations,
+				Versions:    a.Versions,
+				Sessions:    a.Sessions,
+				LastFired:   msToTimePtr(a.LastFiredMs),
+			})
+		}
+	}
+	if models, err := s.store.SkillModelRollup(ctx, f); err == nil {
+		for _, m := range models {
+			label := m.Model
+			if label == "" {
+				label = "(unknown)"
+			}
+			resp.Models = append(resp.Models, skillReportModel{
+				Model:       label,
+				Invocations: m.Invocations,
+				Sessions:    m.Sessions,
+				LastFired:   msToTimePtr(m.LastFiredMs),
+			})
+		}
+	}
+	if series, err := s.store.SkillInvocationSeries(ctx, f); err == nil {
+		for _, p := range series {
+			resp.Series = append(resp.Series, skillReportSeriesPoint{
+				Day: p.Day, Agent: p.Agent, Invocations: p.Invocations,
+			})
+		}
+	}
+	if tokens, err := s.store.SkillTokenRollup(ctx, f); err == nil {
+		if t := tokens[f.Skill]; t != nil {
+			resp.Tokens = skillReportTokens{Sessions: t.Sessions, Input: t.InputTokens, Output: t.OutputTokens}
+		}
+	}
 }
 
 // commitsMatch compares two commit identifiers tolerating short-vs-full SHA.

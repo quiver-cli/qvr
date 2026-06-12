@@ -14,9 +14,9 @@ import (
 
 // seedVerifiedMetricsSession adds a second session to the seeded env's store:
 // one LLM span carrying token usage and one SKILL span for code-reviewer with
-// lock-verified identity (verified=true, the lock's commit). Together with
-// seedUIEnv's unverified skill span this gives the metrics endpoints a mixed
-// verified/unverified, multi-version fixture.
+// proven identity (the lock's commit + version). Together with seedUIEnv's
+// identity-less skill span this gives the metrics endpoints a mixed
+// known/unknown-version, multi-version fixture.
 func seedVerifiedMetricsSession(t *testing.T, projectRoot string) uuid.UUID {
 	t.Helper()
 	cfg, err := config.Load()
@@ -87,9 +87,8 @@ func assertMetricsHeadline(t *testing.T, h1 skillMetricsHeadline) {
 		t.Errorf("headline installed/active/never = %d/%d/%d, want 2/1/1",
 			h1.Installed, h1.Active, h1.NeverFired)
 	}
-	if h1.TotalInvocations != 2 || h1.VerifiedInvocations != 1 {
-		t.Errorf("headline invocations = %d total / %d verified, want 2/1",
-			h1.TotalInvocations, h1.VerifiedInvocations)
+	if h1.TotalInvocations != 2 {
+		t.Errorf("headline invocations = %d total, want 2", h1.TotalInvocations)
 	}
 	if len(h1.CoreSkills) != 1 || h1.CoreSkills[0] != "code-reviewer" || h1.CoreShare != 1.0 {
 		t.Errorf("core = %v @ %.2f, want [code-reviewer] @ 1.00", h1.CoreSkills, h1.CoreShare)
@@ -106,8 +105,11 @@ func assertMetricsRows(t *testing.T, skills []skillMetricsRow) {
 	if !ok {
 		t.Fatalf("code-reviewer row missing")
 	}
-	if !cr.Installed || cr.Invocations != 2 || cr.Verified != 1 || cr.Sessions != 2 {
-		t.Errorf("code-reviewer = %+v, want installed 2 inv / 1 verified / 2 sessions", cr)
+	if !cr.Installed || cr.Invocations != 2 || cr.Sessions != 2 {
+		t.Errorf("code-reviewer = %+v, want installed 2 inv / 2 sessions", cr)
+	}
+	if len(cr.Versions) != 1 || cr.Versions[0] != "v1.2.0" {
+		t.Errorf("code-reviewer versions = %v, want [v1.2.0] (the proven span's ref)", cr.Versions)
 	}
 	// Token join: both sessions' LLM usage sums (5+100 in, 2+40 out), counted
 	// once per session regardless of how many skill spans the session carried.
@@ -172,11 +174,16 @@ func TestUI_MetricsSkillReport(t *testing.T) {
 
 func assertReportMetrics(t *testing.T, resp *skillReportResponse) {
 	t.Helper()
-	if resp.Totals.Invocations != 2 || resp.Totals.Verified != 1 || resp.Totals.Unverified != 1 {
-		t.Errorf("totals = %+v, want 2 invocations / 1 verified / 1 unverified", resp.Totals)
+	if resp.Totals.Invocations != 2 {
+		t.Errorf("totals = %+v, want 2 invocations", resp.Totals)
 	}
 	if len(resp.Agents) != 1 || resp.Agents[0].Agent != "claude" {
 		t.Errorf("agents = %+v, want one claude row", resp.Agents)
+	}
+	if len(resp.Agents) == 1 {
+		if vs := resp.Agents[0].Versions; len(vs) != 1 || vs[0] != "v1.2.0" {
+			t.Errorf("agent versions = %v, want [v1.2.0]; the identity-less invocation stays unknown", vs)
+		}
 	}
 	if len(resp.Series) == 0 {
 		t.Errorf("series empty, want day buckets")

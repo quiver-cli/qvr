@@ -17,17 +17,17 @@ import (
 // The metrics fixture: three sessions across two working dirs.
 //
 //	sessA (projA, claude-code, day 2026-06-01):
-//	  LLM turn (100in/40out) + SKILL pdf-tools verified=true @ commit c1/main
-//	  LLM turn (50in/10out)  + SKILL pdf-tools verified=false @ commit c1/main
+//	  LLM turn (100in/40out) + SKILL pdf-tools, proven identity @ commit c1/main
+//	  LLM turn (50in/10out)  + SKILL pdf-tools, version unknown (bare name)
 //	sessB (projA, codex, day 2026-06-02, tokenless LLM spans):
-//	  LLM turn (no usage attrs) + SKILL pdf-tools verified="true" (string) @ commit c2/main
-//	  SKILL changelog (no verified attr) @ commit d1/main
+//	  LLM turn (no usage attrs) + SKILL pdf-tools, proven identity @ commit c2/main
+//	  SKILL changelog, version unknown (bare name)
 //	sessC (projB, claude-code, day 2026-06-03):
-//	  LLM turn (200in/80out) + SKILL changelog verified=true @ commit d1/main
+//	  LLM turn (200in/80out) + SKILL changelog, proven identity @ commit d1/main
 //
 // Expectations this encodes:
-//   - pdf-tools: 3 invocations, 2 sessions, 2 verified (true JSON + "true" string)
-//   - changelog: 2 invocations, 2 sessions, 1 verified (absent attr ≠ verified)
+//   - pdf-tools: 3 invocations, 2 sessions, observed version "main" (deduped
+//     across the two proven spans); changelog: 2 invocations, 2 sessions.
 //   - tokens: pdf-tools = sessA+sessB LLM sums = 150in/50out (sessB contributes 0);
 //     changelog = sessB+sessC = 200in/80out. sessB overlap counts toward BOTH
 //     skills (intentional session-level attribution).
@@ -77,12 +77,14 @@ func seedMetricsFixture(t *testing.T, st Store) {
 	llmAttrs := func(in, out int) string {
 		return fmt.Sprintf(`{"gen_ai.operation.name":"chat","gen_ai.usage.input_tokens":%d,"gen_ai.usage.output_tokens":%d}`, in, out)
 	}
-	skillAttrs := func(name, verified, commit, ref string) string {
-		a := fmt.Sprintf(`{"skill.name":%q,"skill.commit":%q,"skill.version":%q`, name, commit, ref)
-		if verified != "" {
-			a += `,"skill.verified":` + verified
+	// skillAttrs mirrors v6 proof-gated spans: a span whose load path proved
+	// the artifact carries the identity fields; one without evidence carries
+	// the bare name only (version unknown).
+	skillAttrs := func(name string, proven bool, commit, ref string) string {
+		if !proven {
+			return fmt.Sprintf(`{"skill.name":%q}`, name)
 		}
-		return a + "}"
+		return fmt.Sprintf(`{"skill.name":%q,"skill.commit":%q,"skill.version":%q}`, name, commit, ref)
 	}
 	span := func(sid uuid.UUID, agent, kind, id string, startMs int64, attrs string) *SpanRow {
 		return &SpanRow{
@@ -93,21 +95,21 @@ func seedMetricsFixture(t *testing.T, st Store) {
 
 	require.NoError(t, st.ReplaceSessionSpans(ctx, mSessA, []*SpanRow{
 		span(mSessA, "claude-code", "LLM", "a-llm-1", msAt("2026-06-01", 9), llmAttrs(100, 40)),
-		span(mSessA, "claude-code", "SKILL", "a-skill-1", msAt("2026-06-01", 9), skillAttrs("pdf-tools", "true", "c1", "main")),
+		span(mSessA, "claude-code", "SKILL", "a-skill-1", msAt("2026-06-01", 9), skillAttrs("pdf-tools", true, "c1", "main")),
 		span(mSessA, "claude-code", "LLM", "a-llm-2", msAt("2026-06-01", 10), llmAttrs(50, 10)),
-		span(mSessA, "claude-code", "SKILL", "a-skill-2", msAt("2026-06-01", 10), skillAttrs("pdf-tools", "false", "c1", "main")),
+		// Same skill, no proof this time — bare name, no identity fields.
+		span(mSessA, "claude-code", "SKILL", "a-skill-2", msAt("2026-06-01", 10), skillAttrs("pdf-tools", false, "", "")),
 	}))
 	require.NoError(t, st.ReplaceSessionSpans(ctx, mSessB, []*SpanRow{
 		// Codex-style tokenless LLM span: no gen_ai.usage.* attrs at all.
 		span(mSessB, "codex", "LLM", "b-llm-1", msAt("2026-06-02", 12), `{"gen_ai.operation.name":"chat"}`),
-		// Verified as the STRING "true" — pins the 1-vs-'true' extraction.
-		span(mSessB, "codex", "SKILL", "b-skill-1", msAt("2026-06-02", 12), skillAttrs("pdf-tools", `"true"`, "c2", "main")),
-		// No verified attr at all — must count as unverified.
-		span(mSessB, "codex", "SKILL", "b-skill-2", msAt("2026-06-02", 13), skillAttrs("changelog", "", "d1", "main")),
+		span(mSessB, "codex", "SKILL", "b-skill-1", msAt("2026-06-02", 12), skillAttrs("pdf-tools", true, "c2", "main")),
+		// Unverified — must not count toward Verified despite firing.
+		span(mSessB, "codex", "SKILL", "b-skill-2", msAt("2026-06-02", 13), skillAttrs("changelog", false, "", "")),
 	}))
 	require.NoError(t, st.ReplaceSessionSpans(ctx, mSessC, []*SpanRow{
 		span(mSessC, "claude-code", "LLM", "c-llm-1", msAt("2026-06-03", 8), llmAttrs(200, 80)),
-		span(mSessC, "claude-code", "SKILL", "c-skill-1", msAt("2026-06-03", 8), skillAttrs("changelog", "true", "d1", "main")),
+		span(mSessC, "claude-code", "SKILL", "c-skill-1", msAt("2026-06-03", 8), skillAttrs("changelog", true, "d1", "main")),
 	}))
 }
 
@@ -125,9 +127,9 @@ func TestSkillUsageRollup(t *testing.T) {
 			name:   "all skills, no scope",
 			filter: &MetricsFilter{},
 			want: map[string]SkillUsage{
-				"pdf-tools": {Invocations: 3, Sessions: 2, Verified: 2,
+				"pdf-tools": {Invocations: 3, Sessions: 2, Versions: []string{"main"},
 					FirstFiredMs: msAt("2026-06-01", 9), LastFiredMs: msAt("2026-06-02", 12)},
-				"changelog": {Invocations: 2, Sessions: 2, Verified: 1,
+				"changelog": {Invocations: 2, Sessions: 2, Versions: []string{"main"},
 					FirstFiredMs: msAt("2026-06-02", 13), LastFiredMs: msAt("2026-06-03", 8)},
 			},
 		},
@@ -135,9 +137,11 @@ func TestSkillUsageRollup(t *testing.T) {
 			name:   "dirs scoping excludes the other project",
 			filter: &MetricsFilter{Dirs: []string{projA}},
 			want: map[string]SkillUsage{
-				"pdf-tools": {Invocations: 3, Sessions: 2, Verified: 2,
+				"pdf-tools": {Invocations: 3, Sessions: 2, Versions: []string{"main"},
 					FirstFiredMs: msAt("2026-06-01", 9), LastFiredMs: msAt("2026-06-02", 12)},
-				"changelog": {Invocations: 1, Sessions: 1, Verified: 0,
+				// changelog's only projA invocation carries no identity — its
+				// observed-version set is empty (the "unknown" rendering).
+				"changelog": {Invocations: 1, Sessions: 1, Versions: nil,
 					FirstFiredMs: msAt("2026-06-02", 13), LastFiredMs: msAt("2026-06-02", 13)},
 			},
 		},
@@ -148,9 +152,9 @@ func TestSkillUsageRollup(t *testing.T) {
 				Until: timePtr("2026-06-02T23:59:59Z"),
 			},
 			want: map[string]SkillUsage{
-				"pdf-tools": {Invocations: 1, Sessions: 1, Verified: 1,
+				"pdf-tools": {Invocations: 1, Sessions: 1, Versions: []string{"main"},
 					FirstFiredMs: msAt("2026-06-02", 12), LastFiredMs: msAt("2026-06-02", 12)},
-				"changelog": {Invocations: 1, Sessions: 1, Verified: 0,
+				"changelog": {Invocations: 1, Sessions: 1, Versions: nil,
 					FirstFiredMs: msAt("2026-06-02", 13), LastFiredMs: msAt("2026-06-02", 13)},
 			},
 		},
@@ -158,7 +162,7 @@ func TestSkillUsageRollup(t *testing.T) {
 			name:   "single skill filter",
 			filter: &MetricsFilter{Skill: "changelog"},
 			want: map[string]SkillUsage{
-				"changelog": {Invocations: 2, Sessions: 2, Verified: 1,
+				"changelog": {Invocations: 2, Sessions: 2, Versions: []string{"main"},
 					FirstFiredMs: msAt("2026-06-02", 13), LastFiredMs: msAt("2026-06-03", 8)},
 			},
 		},
@@ -173,7 +177,7 @@ func TestSkillUsageRollup(t *testing.T) {
 				require.True(t, ok, "unexpected skill %q", u.Skill)
 				assert.Equal(t, w.Invocations, u.Invocations, "%s invocations", u.Skill)
 				assert.Equal(t, w.Sessions, u.Sessions, "%s sessions", u.Skill)
-				assert.Equal(t, w.Verified, u.Verified, "%s verified", u.Skill)
+				assert.Equal(t, w.Versions, u.Versions, "%s versions", u.Skill)
 				assert.Equal(t, w.FirstFiredMs, u.FirstFiredMs, "%s firstFired", u.Skill)
 				assert.Equal(t, w.LastFiredMs, u.LastFiredMs, "%s lastFired", u.Skill)
 			}
@@ -244,11 +248,9 @@ func TestSkillInvocationSeries(t *testing.T) {
 	assert.Equal(t, "2026-06-01", got[0].Day)
 	assert.Equal(t, "claude-code", got[0].Agent)
 	assert.Equal(t, int64(2), got[0].Invocations)
-	assert.Equal(t, int64(1), got[0].Verified)
 	assert.Equal(t, "2026-06-02", got[1].Day)
 	assert.Equal(t, "codex", got[1].Agent)
 	assert.Equal(t, int64(1), got[1].Invocations)
-	assert.Equal(t, int64(1), got[1].Verified, "string \"true\" must count as verified")
 }
 
 func TestSkillAgentRollup(t *testing.T) {
@@ -264,10 +266,27 @@ func TestSkillAgentRollup(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "claude-code", got[0].Agent, "busiest agent first")
 	assert.Equal(t, int64(2), got[0].Invocations)
-	assert.Equal(t, int64(1), got[0].Verified)
+	// One proven span (@ main) + one unknown → the agent's observed set is
+	// the proven refs only; unknown never fabricates an entry.
+	assert.Equal(t, []string{"main"}, got[0].Versions)
 	assert.Equal(t, int64(1), got[0].Sessions)
 	assert.Equal(t, "codex", got[1].Agent)
 	assert.Equal(t, int64(1), got[1].Invocations)
+	assert.Equal(t, []string{"main"}, got[1].Versions)
+}
+
+// TestSkillAgentRollup_NoIdentity pins the unknown rendering's data shape: an
+// agent whose invocations never carried identity has an EMPTY Versions set.
+func TestSkillAgentRollup_NoIdentity(t *testing.T) {
+	st := openTestStore(t)
+	seedMetricsFixture(t, st)
+
+	got, err := st.SkillAgentRollup(context.Background(),
+		&MetricsFilter{Skill: "changelog", Dirs: []string{projA}})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "codex", got[0].Agent)
+	assert.Empty(t, got[0].Versions, "no proven identity → no observed versions")
 }
 
 func TestSkillVersionRollup(t *testing.T) {
@@ -280,22 +299,31 @@ func TestSkillVersionRollup(t *testing.T) {
 
 	got, err := st.SkillVersionRollup(ctx, &MetricsFilter{Skill: "pdf-tools"})
 	require.NoError(t, err)
-	require.Len(t, got, 2, "two commits fired")
+	require.Len(t, got, 3, "two proven commits + the unverified (no-identity) bucket")
 
-	// Newest-first by first-fired: c2 (06-02) then c1 (06-01).
-	c2, c1 := got[0], got[1]
+	// Newest-first by first-fired: c2 (06-02 12h), the unknown-version bucket
+	// (06-01 10h), then c1 (06-01 9h).
+	c2, unk, c1 := got[0], got[1], got[2]
 	assert.Equal(t, "c2", c2.Commit)
 	assert.Equal(t, int64(1), c2.Invocations)
-	assert.Equal(t, int64(1), c2.Verified)
 	// c2 fired only in the tokenless codex session → zero tokens.
 	assert.Equal(t, int64(0), c2.InputTokens)
 	assert.Equal(t, int64(0), c2.OutputTokens)
 
+	// The identity-less invocation groups under empty ref+commit — the
+	// lineage view's honest "version unknown" row.
+	assert.Equal(t, "", unk.Commit)
+	assert.Equal(t, "", unk.Ref)
+	assert.Equal(t, int64(1), unk.Invocations)
+	// sessA also fired a proven version (c1), so the unknown bucket must not
+	// re-claim that session's tokens — they stay with the proven row only.
+	assert.Equal(t, int64(0), unk.InputTokens)
+	assert.Equal(t, int64(0), unk.OutputTokens)
+
 	assert.Equal(t, "c1", c1.Commit)
 	assert.Equal(t, "main", c1.Ref)
-	assert.Equal(t, int64(2), c1.Invocations)
+	assert.Equal(t, int64(1), c1.Invocations)
 	assert.Equal(t, int64(1), c1.Sessions)
-	assert.Equal(t, int64(1), c1.Verified)
 	// c1's session set is sessA → its full LLM token sums, counted once.
 	assert.Equal(t, int64(150), c1.InputTokens)
 	assert.Equal(t, int64(50), c1.OutputTokens)
