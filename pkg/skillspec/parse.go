@@ -219,9 +219,7 @@ func flattenMetadata(node *yaml.Node) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if value != "" {
-			out[key] = value
-		}
+		out[key] = value
 	}
 	if len(out) == 0 {
 		return nil, nil

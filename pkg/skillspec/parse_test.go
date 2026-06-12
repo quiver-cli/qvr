@@ -382,6 +382,29 @@ Body.
 	}
 }
 
+func TestParse_EmptyMetadataValuePreserved(t *testing.T) {
+	content := `---
+name: empty-metadata
+description: Empty metadata values keep key presence.
+metadata:
+  reviewer: ""
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	value, ok := s.Frontmatter.Metadata["reviewer"]
+	if !ok {
+		t.Fatal("metadata.reviewer missing")
+	}
+	if value != "" {
+		t.Errorf("metadata.reviewer = %q, want empty string", value)
+	}
+}
+
 func TestParse_NonMappingMetadataRejected(t *testing.T) {
 	content := `---
 name: bad-metadata
