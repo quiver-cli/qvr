@@ -21,8 +21,15 @@ import (
 )
 
 var (
-	ErrPublishNoEdit       = errors.New("skill must be ejected with `qvr edit` before publishing")
-	ErrPublishNoSource     = errors.New("skill entry has no Source URL — publish it into a registry with `qvr publish <name> --registry <org>/<repo>`, or to a new remote with --fork <url>")
+	// ErrPublishNoEdit is returned when publishing an installed skill that
+	// has no edit dir: only an ejected (`qvr edit`) skill carries the local
+	// git repo the publish works off.
+	ErrPublishNoEdit = errors.New("skill must be ejected with `qvr edit` before publishing")
+	// ErrPublishNoSource is returned when the lock entry records no Source
+	// URL, so there is no remote to push to without --registry or --fork.
+	ErrPublishNoSource = errors.New("skill entry has no Source URL — publish it into a registry with `qvr publish <name> --registry <org>/<repo>`, or to a new remote with --fork <url>")
+	// ErrPublishForkRequired is returned when --fork is passed for a skill
+	// that is not ejected — the fork push needs the edit dir's repo.
 	ErrPublishForkRequired = errors.New("--fork <url> requires an ejected skill — run `qvr edit` first")
 )
 

@@ -16,7 +16,13 @@ import (
 )
 
 var (
-	ErrDivergence  = errors.New("local and upstream histories have diverged; resolve manually")
+	// ErrDivergence is returned by pull when the worktree has uncommitted
+	// changes or its local history and upstream have diverged — qvr never
+	// merges or rebases on the user's behalf; they resolve it themselves.
+	ErrDivergence = errors.New("local and upstream histories have diverged; resolve manually")
+	// ErrPinnedToTag is returned by pull when the skill's locked ref
+	// resolves to a tag (no matching branch): tags are immutable pins, so
+	// moving off one is an explicit `qvr update`, not a pull.
 	ErrPinnedToTag = errors.New("skill is pinned to a tag")
 )
 

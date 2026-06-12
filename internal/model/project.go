@@ -347,7 +347,8 @@ func (p *ProjectFile) RemoveSkill(coordinate string) {
 	delete(p.Skills, coordinate)
 }
 
-// Skills entries are sorted by coordinate for stable iteration.
+// SkillCoordinates returns the Skills entries' coordinates, sorted for
+// stable iteration.
 func (p *ProjectFile) SkillCoordinates() []string {
 	out := make([]string, 0, len(p.Skills))
 	for c := range p.Skills {

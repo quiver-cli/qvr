@@ -994,7 +994,7 @@ func restoreUpgradeScanRecord(entry *model.LockEntry, cfg *config.Config, row *U
 	if entry.Path != "" {
 		skillDir = filepath.Join(worktreePath, entry.Path)
 	}
-	gate, gerr := ScanAndGate(context.Background(), skillDir, cfg, scanGateOptions{
+	gate, gerr := scanAndGate(context.Background(), skillDir, cfg, scanGateOptions{
 		Action:   "lock upgrade",
 		Subject:  entry.Name,
 		WarnOnly: true,

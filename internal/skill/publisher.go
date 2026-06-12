@@ -21,8 +21,12 @@ import (
 )
 
 var (
+	// ErrPublishNoRegistry is returned when a publish names no registry
+	// and neither --registry nor the config's default_registry is set.
 	ErrPublishNoRegistry = errors.New("no registry configured; pass --registry or set default_registry")
-	ErrInvalidSkillPath  = errors.New("invalid local skill path")
+	// ErrInvalidSkillPath is returned when the local path to publish does
+	// not hold a loadable skill (e.g. missing or invalid SKILL.md).
+	ErrInvalidSkillPath = errors.New("invalid local skill path")
 )
 
 // PublishRequest drives a publish operation.

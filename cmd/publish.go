@@ -487,7 +487,7 @@ func preflightPublishScan(cmd *cobra.Command, name, editDir string) (*scanGateRe
 	if err := enforceScanPolicy(cfg, publishNoScan); err != nil {
 		return nil, err
 	}
-	gate, gerr := ScanAndGate(cmd.Context(), editDir, cfg, scanGateOptions{
+	gate, gerr := scanAndGate(cmd.Context(), editDir, cfg, scanGateOptions{
 		Disabled: publishNoScan,
 		Action:   "publish",
 		Subject:  name,
@@ -659,7 +659,7 @@ func runPublishGreenfield(cmd *cobra.Command, path string) error {
 		if derr != nil || scanPath == "" {
 			scanPath = path
 		}
-		gate, gerr := ScanAndGate(cmd.Context(), scanPath, cfg, scanGateOptions{
+		gate, gerr := scanAndGate(cmd.Context(), scanPath, cfg, scanGateOptions{
 			Disabled: publishNoScan,
 			Action:   "publish",
 			Subject:  scanPath,

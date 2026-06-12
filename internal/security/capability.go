@@ -11,6 +11,9 @@ import (
 // MCP least-privilege findings are user-facing.
 type Capability string
 
+// The capability classes inferred from skill code: shell invocation,
+// network access, file reads/writes, environment access, and spawning
+// external processes.
 const (
 	CapShell     Capability = "shell"
 	CapNetwork   Capability = "network"

@@ -27,7 +27,7 @@ type patternCheck struct {
 func NewPatternsCheck() Check {
 	rules := BuiltinRules().
 		ExcludeCategory(CategoryPromptInjection, CategorySystemPromptLeakage).
-		MustCompile()
+		mustCompile()
 	return &patternCheck{name: PatternsCheckName, rules: rules}
 }
 
@@ -36,7 +36,7 @@ func NewPatternsCheck() Check {
 // regex table while preserving its Check.Name() for callers that filter
 // findings by check name.
 func NewRuleCheck(name string, rules RuleSet) Check {
-	return &patternCheck{name: name, rules: rules.MustCompile()}
+	return &patternCheck{name: name, rules: rules.mustCompile()}
 }
 
 func (p *patternCheck) Name() string { return p.name }

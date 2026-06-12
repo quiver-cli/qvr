@@ -362,7 +362,7 @@ func gateImportedSkill(ctx context.Context, result *skill.InstallResult, install
 	// Reuse the standard scan gate so import is symmetric with `qvr add`
 	// for security defaults. Blocked installs are rolled back the same
 	// way add does.
-	gate, gerr := ScanAndGate(ctx, skillDirFor(result, lockPath), cfg, scanGateOptions{
+	gate, gerr := scanAndGate(ctx, skillDirFor(result, lockPath), cfg, scanGateOptions{
 		Disabled: importNoScan,
 		Action:   "import",
 		Subject:  result.Name,

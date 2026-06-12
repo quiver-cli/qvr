@@ -1,3 +1,6 @@
+// Package registry manages skill registries: bare-clone add/remove/update
+// under ~/.quiver/registries, skill index building over registry HEADs, the
+// TTL'd index cache, and name/URL → on-disk path resolution.
 package registry
 
 import (
@@ -46,12 +49,23 @@ type AddOptions struct {
 }
 
 var (
-	ErrRegistryNotFound    = errors.New("registry not found")
-	ErrRegistryExists      = errors.New("registry already exists")
+	// ErrRegistryNotFound is returned (usually wrapped, with the input name)
+	// when a name, alias, or URL resolves to no registered registry.
+	ErrRegistryNotFound = errors.New("registry not found")
+	// ErrRegistryExists is returned (wrapped, with the name) by Add when the
+	// registry name is already taken.
+	ErrRegistryExists = errors.New("registry already exists")
+	// ErrInvalidRegistryName is returned (wrapped, with the reason) by Add
+	// when the derived registry name fails validation.
 	ErrInvalidRegistryName = errors.New("invalid registry name")
-	ErrInvalidURL          = errors.New("invalid registry URL")
-	ErrRemoveFailed        = errors.New("registry removal failed")
-	ErrUpdateFailed        = errors.New("registry update failed")
+	// ErrInvalidURL is returned (wrapped, with the reason) by Add when the
+	// registry URL is empty or unparseable.
+	ErrInvalidURL = errors.New("invalid registry URL")
+	// ErrRemoveFailed is returned (wrapped) by Remove when the registry's
+	// bare clone cannot be deleted from disk.
+	ErrRemoveFailed = errors.New("registry removal failed")
+	// ErrUpdateFailed marks a failed registry refresh.
+	ErrUpdateFailed = errors.New("registry update failed")
 )
 
 // Manager handles registry lifecycle operations.

@@ -53,7 +53,7 @@ func TestScanAndGate_DisabledByFlag(t *testing.T) {
 	dir := writeSkillWithSecret(t, t.TempDir(), "dangerous")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "critical"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{Disabled: true})
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{Disabled: true})
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestScanAndGate_RequireScanRejectsNoScan(t *testing.T) {
 		BlockSeverity: "critical",
 	}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{Disabled: true})
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{Disabled: true})
 	if err == nil {
 		t.Fatal("expected require_scan to reject --no-scan")
 	}
@@ -91,7 +91,7 @@ func TestScanAndGate_DisabledByConfig(t *testing.T) {
 	dir := writeSkillWithSecret(t, t.TempDir(), "dangerous")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: false, BlockSeverity: "critical"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{})
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{})
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestScanAndGate_BlocksAtCritical(t *testing.T) {
 	dir := writeSkillWithSecret(t, t.TempDir(), "leaky")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "critical"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{
 		Action:  "add",
 		Subject: "leaky",
 	})
@@ -131,7 +131,7 @@ func TestScanAndGate_ProceedsWhenBelowThreshold(t *testing.T) {
 	dir := writeCleanSkill(t, t.TempDir(), "clean")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "critical"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{})
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{})
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestScanAndGate_SurfacesFindingsToStderr(t *testing.T) {
 	dir := writeSkillWithSecret(t, t.TempDir(), "noisy")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "critical"}}
 
-	if _, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{
+	if _, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{
 		Action:  "add",
 		Subject: "noisy",
 	}); err != nil {
@@ -181,7 +181,7 @@ func TestScanAndGate_WarnOnlyUsesWarningTemplateForCriticalFindings(t *testing.T
 	dir := writeSkillWithSecret(t, t.TempDir(), "leaky")
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "critical"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{
 		Action:   "sync",
 		Subject:  "leaky",
 		WarnOnly: true,
@@ -217,7 +217,7 @@ func TestScanAndGate_BogusThresholdFallsBackToCritical(t *testing.T) {
 	// fall back to critical so it doesn't accidentally block-on-everything.
 	cfg := &config.Config{Security: config.SecurityConfig{ScanOnInstall: true, BlockSeverity: "potato"}}
 
-	got, err := ScanAndGate(context.Background(), dir, cfg, scanGateOptions{})
+	got, err := scanAndGate(context.Background(), dir, cfg, scanGateOptions{})
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}

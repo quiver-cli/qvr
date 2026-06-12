@@ -15,6 +15,8 @@ const SignatureCheckName = "signatures"
 // webshells, cryptominers, hacktools.
 type SignatureFamily string
 
+// The signature families in the built-in set. The string values appear
+// in finding messages and JSON output.
 const (
 	FamilyMalware     SignatureFamily = "malware"
 	FamilyWebshell    SignatureFamily = "webshell"

@@ -12,6 +12,9 @@ import (
 	"github.com/astra-sh/qvr/pkg/skillspec"
 )
 
+// ErrIndexBuildFailed is returned (wrapped, with detail) when a skill index
+// cannot be built from a registry's HEAD — an unreadable or unparseable
+// SKILL.md, or a frontmatter name that contradicts its directory.
 var ErrIndexBuildFailed = errors.New("index build failed")
 
 // SkillVersionInfo holds branch and tag lists for a skill.

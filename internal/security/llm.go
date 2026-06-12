@@ -103,8 +103,11 @@ func RegisterLLMProvider(name string, ctor func() LLMProvider) {
 // rules miss?" to the LLM.
 type SemanticSecurityDiscoveryCheck struct{}
 
+// Name returns the check identifier used in scan output.
 func (SemanticSecurityDiscoveryCheck) Name() string { return "semantic_security_discovery" }
 
+// Run is a stub pending the first provider implementation; it emits no
+// findings.
 func (SemanticSecurityDiscoveryCheck) Run(_ context.Context, _ LLMProvider, _ *model.Skill, _ []FileEntry) []Finding {
 	// Stub — see package doc. A concrete implementation will:
 	//  1. Render skill body + frontmatter into a prompt.
@@ -118,8 +121,11 @@ func (SemanticSecurityDiscoveryCheck) Run(_ context.Context, _ LLMProvider, _ *m
 // stated intent matches its implementation.
 type SemanticDeveloperIntentCheck struct{}
 
+// Name returns the check identifier used in scan output.
 func (SemanticDeveloperIntentCheck) Name() string { return "semantic_developer_intent" }
 
+// Run is a stub pending the first provider implementation; it emits no
+// findings.
 func (SemanticDeveloperIntentCheck) Run(_ context.Context, _ LLMProvider, _ *model.Skill, _ []FileEntry) []Finding {
 	return nil
 }
@@ -129,8 +135,11 @@ func (SemanticDeveloperIntentCheck) Run(_ context.Context, _ LLMProvider, _ *mod
 // path) in the concrete impl.
 type SemanticQualityPolicyCheck struct{}
 
+// Name returns the check identifier used in scan output.
 func (SemanticQualityPolicyCheck) Name() string { return "semantic_quality_policy" }
 
+// Run is a stub pending the first provider implementation; it emits no
+// findings.
 func (SemanticQualityPolicyCheck) Run(_ context.Context, _ LLMProvider, _ *model.Skill, _ []FileEntry) []Finding {
 	return nil
 }
@@ -141,8 +150,11 @@ func (SemanticQualityPolicyCheck) Run(_ context.Context, _ LLMProvider, _ *model
 // approximate.
 type DescriptionBehaviorMismatchCheck struct{}
 
+// Name returns the check identifier used in scan output.
 func (DescriptionBehaviorMismatchCheck) Name() string { return "tp4_description_behavior_mismatch" }
 
+// Run is a stub pending the first provider implementation; it emits no
+// findings.
 func (DescriptionBehaviorMismatchCheck) Run(_ context.Context, _ LLMProvider, _ *model.Skill, _ []FileEntry) []Finding {
 	return nil
 }

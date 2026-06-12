@@ -355,7 +355,7 @@ func addInstallItem(cmd *cobra.Command, cfg *config.Config, installer *skill.Ins
 	// the install if findings meet or exceed the configured threshold.
 	// Done inside the WithLock window so a blocked install also
 	// reverts the lock entry atomically.
-	gate, gerr := ScanAndGate(cmd.Context(), skillDirForEntry(result, lock), cfg, scanGateOptions{
+	gate, gerr := scanAndGate(cmd.Context(), skillDirForEntry(result, lock), cfg, scanGateOptions{
 		Disabled: addNoScan,
 		Action:   "add",
 		Subject:  result.Name,
@@ -771,7 +771,7 @@ func runAddLocal(cmd *cobra.Command, cfg *config.Config, installer *skill.Instal
 		}
 		// Security gate — same as a registry add (the user opted into scanning
 		// local skills). A blocked install is rolled back inside the lock window.
-		gate, gerr := ScanAndGate(cmd.Context(), skillDirFor(r, lockPath), cfg, scanGateOptions{
+		gate, gerr := scanAndGate(cmd.Context(), skillDirFor(r, lockPath), cfg, scanGateOptions{
 			Disabled: addNoScan,
 			Action:   "add",
 			Subject:  r.Name,

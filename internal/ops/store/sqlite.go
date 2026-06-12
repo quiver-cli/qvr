@@ -14,6 +14,7 @@ import (
 	"github.com/astra-sh/qvr/internal/ops/store/migrations"
 	"github.com/google/uuid"
 
+	// Register the pure-Go "sqlite" driver with database/sql.
 	_ "modernc.org/sqlite"
 )
 

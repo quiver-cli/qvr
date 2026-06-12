@@ -12,6 +12,8 @@ import (
 // category without re-parsing the rule ID.
 type Category string
 
+// The detection-taxonomy buckets. The string values are the stable JSON
+// labels findings carry; rule IDs are prefixed per bucket (P*, SC*, …).
 const (
 	CategoryPromptInjection     Category = "prompt_injection"
 	CategorySystemPromptLeakage Category = "system_prompt_leakage"
@@ -61,7 +63,7 @@ type Rule struct {
 }
 
 // compiledRule is the runtime form of a [Rule] with compiled regexes
-// and pre-parsed globs. Constructed by [RuleSet.Compile]; clients
+// and pre-parsed globs. Constructed by [RuleSet.compile]; clients
 // should not build it directly.
 type compiledRule struct {
 	rule Rule
@@ -113,9 +115,9 @@ func (rs RuleSet) ExcludeCategory(cats ...Category) RuleSet {
 	return out
 }
 
-// Compile returns a slice of compiledRule ready to run. Returns the
+// compile returns a slice of compiledRule ready to run. Returns the
 // first compile error with the offending rule ID for diagnostics.
-func (rs RuleSet) Compile() ([]compiledRule, error) {
+func (rs RuleSet) compile() ([]compiledRule, error) {
 	out := make([]compiledRule, 0, len(rs))
 	seen := make(map[string]bool, len(rs))
 	for _, r := range rs {
@@ -141,10 +143,10 @@ func (rs RuleSet) Compile() ([]compiledRule, error) {
 	return out, nil
 }
 
-// MustCompile is the panic-on-error variant of [RuleSet.Compile],
+// mustCompile is the panic-on-error variant of [RuleSet.compile],
 // intended for package-init use against the built-in rule set.
-func (rs RuleSet) MustCompile() []compiledRule {
-	cr, err := rs.Compile()
+func (rs RuleSet) mustCompile() []compiledRule {
+	cr, err := rs.compile()
 	if err != nil {
 		panic(err)
 	}

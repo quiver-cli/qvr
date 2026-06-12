@@ -918,7 +918,7 @@ func scanRestoredEntry(ctx context.Context, entry *model.LockEntry, cfg *config.
 	// findings — sync never blocks, and the `error: … scan blocked` template was
 	// misleading the user into thinking the restore was aborted when in
 	// fact the symlink was created two lines later (bug #59).
-	gate, gerr := ScanAndGate(ctx, skillDir, cfg, scanGateOptions{
+	gate, gerr := scanAndGate(ctx, skillDir, cfg, scanGateOptions{
 		Action:   "sync",
 		Subject:  entry.Name,
 		WarnOnly: true,

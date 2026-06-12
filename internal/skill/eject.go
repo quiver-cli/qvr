@@ -16,10 +16,18 @@ import (
 )
 
 var (
-	ErrAlreadyEditing  = errors.New("skill is already in edit mode")
-	ErrCannotEditLink  = errors.New("cannot edit a link install — modify the source path directly")
+	// ErrAlreadyEditing is returned by Eject when the lock entry already
+	// records an EditPath — the skill is already ejected for editing.
+	ErrAlreadyEditing = errors.New("skill is already in edit mode")
+	// ErrCannotEditLink means `qvr edit` was asked for a link install:
+	// the source path is already writable, so there is nothing to eject.
+	ErrCannotEditLink = errors.New("cannot edit a link install — modify the source path directly")
+	// ErrCannotEjectLink is returned by Eject when the lock entry is a
+	// link install — link installs have no immutable worktree to copy out.
 	ErrCannotEjectLink = errors.New("cannot eject a link install")
-	ErrNoTargets       = errors.New("entry has no installed targets to eject into")
+	// ErrNoTargets is returned by Eject when the lock entry records no
+	// installed targets, leaving no agent dir to eject the copy into.
+	ErrNoTargets = errors.New("entry has no installed targets to eject into")
 )
 
 // EjectRequest drives a `qvr edit` eject.

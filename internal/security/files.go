@@ -32,7 +32,7 @@ const DefaultMaxScanBytes int64 = 10 << 20 // 10 MiB
 // [SetMaxScanBytes] (covers the `--max-file-bytes` CLI flag and the
 // `QVR_MAX_FILE_BYTES` env). A value of 0 disables the cap entirely
 // — the scanner reads every file regardless of size.
-var maxScanBytes int64 = DefaultMaxScanBytes
+var maxScanBytes = DefaultMaxScanBytes
 
 // SetMaxScanBytes overrides the per-file cap. Pass 0 to disable.
 // Negative values are clamped to 0. Returns the previous cap so test

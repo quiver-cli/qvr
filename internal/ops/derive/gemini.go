@@ -138,7 +138,7 @@ func geminiItems(raw []byte, w *turnWalk) ([]json.RawMessage, int64) {
 		}
 	}
 	var out []json.RawMessage
-	for _, line := range bytes.Split(trimmed, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(trimmed, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
 		if len(line) > 0 {
 			out = append(out, json.RawMessage(line))

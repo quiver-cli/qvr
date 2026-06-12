@@ -21,13 +21,29 @@ import (
 )
 
 var (
-	ErrRepoNotFound  = errors.New("repository not found")
-	ErrCloneFailed   = errors.New("clone failed")
-	ErrFetchFailed   = errors.New("fetch failed")
-	ErrPushFailed    = errors.New("push failed")
-	ErrRefNotFound   = errors.New("reference not found")
-	ErrBlobNotFound  = errors.New("blob not found")
-	ErrTreeNotFound  = errors.New("tree not found")
+	// ErrRepoNotFound is what classifyNetworkErr maps a network failure to
+	// when the remote reports the repository missing or unreadable.
+	ErrRepoNotFound = errors.New("repository not found")
+	// ErrCloneFailed is the fallback sentinel for clone subprocess failures
+	// that aren't a missing repository.
+	ErrCloneFailed = errors.New("clone failed")
+	// ErrFetchFailed is the fallback sentinel for fetch and ls-remote
+	// subprocess failures that aren't a missing repository.
+	ErrFetchFailed = errors.New("fetch failed")
+	// ErrPushFailed is the fallback sentinel for push subprocess failures
+	// that aren't a missing repository.
+	ErrPushFailed = errors.New("push failed")
+	// ErrRefNotFound is returned when a ref (branch, tag, hash, or
+	// revision) cannot be resolved in the local repository.
+	ErrRefNotFound = errors.New("reference not found")
+	// ErrBlobNotFound is returned by ReadBlob when the file does not exist
+	// (or cannot be read) at the given ref and path.
+	ErrBlobNotFound = errors.New("blob not found")
+	// ErrTreeNotFound is returned by the tree-walking reads when the tree
+	// at the given ref and path does not exist.
+	ErrTreeNotFound = errors.New("tree not found")
+	// ErrAlreadyExists is returned by the clone operations when the
+	// destination path already exists on disk.
 	ErrAlreadyExists = errors.New("repository already exists at path")
 )
 
@@ -94,6 +110,10 @@ func (g *GoGitClient) SubdirClone(ctx context.Context, url, ref, subpath, dest s
 	return nil
 }
 
+// BareClone clones url as a bare repository at path by shelling out to the
+// system git, with breadth/depth governed by opts: the default is a
+// latest-only clone of the remote's default branch, while AllRefs mirrors
+// every branch and tag (but never refs/pull/*, unlike `--mirror`).
 func (g *GoGitClient) BareClone(ctx context.Context, url, path string, opts CloneOptions) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%w: %s", ErrAlreadyExists, path)
@@ -272,6 +292,9 @@ func IsFullClone(repoPath string) bool {
 	return false
 }
 
+// Clone performs a full working-tree clone of url at path by shelling out
+// to the system git, so the user's credential helpers handle auth. Returns
+// ErrAlreadyExists when path is already present on disk.
 func (g *GoGitClient) Clone(ctx context.Context, url, path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%w: %s", ErrAlreadyExists, path)
@@ -282,6 +305,9 @@ func (g *GoGitClient) Clone(ctx context.Context, url, path string) error {
 	return nil
 }
 
+// Fetch updates the bare repository at repoPath from origin via the system
+// git, pruning refs deleted upstream. It fetches the clone's own configured
+// refspec (full vs latest-only) and keeps shallow clones shallow.
 func (g *GoGitClient) Fetch(ctx context.Context, repoPath string) error {
 	// Update using the clone's OWN configured refspec rather than a hardcoded
 	// `+refs/*:refs/*`. That keeps a registry in whatever mode it was cloned in:
@@ -409,6 +435,8 @@ func classifyNetworkErr(err error, fallback error) error {
 	return fmt.Errorf("%w: %s", fallback, msg)
 }
 
+// ListBranches returns all local branch refs in the repository at repoPath,
+// read with go-git (no subprocess, no network).
 func (g *GoGitClient) ListBranches(repoPath string) ([]RefInfo, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -434,6 +462,9 @@ func (g *GoGitClient) ListBranches(repoPath string) ([]RefInfo, error) {
 	return refs, nil
 }
 
+// ListTags returns all tag refs in the repository at repoPath, read with
+// go-git. Annotated tags are peeled so Hash is the target commit, not the
+// tag object.
 func (g *GoGitClient) ListTags(repoPath string) ([]RefInfo, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -546,6 +577,9 @@ func (g *GoGitClient) RefVersions(repoPath string) ([]RefVersion, error) {
 	return out, nil
 }
 
+// LsRemote lists refs from a remote URL without cloning by shelling out to
+// `git ls-remote`. Peeled annotated-tag lines (`^{}`) are folded in so tags
+// map to their commit hash.
 func (g *GoGitClient) LsRemote(ctx context.Context, url string) (*RemoteRefInfo, error) {
 	out, err := runGit(ctx, "ls-remote", "--", url)
 	if err != nil {
@@ -629,6 +663,8 @@ func parseLsRemote(r io.Reader) (*RemoteRefInfo, error) {
 	return result, nil
 }
 
+// HeadCommit returns the full commit hash HEAD resolves to in the repository
+// at repoPath, read with go-git.
 func (g *GoGitClient) HeadCommit(repoPath string) (string, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -673,6 +709,9 @@ func (g *GoGitClient) ResolveRef(repoPath, ref string) (string, error) {
 	return "", fmt.Errorf("%w: %q", ErrRefNotFound, ref)
 }
 
+// DefaultBranch returns the name of the default branch: the branch HEAD
+// points at, or — when HEAD is detached — a best-effort pick favouring
+// "main"/"master" over the first branch found, falling back to "main".
 func (g *GoGitClient) DefaultBranch(repoPath string) (string, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -709,6 +748,9 @@ func (g *GoGitClient) DefaultBranch(repoPath string) (string, error) {
 	return "main", nil
 }
 
+// ReadBlob reads the file at filePath from the git object store at ref using
+// go-git — no checkout, no working tree. Returns ErrRefNotFound when ref
+// doesn't resolve and ErrBlobNotFound when the file isn't there.
 func (g *GoGitClient) ReadBlob(repoPath, ref, filePath string) ([]byte, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -748,6 +790,9 @@ func (g *GoGitClient) ReadBlob(repoPath, ref, filePath string) ([]byte, error) {
 	return data, nil
 }
 
+// ListTree lists the immediate entries of the tree at ref and path (repo
+// root when path is empty) using go-git, with each entry's Path made
+// repo-root-relative. Returns ErrTreeNotFound when the tree doesn't exist.
 func (g *GoGitClient) ListTree(repoPath, ref, path string) ([]TreeEntry, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
@@ -793,6 +838,10 @@ func (g *GoGitClient) ListTree(repoPath, ref, path string) ([]TreeEntry, error) 
 	return entries, nil
 }
 
+// ListBlobsRecursive returns every blob reachable from path at ref using
+// go-git's recursive tree walk, with repo-root-relative paths and IsDir
+// always false. An empty or blobless tree yields an empty slice, not an
+// error.
 func (g *GoGitClient) ListBlobsRecursive(repoPath, ref, path string) ([]TreeEntry, error) {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
