@@ -1,20 +1,22 @@
 import type { RegistryVersion, SkillVersionUsage } from "../api";
-import { Badge, Tag } from "./qvr";
-import { fmtCount, fmtShare, relTime, short } from "../lib/format";
+import { Badge, Tag, VersionTag } from "./qvr";
+import { fmtCount, relTime, short } from "../lib/format";
 
 // VersionTimeline renders a version history in the kit's .qvr-ver rhythm:
 // dot + pill + ref + sha rows, the lock's pinned version filled success-soft.
 // Two sources feed it:
 //   - registry refs (branches/tags from the bare clone) via `versions`
 //   - observed lineage (per-version usage from spans) via `usage`
-// When usage is provided for a version, the row grows invocation/verified/token
-// chips — the lineage view: how each pinned version actually behaved.
+// When usage is provided for a version, the row grows invocation/token chips —
+// the lineage view: how each pinned version actually behaved. The lineage row
+// with no (ref, commit) is the unknown-version bucket and renders unpinned.
 
 export interface TimelineRow {
   key: string;
   ref: string;
   sha?: string;
   kind?: "branch" | "tag" | "fired"; // pill label; "fired" = seen only in spans
+  unknown?: boolean; // lineage bucket with no identity — renders unpinned
   isDefault?: boolean;
   current?: boolean;
   when?: string; // ISO — commit time or last-fired
@@ -47,9 +49,10 @@ export function fromRegistryVersions(
 export function fromVersionUsage(usage: SkillVersionUsage[]): TimelineRow[] {
   return usage.map((u, i) => ({
     key: `fired:${u.ref ?? ""}:${u.commit ?? ""}:${i}`,
-    ref: u.ref || "(unidentified)",
+    ref: u.ref || "",
     sha: u.commit,
     kind: "fired",
+    unknown: !u.ref && !u.commit,
     current: u.current,
     when: u.lastFired,
     usage: u,
@@ -68,7 +71,11 @@ export default function VersionTimeline({ rows }: { rows: TimelineRow[] }) {
           <div className="qvr-ver__body">
             <div className="qvr-ver__top">
               {v.kind && <span className="qvr-pill">{v.kind}</span>}
-              <span className="qvr-ver__branch">{v.ref}</span>
+              {v.unknown ? (
+                <VersionTag title="runs whose records never identified which copy of the skill loaded" />
+              ) : (
+                <span className="qvr-ver__branch">{v.ref}</span>
+              )}
               {v.sha && (
                 <span className="qvr-ver__sha" title={v.sha}>
                   {short(v.sha)}
@@ -86,12 +93,6 @@ export default function VersionTimeline({ rows }: { rows: TimelineRow[] }) {
             {v.usage && (
               <div className="qvr-ver__top" style={{ marginTop: 6, gap: 6 }}>
                 <Tag>{fmtCount(v.usage.invocations)} runs</Tag>
-                <Tag>
-                  {fmtShare(
-                    v.usage.invocations > 0 ? v.usage.verified / v.usage.invocations : undefined,
-                  )}{" "}
-                  verified
-                </Tag>
                 <Tag lead="↑">{fmtCount(v.usage.tokensIn)} tok</Tag>
                 <Tag lead="↓">{fmtCount(v.usage.tokensOut)} tok</Tag>
                 <Tag>{fmtCount(v.usage.sessions)} sessions</Tag>

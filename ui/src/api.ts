@@ -336,12 +336,11 @@ export interface ScanRunResult extends ScanResult {
 // ---- skill metrics (observability) ------------------------------------------
 // Types mirror cmd/ui_metrics.go exactly.
 
-// Overview rollup data: "N installed · M did 90% of verified work · K never fired".
+// Overview rollup data: "N installed · M did 90% of the skill work · K never fired".
 export interface SkillMetricsHeadline {
   installed: number;
   active: number;
   never_fired: number;
-  verified_invocations: number;
   total_invocations: number;
   core_skills: string[];
   core_share: number;
@@ -361,8 +360,7 @@ export interface SkillUsageRow {
   installedAt?: string;
   invocations: number;
   sessions: number;
-  verified: number;
-  verifiedShare: number;
+  versions?: string[]; // distinct observed versions; absent = unknown
   firstFired?: string;
   lastFired?: string;
   tokensIn: number;
@@ -393,16 +391,26 @@ export interface SkillReportEntry {
 export interface SkillReportTotals {
   invocations: number;
   sessions: number;
-  verified: number;
-  unverified: number;
   firstFired?: string;
   lastFired?: string;
 }
 
+// One agent's cut. versions is the distinct observed versions this agent's
+// invocations carried; absent renders as the unpinned "@unknown" tag.
 export interface SkillReportAgent {
   agent: string;
   invocations: number;
-  verified: number;
+  versions?: string[];
+  sessions: number;
+  lastFired?: string;
+}
+
+// SkillReportModel is the skill × model performance cut — the same skill can
+// behave differently under different models, so the report card breaks usage
+// down by the gen_ai.request.model its spans carried.
+export interface SkillReportModel {
+  model: string;
+  invocations: number;
   sessions: number;
   lastFired?: string;
 }
@@ -411,17 +419,16 @@ export interface SkillReportSeriesPoint {
   day: string;
   agent: string;
   invocations: number;
-  verified: number;
 }
 
 // One (ref, commit) the skill fired as — the lineage row. `current` marks the
-// lock's pinned commit.
+// lock's pinned commit; an empty ref+commit row is the "version unknown"
+// bucket (invocations with no identity evidence).
 export interface SkillVersionUsage {
   ref?: string;
   commit?: string;
   invocations: number;
   sessions: number;
-  verified: number;
   firstFired?: string;
   lastFired?: string;
   tokensIn: number;
@@ -436,6 +443,7 @@ export interface SkillReport {
   entry?: SkillReportEntry;
   totals: SkillReportTotals;
   agents: SkillReportAgent[];
+  models: SkillReportModel[] | null;
   series: SkillReportSeriesPoint[];
   tokens: { sessions: number; input: number; output: number };
   versions: SkillVersionUsage[];

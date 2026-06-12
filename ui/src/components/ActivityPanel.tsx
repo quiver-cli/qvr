@@ -150,7 +150,6 @@ function BySkill({ skills }: { skills: SkillUsageRow[] }) {
               <span className="qvr-scan__scanner">
                 {fmtCount(s.invocations)} invocations · {fmtCount(s.sessions)} sessions ·{" "}
                 {fmtCount(s.tokensIn + s.tokensOut)} tok
-                {s.invocations > 0 ? ` · ${fmtShare(s.verifiedShare)} verified` : ""}
               </span>
               <span
                 style={{
