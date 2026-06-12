@@ -1,7 +1,7 @@
 #!/bin/sh
 # qvr installer for Linux and macOS (also works under WSL / Git Bash on Windows).
 #
-#   curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+#   curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
 #
 # Downloads the prebuilt release binary (UI embedded) for your OS/arch from
 # GitHub Releases, verifies its checksum, and installs it to a directory on PATH.

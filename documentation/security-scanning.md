@@ -74,7 +74,7 @@ Scan authored skills on pull requests, and gate consuming repos on their lock:
 ```yaml
 # Authoring a registry — scan changed skills
 - run: |
-    curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+    curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
     qvr scan skills/ --format sarif > scan.sarif   # upload as a SARIF report
 
 # Consuming repo — prove nothing drifted from the vetted set

@@ -11,10 +11,10 @@ the dashboard baked in:
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/astra-sh/qvr/main/install.ps1 | iex
+irm https://github.com/astra-sh/qvr/raw/main/install.ps1 | iex
 ```
 
 Or build from source (requires Go 1.25+ and Node 20+):

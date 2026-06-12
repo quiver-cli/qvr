@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+          curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
           qvr lint skills/ --output json
           qvr scan skills/ --format sarif > scan.sarif
 ```
@@ -146,7 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+          curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
           qvr sync --locked        # restore from the lock; fail if it would change
           qvr lock verify --strict # fail on any drift from the recorded bytes
           qvr trust verify         # registry commit-author policy
@@ -167,7 +167,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          curl -fsSL https://raw.githubusercontent.com/astra-sh/qvr/main/install.sh | sh
+          curl -fsSL https://github.com/astra-sh/qvr/raw/main/install.sh | sh
           qvr lint skills/
           qvr scan skills/
 ```

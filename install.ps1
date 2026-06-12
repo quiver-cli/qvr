@@ -1,6 +1,6 @@
 # qvr installer for Windows (PowerShell).
 #
-#   irm https://raw.githubusercontent.com/astra-sh/qvr/main/install.ps1 | iex
+#   irm https://github.com/astra-sh/qvr/raw/main/install.ps1 | iex
 #
 # Downloads the prebuilt release binary (UI embedded) for your architecture from
 # GitHub Releases, verifies its checksum, installs it under
