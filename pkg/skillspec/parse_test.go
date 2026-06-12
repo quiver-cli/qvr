@@ -336,6 +336,40 @@ Body.
 	}
 }
 
+func TestParse_BlockStyleNestedMetadata(t *testing.T) {
+	content := `---
+name: tweetclaw
+description: X/Twitter automation workflows.
+metadata:
+  openclaw:
+    tags:
+      - twitter
+      - x
+      - tweet-scraper
+    primaryEnv: XQUIK_API_KEY
+    envVars:
+      - name: XQUIK_API_KEY
+        required: false
+---
+
+Body.
+`
+	s, err := skillspec.Parse(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := s.Frontmatter.Metadata["openclaw"]
+	for _, want := range []string{
+		`"primaryEnv":"XQUIK_API_KEY"`,
+		`"tags":["twitter","x","tweet-scraper"]`,
+		`"envVars":[{"name":"XQUIK_API_KEY","required":false}]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("metadata.openclaw = %q, want substring %q", got, want)
+		}
+	}
+}
+
 func TestParse_NullMetadata(t *testing.T) {
 	content := `---
 name: no-metadata
