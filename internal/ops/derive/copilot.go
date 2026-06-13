@@ -118,6 +118,10 @@ func copilotShutdownUsage(m *SessionMeta, ln *copilotLine) {
 		out += mm.Usage.OutputTokens
 	}
 	if seen {
+		// Last write wins by design: modelMetrics reports cumulative
+		// session-level totals, so if a session emits more than one shutdown
+		// (e.g. after a model switch or reconnect) the final one carries the most
+		// complete totals. We intentionally overwrite rather than accumulate.
 		m.TokensIn = &in
 		m.TokensOut = &out
 	}

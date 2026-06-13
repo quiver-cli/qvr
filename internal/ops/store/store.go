@@ -99,6 +99,11 @@ type Store interface {
 	// keyed by skill name ("tokens in sessions where this skill fired").
 	SkillTokenRollup(ctx context.Context, f *MetricsFilter) (map[string]*TokenTotals, error)
 
+	// SkillSessionDurationRollup returns per-skill session-attributed wall-clock
+	// duration, keyed by skill name ("how long the sessions this skill fired in
+	// ran"). Exposure, not exclusive.
+	SkillSessionDurationRollup(ctx context.Context, f *MetricsFilter) (map[string]*DurationStats, error)
+
 	// SkillInvocationSeries buckets one skill's invocations by UTC day and
 	// agent. f.Skill is required.
 	SkillInvocationSeries(ctx context.Context, f *MetricsFilter) ([]*SkillSeriesPoint, error)

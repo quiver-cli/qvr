@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/astra-sh/qvr/internal/git"
 	"github.com/astra-sh/qvr/internal/model"
 	"github.com/astra-sh/qvr/internal/ops/store"
+	"github.com/astra-sh/qvr/internal/registry"
 )
 
 // The three observability endpoints behind the dashboard's skill report card,
@@ -26,6 +28,28 @@ import (
 // invocations): the overview answers "what fires" for everyone; version-level
 // stats are the skill detail view's job (power users).
 const coreShareThreshold = 0.9
+
+// durationStatsView is the JSON form of a latency/duration rollup (ms). Built
+// only when at least one sample was measured, so absent = n/a (never a
+// fabricated 0), the same honesty contract the token fields follow.
+type durationStatsView struct {
+	Measured int64 `json:"measured"`
+	AvgMs    int64 `json:"avgMs"`
+	MinMs    int64 `json:"minMs"`
+	MaxMs    int64 `json:"maxMs"`
+	TotalMs  int64 `json:"totalMs"`
+}
+
+// durationView adapts a store DurationStats to the wire shape, returning nil
+// when nothing was measured.
+func durationView(d store.DurationStats) *durationStatsView {
+	if d.Measured == 0 {
+		return nil
+	}
+	return &durationStatsView{
+		Measured: d.Measured, AvgMs: d.AvgMs, MinMs: d.MinMs, MaxMs: d.MaxMs, TotalMs: d.TotalMs,
+	}
+}
 
 // skillMetricsHeadline is the overview rollup sentence's data.
 type skillMetricsHeadline struct {
@@ -58,6 +82,8 @@ type skillMetricsRow struct {
 	TokensIn      *int64 `json:"tokensIn,omitempty"`
 	TokensOut     *int64 `json:"tokensOut,omitempty"`
 	TokenSessions int64  `json:"tokenSessions"`
+	// Exclusive skill-span self-latency (ms); absent = nothing measured (n/a).
+	Latency *durationStatsView `json:"latency,omitempty"`
 }
 
 type skillMetricsResponse struct {
@@ -119,7 +145,7 @@ func (s *uiServer) skillRollups(ctx context.Context, f *store.MetricsFilter) ([]
 // mergeUsageWithLock joins span usage with lock entries by skill name: every
 // installed skill gets a row (zero usage if never fired), and skills that
 // fired historically but are no longer installed keep a row marked
-// installed:false. Rows sort by verified work, then invocations, then name.
+// installed:false. Rows sort by invocations descending, then name ascending.
 func mergeUsageWithLock(entries []*model.LockEntry, usage []*store.SkillUsage, tokens map[string]*store.TokenTotals) []skillMetricsRow {
 	byName := map[string]*skillMetricsRow{}
 	rowFor := func(name string) *skillMetricsRow {
@@ -150,6 +176,7 @@ func mergeUsageWithLock(entries []*model.LockEntry, usage []*store.SkillUsage, t
 		row.Versions = u.Versions
 		row.FirstFired = msToTimePtr(u.FirstFiredMs)
 		row.LastFired = msToTimePtr(u.LastFiredMs)
+		row.Latency = durationView(u.Latency)
 		if t := tokens[u.Skill]; t != nil {
 			row.TokensIn = t.InputTokens
 			row.TokensOut = t.OutputTokens
@@ -236,6 +263,11 @@ type skillReportTotals struct {
 	Sessions    int64      `json:"sessions"`
 	FirstFired  *time.Time `json:"firstFired,omitempty"`
 	LastFired   *time.Time `json:"lastFired,omitempty"`
+	// Latency is the exclusive skill-span self-time; SessionDuration is the
+	// session-attributed wall-clock of the sessions this skill fired in
+	// (exposure, not exclusive). Both ms; absent = nothing measured (n/a).
+	Latency         *durationStatsView `json:"latency,omitempty"`
+	SessionDuration *durationStatsView `json:"sessionDuration,omitempty"`
 }
 
 // skillReportAgent is one agent's cut. Versions is the distinct observed
@@ -304,6 +336,7 @@ type skillReportResponse struct {
 	Series         []skillReportSeriesPoint `json:"series"`
 	Tokens         skillReportTokens        `json:"tokens"`
 	Versions       []skillReportVersion     `json:"versions"`
+	Graph          *versionGraph            `json:"graph,omitempty"` // git-tree lineage DAG; nil = use Versions
 	RecentSessions []*store.SessionMetaRow  `json:"recentSessions"`
 }
 
@@ -386,6 +419,12 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 			Sessions:    u.Sessions,
 			FirstFired:  msToTimePtr(u.FirstFiredMs),
 			LastFired:   msToTimePtr(u.LastFiredMs),
+			Latency:     durationView(u.Latency),
+		}
+	}
+	if durs, err := s.store.SkillSessionDurationRollup(ctx, f); err == nil {
+		if d := durs[f.Skill]; d != nil {
+			resp.Totals.SessionDuration = durationView(*d)
 		}
 	}
 	s.fillReportCuts(ctx, resp, f)
@@ -402,6 +441,13 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 				TokensOut:   v.OutputTokens,
 				Current:     entry != nil && commitsMatch(entry.Commit, v.Commit),
 			})
+		}
+		// Place the observed versions in their true ancestry from the skill's
+		// registry bare clone (the git-tree view); nil graph → frontend uses the
+		// flat Versions list. Only possible when we know which registry to read.
+		if entry != nil {
+			resp.Graph = lineageVersionGraph(git.NewGoGitClient(),
+				registry.RegistryPath(entry.Registry), entry.Commit, versions)
 		}
 	}
 	return true

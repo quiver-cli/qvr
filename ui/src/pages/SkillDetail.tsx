@@ -11,12 +11,14 @@ import {
   type ScanRunResult,
   type SkillInfo,
   type SkillReport,
+  type VersionGraph as VersionGraphData,
 } from "../api";
 import FileTree, { fileKind } from "../components/FileTree";
 import VersionTimeline, {
   fromRegistryVersions,
   fromVersionUsage,
 } from "../components/VersionTimeline";
+import VersionGraph from "../components/VersionGraph";
 import {
   Back,
   Badge,
@@ -41,7 +43,16 @@ import {
   Th,
   VersionTag,
 } from "../components/qvr";
-import { fmtCount, fmtTime, fmtTokenPair, relTime, relTimeMs, short } from "../lib/format";
+import {
+  fmtCount,
+  fmtDuration,
+  fmtMs,
+  fmtTime,
+  fmtTokenPair,
+  relTime,
+  relTimeMs,
+  short,
+} from "../lib/format";
 import { toneFor } from "../lib/tones";
 
 // SkillView is the skill workbench, used from two routes:
@@ -105,6 +116,7 @@ export default function SkillView({ mode }: { mode: "project" | "registry" }) {
           info={proj.data}
           report={report.data}
           versions={projVers.data?.versions ?? []}
+          catalogGraph={projVers.data?.graph}
         />
       )}
       {mode === "registry" && reg.data && <RegistryView detail={reg.data} />}
@@ -118,10 +130,12 @@ function ProjectView({
   info,
   report,
   versions,
+  catalogGraph,
 }: {
   info: SkillInfo;
   report: SkillReport | null;
   versions: RegistryVersion[];
+  catalogGraph?: VersionGraphData;
 }) {
   const [tab, setTab] = useState("report");
 
@@ -186,7 +200,12 @@ function ProjectView({
 
       {tab === "report" && <ReportTab report={report} />}
       {tab === "versions" && (
-        <VersionsTab report={report} versions={versions} info={info} />
+        <VersionsTab
+          report={report}
+          versions={versions}
+          catalogGraph={catalogGraph}
+          info={info}
+        />
       )}
       {tab === "install" && <InstallTab info={info} />}
     </>
@@ -236,7 +255,7 @@ function ReportTab({ report }: { report: SkillReport | null }) {
   return (
     <>
       <div
-        style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 16 }}
+        style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 16 }}
       >
         <Card variant="accent" className="qvr-stat">
           <div
@@ -271,6 +290,16 @@ function ReportTab({ report }: { report: SkillReport | null }) {
           label="tokens"
           sub={hasTokens ? "in sessions where it fired" : "no usage in these stores"}
         />
+        <StatCard
+          icon={<span />}
+          value={t.latency ? fmtMs(t.latency.avgMs) : "n/a"}
+          label="latency / call"
+          sub={
+            t.latency
+              ? `${fmtMs(t.latency.minMs)}–${fmtMs(t.latency.maxMs)} · ${fmtCount(t.latency.measured)} measured`
+              : "skill-span time not recorded"
+          }
+        />
       </div>
 
       <Section title="utilization">
@@ -279,6 +308,11 @@ function ReportTab({ report }: { report: SkillReport | null }) {
           <p className="qvr-sub" style={{ marginTop: 6 }}>
             {sparkPoints.length} active {sparkPoints.length === 1 ? "day" : "days"} · first
             fired {relTime(t.firstFired)} · last fired {relTime(t.lastFired)}
+            {t.sessionDuration
+              ? ` · ${fmtDuration(t.sessionDuration.totalMs)} across ${fmtCount(
+                  t.sessionDuration.measured,
+                )} sessions`
+              : ""}
           </p>
         </Card>
       </Section>
@@ -449,10 +483,12 @@ function VersionCell({ versions }: { versions?: string[] }) {
 function VersionsTab({
   report,
   versions,
+  catalogGraph,
   info,
 }: {
   report: SkillReport | null;
   versions: RegistryVersion[];
+  catalogGraph?: VersionGraphData;
   info: SkillInfo;
 }) {
   return (
@@ -460,11 +496,15 @@ function VersionsTab({
       <Section title="observed lineage">
         {report && report.versions.length > 0 ? (
           <>
-            <VersionTimeline rows={fromVersionUsage(report.versions)} />
+            {report.graph ? (
+              <VersionGraph graph={report.graph} />
+            ) : (
+              <VersionTimeline rows={fromVersionUsage(report.versions)} />
+            )}
             <p className="qvr-sub" style={{ marginTop: 8 }}>
-              one row per (ref, commit) this skill fired as — runs whose records
-              carried no identity group under @unknown. compare usage and cost
-              across versions before pinning forward.
+              the commit tree this skill fired across — runs whose records carried
+              no identity group under @unknown. compare usage and cost across
+              versions before pinning forward.
             </p>
           </>
         ) : (
@@ -472,9 +512,11 @@ function VersionsTab({
         )}
       </Section>
       <Section title="available refs">
-        <VersionTimeline
-          rows={fromRegistryVersions(versions, info.ref, info.commit)}
-        />
+        {catalogGraph ? (
+          <VersionGraph graph={catalogGraph} />
+        ) : (
+          <VersionTimeline rows={fromRegistryVersions(versions, info.ref, info.commit)} />
+        )}
       </Section>
     </>
   );
@@ -694,7 +736,11 @@ function RegistryView({ detail }: { detail: RegistrySkillDetail }) {
             </div>
           </Card>
           <Card title="versions">
-            <VersionTimeline rows={fromRegistryVersions(detail.versions ?? [])} />
+            {detail.graph ? (
+              <VersionGraph graph={detail.graph} />
+            ) : (
+              <VersionTimeline rows={fromRegistryVersions(detail.versions ?? [])} />
+            )}
           </Card>
         </div>
       </div>

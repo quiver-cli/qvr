@@ -258,6 +258,7 @@ export interface RegistrySkillsResponse {
   url?: string;
   defaultBranch?: string;
   versions: RegistryVersion[];
+  graph?: VersionGraph; // git-tree DAG; absent = use versions
   skills: RegistrySkillRow[];
   error?: string;
 }
@@ -278,6 +279,7 @@ export interface RegistrySkillDetail {
   installedRef?: string;
   installedCommit?: string;
   versions: RegistryVersion[];
+  graph?: VersionGraph; // git-tree DAG; absent = use versions
   error?: string;
 }
 
@@ -356,6 +358,17 @@ export interface SkillMetricsHeadline {
 // One skill's usage merged with its lock identity. Token fields are
 // session-attributed: "tokens in sessions where this skill fired" (a session
 // that fired two skills counts toward both), never exclusive cost.
+// DurationStats is a latency/duration rollup in ms (Go: durationStatsView).
+// `measured` is the honest denominator — present only when ≥1 sample had a
+// positive duration, so an absent stat renders n/a, never a fabricated 0.
+export interface DurationStats {
+  measured: number;
+  avgMs: number;
+  minMs: number;
+  maxMs: number;
+  totalMs: number;
+}
+
 export interface SkillUsageRow {
   name: string;
   installed: boolean;
@@ -374,6 +387,7 @@ export interface SkillUsageRow {
   tokensIn?: number;
   tokensOut?: number;
   tokenSessions: number;
+  latency?: DurationStats; // exclusive skill-span self-time; absent = n/a
 }
 
 export interface SkillMetricsResponse {
@@ -401,6 +415,10 @@ export interface SkillReportTotals {
   sessions: number;
   firstFired?: string;
   lastFired?: string;
+  // latency = exclusive skill-span self-time; sessionDuration = session-attributed
+  // wall-clock of the sessions this skill fired in. Both ms; absent = n/a.
+  latency?: DurationStats;
+  sessionDuration?: DurationStats;
 }
 
 // One agent's cut. versions is the distinct observed versions this agent's
@@ -453,6 +471,39 @@ export interface SkillVersionUsage {
   current?: boolean;
 }
 
+// VersionGraph is the git-tree DAG payload (Go: versionGraph) shared by the
+// registry catalogue and a skill's observed lineage. Each node carries its own
+// parent edges; a parent sha absent from the node set is a truncation root. The
+// frontend lays these out into lanes. When `graph` is absent on a response, fall
+// back to the flat `versions` list (older backend / unavailable registry repo).
+export interface VersionGraphRef {
+  name: string;
+  kind: "branch" | "tag";
+}
+
+export interface VersionGraphUsage {
+  invocations: number;
+  sessions: number;
+  firstFired?: string;
+  lastFired?: string;
+  tokensIn?: number; // absent = no usage reported (n/a)
+  tokensOut?: number;
+}
+
+export interface VersionGraphNode {
+  sha: string; // "" = the detached unknown-version bucket
+  parents: string[];
+  refs?: VersionGraphRef[];
+  time?: string;
+  subject?: string;
+  current?: boolean;
+  usage?: VersionGraphUsage;
+}
+
+export interface VersionGraph {
+  nodes: VersionGraphNode[];
+}
+
 export interface SkillReport {
   audit_enabled: boolean;
   name: string;
@@ -464,6 +515,7 @@ export interface SkillReport {
   series: SkillReportSeriesPoint[];
   tokens: { sessions: number; input?: number; output?: number };
   versions: SkillVersionUsage[];
+  graph?: VersionGraph; // git-tree lineage DAG; absent = use versions
   recentSessions: SessionMeta[];
 }
 

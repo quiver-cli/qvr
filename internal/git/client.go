@@ -29,6 +29,20 @@ type RefVersion struct {
 	Subject string    `json:"subject"` // first line of the commit message
 }
 
+// CommitNode is one commit in a version DAG: its hash, the hashes of its
+// parents (the edges of the lineage graph), and the committer time + subject
+// for labeling. It powers the dashboard's git-tree version view, where both the
+// registry catalogue and a skill's observed lineage render as a real multi-lane
+// commit graph. A parent hash may point outside the returned set when the walk
+// is bounded by a limit — callers treat an absent parent as a graph root
+// (truncated history), not an error.
+type CommitNode struct {
+	Hash    string    `json:"hash"`
+	Parents []string  `json:"parents"`
+	Time    time.Time `json:"time"`
+	Subject string    `json:"subject"`
+}
+
 // RemoteRefInfo holds reference information from ls-remote.
 type RemoteRefInfo struct {
 	Refs map[string]string // ref name → hash

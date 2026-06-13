@@ -16,7 +16,7 @@ import {
   Td,
   Th,
 } from "../components/qvr";
-import { fmtEpochMs, fmtTokenPair } from "../lib/format";
+import { fmtEpochMs, fmtSpan, fmtTokenPair } from "../lib/format";
 
 // The agents qvr can discover today. The filter offers these plus any agent
 // actually present in the loaded rows (so an unexpected one still shows up).
@@ -140,6 +140,7 @@ export default function Sessions() {
               <Th>started</Th>
               <Th>turns</Th>
               <Th>tools</Th>
+              <Th>duration</Th>
               <Th onSort={() => setSortTokens((v) => !v)} sortActive={sortTokens}>
                 tokens (in / out)
               </Th>
@@ -181,6 +182,7 @@ export default function Sessions() {
               <Td muted>{fmtEpochMs(s.started_ms)}</Td>
               <Td muted>{s.turns}</Td>
               <Td muted>{s.tools}</Td>
+              <Td muted>{fmtSpan(s.ended_ms - s.started_ms)}</Td>
               <Td muted={s.tokens_in == null && s.tokens_out == null}>
                 {fmtTokenPair(s.tokens_in, s.tokens_out)}
               </Td>

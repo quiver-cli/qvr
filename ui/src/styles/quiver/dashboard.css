@@ -114,6 +114,19 @@
 .qvr-pill { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); background: var(--surface-overlay);
   border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 7px; }
 
+/* version git-tree: SVG lane gutter on the left, one-line commit body per row */
+.qvr-graph { position: relative; }
+.qvr-graph__svg { pointer-events: none; }
+.qvr-graph__row { display: flex; align-items: center; }
+.qvr-graph__row + .qvr-graph__row { border-top: 1px solid var(--border-subtle); }
+.qvr-graph__row--current { background: var(--success-soft); }
+.qvr-graph__body { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; overflow: hidden;
+  padding-right: 4px; }
+.qvr-graph__ref { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.qvr-graph__subject { font-family: var(--font-body); font-size: 12.5px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.qvr-graph__chips { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+
 /* skills list */
 .qvr-listhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; gap: 16px; }
 .qvr-h1 { font-family: var(--font-brand); font-weight: 600; font-size: 24px; letter-spacing: -0.02em; color: var(--text); margin: 0; }

@@ -41,6 +41,19 @@ export function fmtCount(n?: number): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
 
+// fmtTok renders a raw token count for the overview's token band, which reaches
+// billions ("1.99b"). Mirrors the design handoff's thresholds: ≥1b two
+// decimals, ≥100m whole, ≥1m one decimal, ≥1k whole, else raw. null → "n/a"
+// (absence, never a fabricated 0).
+export function fmtTok(n?: number): string {
+  if (n == null) return "n/a";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}b`;
+  if (n >= 1e8) return `${Math.round(n / 1e6)}m`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}m`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
 // fmtCountWhole humanizes a count to whole units ("154m", "2k") — for tight
 // tiles where fmtCount's decimal ("154.3m") would clip.
 export function fmtCountWhole(n?: number): string {
@@ -72,6 +85,13 @@ export function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+// fmtSpan renders a duration (ms) for a table cell: "—" when unknown/zero,
+// sub-hour as fmtMs (1.2s / 2m 10s), longer as fmtDuration (2h 10m).
+export function fmtSpan(ms?: number): string {
+  if (!ms || ms <= 0) return "—";
+  return ms < 3_600_000 ? fmtMs(ms) : fmtDuration(ms);
 }
 
 // fmtEpochMs renders an epoch-millisecond timestamp in the viewer's locale.

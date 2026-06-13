@@ -439,3 +439,55 @@ func TestSkillVersionRollup(t *testing.T) {
 	assert.Equal(t, i64(150), c1.InputTokens)
 	assert.Equal(t, i64(50), c1.OutputTokens)
 }
+
+// TestSkillDurationRollups checks both duration measures: the exclusive
+// skill-span self-latency (a point span is excluded from the stats but still
+// counts as an invocation) and the session-attributed wall-clock.
+func TestSkillDurationRollups(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	const skillAttr = `{"skill.name":"probe"}`
+
+	// Session 1: 60s wall-clock; one 5s SKILL span + one point span (excluded).
+	s1 := uuid.New()
+	st1 := msAt("2026-06-01", 9)
+	require.NoError(t, st.ReplaceSessionDerivation(ctx, &SessionMetaRow{
+		SessionID: s1, AgentName: "claude-code", StartedMs: st1, EndedMs: st1 + 60_000, DeriverVersion: 7,
+	}, []*SpanRow{
+		{SpanID: "p1-a", TraceID: "t1", SessionID: s1, AgentName: "claude-code", Kind: "SKILL",
+			Name: "p1-a", StartMs: st1, EndMs: st1 + 5_000, Attributes: skillAttr},
+		{SpanID: "p1-b", TraceID: "t1", SessionID: s1, AgentName: "claude-code", Kind: "SKILL",
+			Name: "p1-b", StartMs: st1 + 6_000, EndMs: st1 + 6_000, Attributes: skillAttr}, // point → excluded
+	}))
+
+	// Session 2: 120s wall-clock; one 3s SKILL span.
+	s2 := uuid.New()
+	st2 := msAt("2026-06-02", 9)
+	require.NoError(t, st.ReplaceSessionDerivation(ctx, &SessionMetaRow{
+		SessionID: s2, AgentName: "codex", StartedMs: st2, EndedMs: st2 + 120_000, DeriverVersion: 7,
+	}, []*SpanRow{
+		{SpanID: "p2-a", TraceID: "t2", SessionID: s2, AgentName: "codex", Kind: "SKILL",
+			Name: "p2-a", StartMs: st2, EndMs: st2 + 3_000, Attributes: skillAttr},
+	}))
+
+	usage, err := st.SkillUsageRollup(ctx, &MetricsFilter{Skill: "probe"})
+	require.NoError(t, err)
+	require.Len(t, usage, 1)
+	require.Equal(t, int64(3), usage[0].Invocations, "all 3 SKILL spans count as invocations")
+	lat := usage[0].Latency
+	require.Equal(t, int64(2), lat.Measured, "point span excluded from measured latency")
+	require.Equal(t, int64(3_000), lat.MinMs)
+	require.Equal(t, int64(5_000), lat.MaxMs)
+	require.Equal(t, int64(8_000), lat.TotalMs)
+	require.Equal(t, int64(4_000), lat.AvgMs)
+
+	durs, err := st.SkillSessionDurationRollup(ctx, &MetricsFilter{Skill: "probe"})
+	require.NoError(t, err)
+	d := durs["probe"]
+	require.NotNil(t, d)
+	require.Equal(t, int64(2), d.Measured)
+	require.Equal(t, int64(60_000), d.MinMs)
+	require.Equal(t, int64(120_000), d.MaxMs)
+	require.Equal(t, int64(180_000), d.TotalMs)
+	require.Equal(t, int64(90_000), d.AvgMs)
+}

@@ -66,11 +66,38 @@ const (
 	// totals. tokenSessionsAgg counts the sessions that actually reported
 	// usage (either side), the honest denominator for a token cut.
 	tokenSessionsAgg = `COUNT(DISTINCT CASE WHEN m.tokens_in IS NOT NULL OR m.tokens_out IS NOT NULL THEN m.session_id END)`
+	// durationLatencyAgg aggregates SKILL-span self-time (end_ms - start_ms)
+	// over the spans in scope, counting only MEASURED spans (end_ms > start_ms)
+	// so an unfinished or point span never fabricates a 0-latency sample. It
+	// emits five columns in order: measured-count, avg, min, max, total (all ms).
+	// The four stat columns read 0 when nothing was measured — Measured is the
+	// honest denominator the surface checks before rendering anything but n/a.
+	durationLatencyAgg = `COUNT(CASE WHEN end_ms > start_ms THEN 1 END),
+	  COALESCE(CAST(AVG(CASE WHEN end_ms > start_ms THEN end_ms - start_ms END) AS INTEGER), 0),
+	  COALESCE(MIN(CASE WHEN end_ms > start_ms THEN end_ms - start_ms END), 0),
+	  COALESCE(MAX(CASE WHEN end_ms > start_ms THEN end_ms - start_ms END), 0),
+	  COALESCE(SUM(CASE WHEN end_ms > start_ms THEN end_ms - start_ms END), 0)`
 )
+
+// DurationStats is a latency/duration rollup in milliseconds. Measured is the
+// count of samples that actually had a positive duration (the honest
+// denominator); the Avg/Min/Max/Total fields are meaningful only when
+// Measured > 0, and are 0 otherwise so the surface renders n/a rather than a
+// fabricated zero.
+type DurationStats struct {
+	Measured int64
+	AvgMs    int64
+	MinMs    int64
+	MaxMs    int64
+	TotalMs  int64
+}
 
 // legacyTokenQuery rewrites a token rollup for a pre-0006 schema (read-only
 // open, migration not applied): the meta token columns don't exist yet, so
-// they read as NULL (n/a) instead of failing the whole aggregation.
+// they read as NULL (n/a) instead of failing the whole aggregation. It assumes
+// every token rollup aliases session_meta as `m` (the convention all queries
+// here follow) — a query that joins it under a different alias would not be
+// rewritten and would surface the raw column-not-found error instead.
 func legacyTokenQuery(q string) string {
 	q = strings.ReplaceAll(q, "m.tokens_in", "NULL")
 	return strings.ReplaceAll(q, "m.tokens_out", "NULL")
@@ -137,6 +164,10 @@ type SkillUsage struct {
 	Versions     []string // distinct proven versions observed; empty = unknown
 	FirstFiredMs int64
 	LastFiredMs  int64
+	// Latency is the exclusive self-time of this skill's SKILL spans — how long
+	// the skill's own tool call ran (small for name-only loads, real for script
+	// skills). Measured == 0 means no span had a positive duration (n/a).
+	Latency DurationStats
 }
 
 // SkillUsageRollup aggregates SKILL spans per skill, most-recently-fired
@@ -148,7 +179,8 @@ func (s *sqliteStore) SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([
 	  COUNT(DISTINCT session_id),
 	  ` + skillVersionsAgg + `,
 	  MIN(start_ms),
-	  MAX(start_ms)
+	  MAX(start_ms),
+	  ` + durationLatencyAgg + `
 	FROM spans ` + where + `
 	GROUP BY skill
 	ORDER BY MAX(start_ms) DESC, COUNT(*) DESC`
@@ -164,7 +196,9 @@ func (s *sqliteStore) SkillUsageRollup(ctx context.Context, f *MetricsFilter) ([
 		u := &SkillUsage{}
 		var versions sql.NullString
 		if err := rows.Scan(&u.Skill, &u.Invocations, &u.Sessions, &versions,
-			&u.FirstFiredMs, &u.LastFiredMs); err != nil {
+			&u.FirstFiredMs, &u.LastFiredMs,
+			&u.Latency.Measured, &u.Latency.AvgMs, &u.Latency.MinMs,
+			&u.Latency.MaxMs, &u.Latency.TotalMs); err != nil {
 			return nil, fmt.Errorf("store: scan skill usage: %w", err)
 		}
 		u.Versions = splitVersions(versions)
@@ -234,6 +268,48 @@ func (s *sqliteStore) SkillTokenRollup(ctx context.Context, f *MetricsFilter) (m
 		t.InputTokens = nullInt64Ptr(tin)
 		t.OutputTokens = nullInt64Ptr(tout)
 		out[skill] = t
+	}
+	return out, rows.Err()
+}
+
+// SkillSessionDurationRollup returns per-skill session wall-clock duration: the
+// (ended_ms - started_ms) of each session the skill fired in, aggregated as a
+// DurationStats keyed by skill name. Session-attributed like the token rollup —
+// a session that fired two skills contributes its whole wall-clock to both
+// (exposure, not exclusive). Sessions with no positive duration (ended<=started,
+// e.g. a single-event session) are excluded from the stats; Measured is the
+// count that contributed. Session times are base columns (present pre-0006), so
+// no schema-degrade path is needed.
+func (s *sqliteStore) SkillSessionDurationRollup(ctx context.Context, f *MetricsFilter) (map[string]*DurationStats, error) {
+	where, args := skillSpanWhereSQL(f)
+	q := `WITH skill_sessions AS (
+	  SELECT DISTINCT ` + skillNameExpr + ` AS skill, session_id
+	  FROM spans ` + where + `
+	)
+	SELECT ss.skill,
+	  COUNT(CASE WHEN m.ended_ms > m.started_ms THEN 1 END),
+	  COALESCE(CAST(AVG(CASE WHEN m.ended_ms > m.started_ms THEN m.ended_ms - m.started_ms END) AS INTEGER), 0),
+	  COALESCE(MIN(CASE WHEN m.ended_ms > m.started_ms THEN m.ended_ms - m.started_ms END), 0),
+	  COALESCE(MAX(CASE WHEN m.ended_ms > m.started_ms THEN m.ended_ms - m.started_ms END), 0),
+	  COALESCE(SUM(CASE WHEN m.ended_ms > m.started_ms THEN m.ended_ms - m.started_ms END), 0)
+	FROM skill_sessions ss
+	JOIN session_meta m ON m.session_id = ss.session_id
+	GROUP BY ss.skill`
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: skill session duration rollup: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]*DurationStats{}
+	for rows.Next() {
+		var skill string
+		d := &DurationStats{}
+		if err := rows.Scan(&skill, &d.Measured, &d.AvgMs, &d.MinMs, &d.MaxMs, &d.TotalMs); err != nil {
+			return nil, fmt.Errorf("store: scan session duration: %w", err)
+		}
+		out[skill] = d
 	}
 	return out, rows.Err()
 }

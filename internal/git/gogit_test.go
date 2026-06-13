@@ -607,3 +607,127 @@ func TestRemoteDefaultBranch_EmptyRepo(t *testing.T) {
 		t.Errorf("RemoteDefaultBranch on empty repo = %q, want empty", got)
 	}
 }
+
+// mkGraphCommit writes a unique body and commits it with explicit parents and a
+// fixed time, so a test can build an arbitrary DAG (including merges) without
+// branch checkouts. The tree differs each call (unique body), so go-git never
+// rejects an empty commit.
+func mkGraphCommit(t *testing.T, wt *gogit.Worktree, dir, body, msg string, when time.Time, parents []plumbing.Hash) plumbing.Hash {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := wt.Add("f.txt"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	sig := &object.Signature{Name: "Test", Email: "t@t", When: when}
+	h, err := wt.Commit(msg, &gogit.CommitOptions{Author: sig, Committer: sig, Parents: parents})
+	if err != nil {
+		t.Fatalf("commit %q: %v", msg, err)
+	}
+	return h
+}
+
+// TestCommitGraph builds a diamond DAG (A → B, A → C, merge M of B+C) and
+// asserts CommitGraph returns every node with correct parent edges, honors the
+// limit bound, sorts newest-first, and tolerates an unresolvable tip.
+func TestCommitGraph(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	a := mkGraphCommit(t, wt, dir, "a", "A", base, nil)
+	b := mkGraphCommit(t, wt, dir, "b", "B", base.Add(1*time.Hour), []plumbing.Hash{a})
+	c := mkGraphCommit(t, wt, dir, "c", "C", base.Add(2*time.Hour), []plumbing.Hash{a})
+	m := mkGraphCommit(t, wt, dir, "m", "M", base.Add(3*time.Hour), []plumbing.Hash{b, c})
+
+	client := git.NewGoGitClient()
+	nodes, err := client.CommitGraph(dir, []string{m.String()}, 0)
+	if err != nil {
+		t.Fatalf("CommitGraph: %v", err)
+	}
+	if len(nodes) != 4 {
+		t.Fatalf("expected 4 nodes, got %d (%+v)", len(nodes), nodes)
+	}
+
+	byHash := map[string]git.CommitNode{}
+	for _, n := range nodes {
+		byHash[n.Hash] = n
+	}
+	assertCommitParents(t, byHash, "A", a)
+	assertCommitParents(t, byHash, "B", b, a)
+	assertCommitParents(t, byHash, "C", c, a)
+	assertCommitParents(t, byHash, "M", m, b, c)
+
+	// Newest-first ordering: M is newest, A oldest.
+	if nodes[0].Hash != m.String() || nodes[len(nodes)-1].Hash != a.String() {
+		t.Errorf("not sorted newest-first: head=%s tail=%s", nodes[0].Hash, nodes[len(nodes)-1].Hash)
+	}
+}
+
+// assertCommitParents checks one node's parent edges against the expected hashes.
+func assertCommitParents(t *testing.T, byHash map[string]git.CommitNode, name string, h plumbing.Hash, want ...plumbing.Hash) {
+	t.Helper()
+	n, ok := byHash[h.String()]
+	if !ok {
+		t.Fatalf("%s (%s) missing from graph", name, h)
+	}
+	var wantStr []string
+	for _, w := range want {
+		wantStr = append(wantStr, w.String())
+	}
+	if strings.Join(n.Parents, ",") != strings.Join(wantStr, ",") {
+		t.Errorf("%s parents = %v, want %v", name, n.Parents, wantStr)
+	}
+}
+
+// TestCommitGraphBounds covers the walk's edge behaviors: the limit bound, an
+// unresolvable tip, and a 7-char short-SHA tip (skill spans record commits
+// abbreviated, so resolving them is what lets the lineage graph render).
+func TestCommitGraphBounds(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	a := mkGraphCommit(t, wt, dir, "a", "A", base, nil)
+	b := mkGraphCommit(t, wt, dir, "b", "B", base.Add(time.Hour), []plumbing.Hash{a})
+
+	client := git.NewGoGitClient()
+
+	bounded, err := client.CommitGraph(dir, []string{b.String()}, 1)
+	if err != nil {
+		t.Fatalf("CommitGraph bounded: %v", err)
+	}
+	if len(bounded) != 1 {
+		t.Errorf("expected 1 bounded node, got %d", len(bounded))
+	}
+
+	empty, err := client.CommitGraph(dir, []string{plumbing.ZeroHash.String()}, 0)
+	if err != nil {
+		t.Fatalf("CommitGraph zero tip: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected empty graph for zero tip, got %d", len(empty))
+	}
+
+	shortGraph, err := client.CommitGraph(dir, []string{b.String()[:7]}, 0)
+	if err != nil {
+		t.Fatalf("CommitGraph short tip: %v", err)
+	}
+	if len(shortGraph) != 2 {
+		t.Errorf("short-SHA tip should walk the full chain (2 nodes), got %d", len(shortGraph))
+	}
+}

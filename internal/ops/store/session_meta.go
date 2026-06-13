@@ -38,6 +38,16 @@ type SessionMetaRow struct {
 	DerivedAt      time.Time `json:"derived_at"`
 }
 
+// DurationMs is the session's wall-clock duration in milliseconds (ended minus
+// started), or 0 when the bounds are missing or non-positive (a single-event or
+// still-in-flight session). Callers render 0 as "unknown", never as an instant.
+func (m *SessionMetaRow) DurationMs() int64 {
+	if m.EndedMs > m.StartedMs {
+		return m.EndedMs - m.StartedMs
+	}
+	return 0
+}
+
 // SessionMetaFilter scopes ListSessionMeta. Nil/zero fields are ignored.
 type SessionMetaFilter struct {
 	Since *time.Time // sessions started at/after this time

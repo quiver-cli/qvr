@@ -95,7 +95,7 @@ func renderSessions(sessions []*store.SessionMetaRow) error {
 		printer.Info("No sessions recorded yet")
 		return nil
 	}
-	headers := []string{"STARTED", "AGENT", "TITLE", "TURNS", "TOOLS", "TOKENS", "SKILLS", "SESSION ID"}
+	headers := []string{"STARTED", "AGENT", "TITLE", "TURNS", "TOOLS", "DURATION", "TOKENS", "SKILLS", "SESSION ID"}
 	rows := make([][]string, 0, len(sessions))
 	for _, sess := range sessions {
 		rows = append(rows, []string{
@@ -104,6 +104,7 @@ func renderSessions(sessions []*store.SessionMetaRow) error {
 			clipCell(sess.Title, 48),
 			fmt.Sprintf("%d", sess.Turns),
 			fmt.Sprintf("%d", sess.Tools),
+			durationCell(sess.DurationMs()),
 			tokenPairCell(sess.TokensIn, sess.TokensOut),
 			strings.Join(sess.Skills, ","),
 			sess.SessionID.String(),
@@ -120,6 +121,23 @@ func tokenPairCell(in, out *int64) string {
 		return "n/a"
 	}
 	return abbrevCount(in) + "/" + abbrevCount(out)
+}
+
+// durationCell renders a session wall-clock duration (ms) compactly: "—" when
+// unknown (0), else fractional seconds, m:ss, or h:mm.
+func durationCell(ms int64) string {
+	if ms <= 0 {
+		return "—"
+	}
+	s := ms / 1000
+	switch {
+	case s < 60:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	case s < 3600:
+		return fmt.Sprintf("%dm%02ds", s/60, s%60)
+	default:
+		return fmt.Sprintf("%dh%02dm", s/3600, (s%3600)/60)
+	}
 }
 
 // abbrevCount renders a nullable count compactly (8.4k, 1.2M); nil → "-".

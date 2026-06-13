@@ -374,6 +374,7 @@ type registrySkillsResponse struct {
 	URL           string             `json:"url,omitempty"`
 	DefaultBranch string             `json:"defaultBranch,omitempty"`
 	Versions      []registryVersion  `json:"versions"`
+	Graph         *versionGraph      `json:"graph,omitempty"` // git-tree DAG; nil = use Versions
 	Skills        []registrySkillRow `json:"skills"`
 	Error         string             `json:"error,omitempty"`
 }
@@ -415,6 +416,7 @@ func (s *uiServer) handleRegistrySkills(w http.ResponseWriter, r *http.Request) 
 				Current: v.Name == defaultBranch,
 			})
 		}
+		resp.Graph = registryVersionGraph(gc, repoPath, resp.Versions)
 	}
 
 	// Installed skills in the active scope, keyed by name, so each offered skill
@@ -479,6 +481,7 @@ type registrySkillDetail struct {
 	InstalledRef    string            `json:"installedRef,omitempty"`
 	InstalledCommit string            `json:"installedCommit,omitempty"`
 	Versions        []registryVersion `json:"versions"`
+	Graph           *versionGraph     `json:"graph,omitempty"` // git-tree DAG; nil = use Versions
 	Error           string            `json:"error,omitempty"`
 }
 
@@ -576,6 +579,7 @@ func (s *uiServer) fillRegistrySkillVersions(resp *registrySkillDetail, gc *git.
 			Current: v.Name == defaultBranch,
 		})
 	}
+	resp.Graph = registryVersionGraph(gc, repoPath, resp.Versions)
 }
 
 // markRegistrySkillInstalled flags resp when the skill is installed in the
