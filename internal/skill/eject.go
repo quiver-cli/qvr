@@ -296,6 +296,12 @@ func VendorIntoRepo(req VendorRequest) (*VendorResult, error) {
 
 	siblingLinks, err := repointSiblingTargets(e, scope, canonicalTarget, canonicalAbs)
 	if err != nil {
+		// copyTreeToCanonical already materialized the canonical real directory;
+		// a sibling-relink failure must not leave it behind. The caller's
+		// rollbackLinks only removes symlinks, so the real dir would orphan and
+		// block future installs of this skill at that path. Remove it so vendor
+		// stays atomic (matching EjectToTarget).
+		_ = os.RemoveAll(canonicalAbs)
 		return nil, err
 	}
 
