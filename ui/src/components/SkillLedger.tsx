@@ -25,9 +25,13 @@ const intensity = (s: SkillUsageRow) => (s.sessions > 0 ? skillTokens(s) / s.ses
 export default function SkillLedger({
   rows,
   totalSessions,
+  refreshKey,
 }: {
   rows: SkillUsageRow[];
   totalSessions: number;
+  // The parent Overview's refresh epoch (its nonce); forwarded into the drill's
+  // cache key so a manual refresh re-fetches the open drill in lockstep.
+  refreshKey?: number;
 }) {
   const [sort, setSort] = useState<SortKey>("tokens");
   const [open, setOpen] = useState<string | null>(null);
@@ -131,7 +135,7 @@ export default function SkillLedger({
             {isOpen && (
               <tr className="ovr-drill">
                 <td colSpan={COLS}>
-                  <SkillDrill name={s.name} />
+                  <SkillDrill name={s.name} refreshKey={refreshKey} />
                 </td>
               </tr>
             )}
@@ -173,10 +177,15 @@ export default function SkillLedger({
 // SkillDrill lazily loads one skill's report (mounted only while the row is
 // open) and shows two columns: tokens-by-agent and the recent traces that fired
 // it — the per-skill detail the handoff reveals inline.
-function SkillDrill({ name }: { name: string }) {
-  // Poll on the same 10s cadence as the parent Overview so the drill's
-  // agent/trace totals never drift out of sync with the auto-refreshing row.
-  const rep = useFetch(() => api.skillReport(name), `drill:${name}:${scopeToken()}`, 10_000);
+function SkillDrill({ name, refreshKey }: { name: string; refreshKey?: number }) {
+  // Poll on the same 10s cadence as the parent Overview (auto-refresh), and key
+  // on the parent's refresh epoch so a manual refresh re-fetches immediately —
+  // the drill's totals never drift out of sync with the ledger row.
+  const rep = useFetch(
+    () => api.skillReport(name),
+    `drill:${name}:${scopeToken()}:${refreshKey ?? 0}`,
+    10_000,
+  );
   if (rep.loading) return <span className="qvr-sub">loading…</span>;
   if (rep.error) return <span className="qvr-sub">couldn't load detail: {rep.error}</span>;
   if (!rep.data) return <span className="qvr-sub">no detail available.</span>;

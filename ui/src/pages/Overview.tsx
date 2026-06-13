@@ -172,7 +172,11 @@ export default function Overview() {
 
           {m && m.audit_enabled && m.skills.length > 0 && (
             <div style={{ marginTop: 18 }}>
-              <SkillLedger rows={m.skills} totalSessions={cov?.totalSessions ?? 0} />
+              <SkillLedger
+                rows={m.skills}
+                totalSessions={cov?.totalSessions ?? 0}
+                refreshKey={nonce}
+              />
             </div>
           )}
         </>
