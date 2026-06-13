@@ -125,6 +125,12 @@ func EjectToTarget(req EjectRequest) (*EjectResult, error) {
 
 	siblingLinks, err := repointSiblingTargets(e, req, canonicalTarget, canonicalAbs)
 	if err != nil {
+		// materializeEjectDir already created the canonical real directory; a
+		// sibling-relink failure must not leave it behind. rollbackLinks (in the
+		// caller) only removes symlinks, so the real dir would orphan and block
+		// future installs of this skill. Remove it here to keep eject/vendor
+		// atomic — the caller still rolls back the target symlinks.
+		_ = os.RemoveAll(canonicalAbs)
 		return nil, err
 	}
 
