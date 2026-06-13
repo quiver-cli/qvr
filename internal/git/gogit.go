@@ -640,14 +640,66 @@ func (g *GoGitClient) CommitGraph(repoPath string, tips []string, limit int) ([]
 		})
 	}
 
-	// Newest commit first; stable hash tie-break for deterministic output.
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].Time.Equal(out[j].Time) {
-			return out[i].Time.After(out[j].Time)
+	return topoOrderCommits(out), nil
+}
+
+// commitNodeNewerFirst is the readability tie-break: newest committer time
+// first, then hash for a deterministic order.
+func commitNodeNewerFirst(a, b CommitNode) bool {
+	if !a.Time.Equal(b.Time) {
+		return a.Time.After(b.Time)
+	}
+	return a.Hash < b.Hash
+}
+
+// topoOrderCommits returns the nodes ordered children-before-parents, breaking
+// ties by committer time (newest first). A pure time sort can place a parent
+// ahead of its child when they share a committer timestamp (squash merges,
+// normalised CI times); the lane layout then opens disconnected columns because
+// it processes top-to-bottom and expects a child to reserve its parent's lane
+// first. A Kahn pass over the in-window child→parent edges guarantees the
+// invariant regardless of timestamps.
+func topoOrderCommits(nodes []CommitNode) []CommitNode {
+	idx := make(map[string]int, len(nodes))
+	for i := range nodes {
+		idx[nodes[i].Hash] = i
+	}
+	// in-degree = number of in-window children pointing at a node (via parents).
+	indeg := make([]int, len(nodes))
+	for i := range nodes {
+		for _, p := range nodes[i].Parents {
+			if j, ok := idx[p]; ok {
+				indeg[j]++
+			}
 		}
-		return out[i].Hash < out[j].Hash
-	})
-	return out, nil
+	}
+	ready := make([]int, 0, len(nodes))
+	for i := range nodes {
+		if indeg[i] == 0 {
+			ready = append(ready, i)
+		}
+	}
+	out := make([]CommitNode, 0, len(nodes))
+	for len(ready) > 0 {
+		// Pop the newest ready node so the order still reads newest-first.
+		sort.Slice(ready, func(a, b int) bool { return commitNodeNewerFirst(nodes[ready[a]], nodes[ready[b]]) })
+		i := ready[0]
+		ready = ready[1:]
+		out = append(out, nodes[i])
+		for _, p := range nodes[i].Parents {
+			if j, ok := idx[p]; ok {
+				if indeg[j]--; indeg[j] == 0 {
+					ready = append(ready, j)
+				}
+			}
+		}
+	}
+	// A real commit DAG is acyclic, so every node is emitted; the length guard is
+	// a defensive backstop that never drops nodes if that assumption is violated.
+	if len(out) < len(nodes) {
+		return append([]CommitNode(nil), nodes...)
+	}
+	return out
 }
 
 // LsRemote lists refs from a remote URL without cloning by shelling out to

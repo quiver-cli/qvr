@@ -179,8 +179,11 @@ func lineageVersionGraph(gc commitGrapher, repoPath, pinnedCommit string, versio
 }
 
 // findNodeByCommit resolves a commit (full or 7-char short SHA) to its graph
-// node: exact match first, then unique prefix. nil when nothing matches (the
-// commit isn't in the walked window).
+// node: exact match first, then a UNIQUE prefix match. An ambiguous prefix (two
+// nodes sharing it) returns nil rather than decorating an arbitrary one — the
+// same guard resolveShortHash applies at the tip stage, so a short SHA that is
+// ambiguous within the window simply renders without usage instead of attaching
+// it to the wrong node. nil when nothing (or nothing unique) matches.
 func findNodeByCommit(byHash map[string]*versionGraphNode, commit string) *versionGraphNode {
 	if commit == "" {
 		return nil
@@ -188,12 +191,16 @@ func findNodeByCommit(byHash map[string]*versionGraphNode, commit string) *versi
 	if node, ok := byHash[commit]; ok {
 		return node
 	}
+	var found *versionGraphNode
 	for sha, node := range byHash {
 		if strings.HasPrefix(sha, commit) {
-			return node
+			if found != nil {
+				return nil // ambiguous prefix — refuse to guess
+			}
+			found = node
 		}
 	}
-	return nil
+	return found
 }
 
 // versionUsage adapts a store rollup row to the graph's usage shape.

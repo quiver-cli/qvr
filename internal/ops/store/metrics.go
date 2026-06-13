@@ -393,6 +393,10 @@ func (s *sqliteStore) SkillAgentRollup(ctx context.Context, f *MetricsFilter) ([
 	  ` + skillVersionsAgg + `,
 	  COUNT(DISTINCT sk.session_id),
 	  MAX(sk.start_ms),
+	  -- tok emits exactly one row per agent_name (it GROUPs BY ss.agent_name), so
+	  -- MAX(t.*) just lifts that single value through this GROUP BY — it is not a
+	  -- real aggregate. If tok is ever changed to emit multiple rows per key, this
+	  -- must become SUM.
 	  MAX(t.tin), MAX(t.tout), COALESCE(MAX(t.tses), 0)
 	FROM sk LEFT JOIN tok t ON t.agent_name = sk.agent_name
 	GROUP BY sk.agent_name
@@ -464,6 +468,9 @@ func (s *sqliteStore) SkillModelRollup(ctx context.Context, f *MetricsFilter) ([
 	  COUNT(*),
 	  COUNT(DISTINCT sk.session_id),
 	  MAX(sk.start_ms),
+	  -- tok emits exactly one row per model (it GROUPs BY ss.model), so MAX(t.*)
+	  -- just lifts that single value through this GROUP BY — not a real aggregate.
+	  -- If tok is ever changed to emit multiple rows per key, this must become SUM.
 	  MAX(t.tin), MAX(t.tout), COALESCE(MAX(t.tses), 0)
 	FROM sk LEFT JOIN tok t ON t.model = sk.model
 	GROUP BY sk.model
@@ -539,6 +546,10 @@ func (s *sqliteStore) SkillVersionRollup(ctx context.Context, f *MetricsFilter) 
 	  COUNT(DISTINCT ver.session_id),
 	  MIN(ver.start_ms),
 	  MAX(ver.start_ms),
+	  -- tok emits exactly one row per (ref, commit_sha) (it GROUPs BY vs.ref,
+	  -- vs.commit_sha), so MAX(tok.*) just lifts that single value through this
+	  -- GROUP BY — not a real aggregate. If tok is ever changed to emit multiple
+	  -- rows per key, this must become SUM.
 	  MAX(tok.tin),
 	  MAX(tok.tout)
 	FROM ver

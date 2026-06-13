@@ -731,3 +731,34 @@ func TestCommitGraphBounds(t *testing.T) {
 		t.Errorf("short-SHA tip should walk the full chain (2 nodes), got %d", len(shortGraph))
 	}
 }
+
+// TestCommitGraphEqualTimestampTopoOrder guards the lane-layout invariant: even
+// when a parent and child share a committer timestamp, the child must come
+// before the parent in the output (a pure time sort could invert them via the
+// hash tie-break, disconnecting the rendered graph).
+func TestCommitGraphEqualTimestampTopoOrder(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+	when := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	a := mkGraphCommit(t, wt, dir, "a", "A", when, nil)                // parent
+	b := mkGraphCommit(t, wt, dir, "b", "B", when, []plumbing.Hash{a}) // child, same time
+
+	nodes, err := git.NewGoGitClient().CommitGraph(dir, []string{b.String()}, 0)
+	if err != nil {
+		t.Fatalf("CommitGraph: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(nodes))
+	}
+	if nodes[0].Hash != b.String() || nodes[1].Hash != a.String() {
+		t.Errorf("child must precede parent on equal timestamps: got [%s, %s], want [child %s, parent %s]",
+			nodes[0].Hash[:7], nodes[1].Hash[:7], b.String()[:7], a.String()[:7])
+	}
+}

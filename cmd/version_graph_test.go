@@ -130,6 +130,22 @@ func TestLineageVersionGraph_ShortCommitMatch(t *testing.T) {
 	require.True(t, n.Current, "pinned short SHA must mark the node current")
 }
 
+func TestFindNodeByCommit_AmbiguousPrefixRefused(t *testing.T) {
+	// Two nodes share the 7-char prefix "abcdef1": a short SHA of that prefix is
+	// ambiguous and must resolve to neither (nil) rather than an arbitrary one.
+	shaA := "abcdef1000000000000000000000000000000000"
+	shaB := "abcdef1ffffffffffffffffffffffffffffffff0"
+	byHash := map[string]*versionGraphNode{
+		shaA: {SHA: shaA},
+		shaB: {SHA: shaB},
+	}
+	require.Nil(t, findNodeByCommit(byHash, "abcdef1"), "ambiguous prefix must not decorate a node")
+	// An exact full SHA still resolves.
+	require.Equal(t, byHash[shaA], findNodeByCommit(byHash, shaA))
+	// A unique prefix resolves.
+	require.Equal(t, byHash[shaA], findNodeByCommit(byHash, "abcdef10"))
+}
+
 func TestLineageVersionGraph_OnlyUnknownStillRenders(t *testing.T) {
 	gc := fakeGrapher{nodes: nil} // nothing resolves
 	versions := []*store.SkillVersionUsage{{Commit: "", Invocations: 7}}

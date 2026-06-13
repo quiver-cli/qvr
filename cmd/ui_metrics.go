@@ -422,6 +422,9 @@ func (s *uiServer) fillSkillReportMetrics(ctx context.Context, resp *skillReport
 			Latency:     durationView(u.Latency),
 		}
 	}
+	// Best-effort, like the other report cuts below: a rollup error leaves
+	// SessionDuration absent (rendered n/a), never a 500 — the report card is a
+	// read-only overlay and degrades gracefully rather than failing the page.
 	if durs, err := s.store.SkillSessionDurationRollup(ctx, f); err == nil {
 		if d := durs[f.Skill]; d != nil {
 			resp.Totals.SessionDuration = durationView(*d)
