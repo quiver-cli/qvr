@@ -43,6 +43,20 @@ scan = {reportSHA = 'sha256:7c2ab91df883d443d31b0702a060981c1b471e56a37ef433343c
 provenance = {commitAuthor = 'Keith Lazuka <klazuka@anthropic.com>', signatureStatus = 'none'}
 
 [[skill]]
+name = 'greptile-review-loop'
+registry = 'raks097/dev-skills'
+source = 'https://github.com/raks097/dev-skills'
+path = 'skills/greptile-review-loop'
+ref = 'main'
+commit = '422b6fbde54f5264ebfb629fa2ec344bdf635c5d'
+subtreeHash = 'sha256:49bc1a6707bad1047d7265f07814b1d420eb0a6ecd93baa22fbb6f8b0f800875'
+treeOID = '8812a1881b761c6723b9f5e35beb5e263b739bbc'
+targets = ['claude']
+installedAt = 2026-06-13T20:39:41.07204Z
+scan = {reportSHA = 'sha256:571471d5514d3abb18e1916603200d108d9b329fcd30a056cf4c7e5ba78b6a1e', scannerVersion = '0.7.0', counts = {critical = 0, high = 0, medium = 4, low = 0, info = 3}, decision = 'allowed'}
+provenance = {commitAuthor = 'QA <qa@example.com>', signatureStatus = 'none'}
+
+[[skill]]
 name = 'grill-with-docs'
 registry = 'mattpocock/skills'
 source = 'https://github.com/mattpocock/skills.git'
