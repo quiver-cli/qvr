@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Clock, Layers, Library, MessagesSquare, Package } from "lucide-react";
-import { api, prettyAgent, scopeToken, useFetch } from "../api";
+import { api, prettyAgent, scopeToken, useFetch, type SkillUsageRow } from "../api";
 import {
   Badge,
   Card,
@@ -11,6 +11,7 @@ import {
   PageHead,
   Prompt,
   RefreshButton,
+  SkillRowItem,
   StatCard,
   StatusBadge,
 } from "../components/qvr";
@@ -170,6 +171,8 @@ export default function Overview() {
             </Card>
           </div>
 
+          {m && <NeedsAttention rows={m.skills} />}
+
           {m && m.audit_enabled && m.skills.length > 0 && (
             <div style={{ marginTop: 18 }}>
               <SkillLedger
@@ -192,6 +195,39 @@ function GateStat({ value, label }: { value: number; label: string }) {
         {value}
       </div>
       <StatusBadge value={label} dot />
+    </div>
+  );
+}
+
+// NeedsAttention surfaces the compliance/security callouts the token ledger
+// doesn't: skills with a blocked scan gate or that are disabled. These come from
+// lock metadata, so the section renders regardless of audit status (unlike the
+// ledger). Never-fired dead weight lives in the ledger's idle section instead.
+function NeedsAttention({ rows }: { rows: SkillUsageRow[] }) {
+  const flagged = rows.filter((s) => s.installed && (s.gate === "blocked" || s.disabled));
+  if (flagged.length === 0) return null;
+  return (
+    <div className="qvr-section" style={{ marginTop: 18 }}>
+      <h3 className="qvr-cardtitle">needs attention</h3>
+      <div style={{ marginTop: 10 }}>
+        {flagged.slice(0, 8).map((s) => (
+          <SkillRowItem
+            key={s.name}
+            to={`/skills/${encodeURIComponent(s.name)}`}
+            lead={
+              s.gate === "blocked" ? (
+                <StatusBadge value="blocked" />
+              ) : (
+                <Badge tone="neutral" dot>
+                  disabled
+                </Badge>
+              )
+            }
+            name={s.name}
+            right={<span className="qvr-skillrow__reg">{s.registry}</span>}
+          />
+        ))}
+      </div>
     </div>
   );
 }
